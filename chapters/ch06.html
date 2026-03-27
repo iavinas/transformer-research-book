@@ -1,0 +1,700 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Chapter 06: Pre-training Fundamentals — Transformer Research Book</title>
+  <link rel="stylesheet" href="../assets/style.css">
+  <link rel="stylesheet" href="../assets/math.css">
+  <link rel="stylesheet" href="../assets/prism.css">
+  <!-- KaTeX for math rendering -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"
+    onload="renderMathInElement(document.body, {
+      delimiters: [
+        {left: '$$', right: '$$', display: true},
+        {left: '$', right: '$', display: false}
+      ]
+    })">
+  </script>
+  <!-- Prism for code blocks -->
+  <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/prism.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-python.min.js"></script>
+</head>
+<body>
+  <nav class="chapter-nav">
+    <a href="../index.html" class="nav-home">&larr; Table of Contents</a>
+    <span class="nav-chapter">Chapter 06</span>
+    <div style="display:flex; align-items:center; gap:1rem;">
+      <button class="theme-toggle" onclick="toggleTheme()" aria-label="Toggle dark mode">
+        <span class="icon-moon">&#9789;</span><span class="icon-sun">&#9788;</span>
+      </button>
+      <a href="ch07.html" class="nav-next">Next Chapter &rarr;</a>
+    </div>
+  </nav>
+  <script>
+    function toggleTheme() {
+      document.documentElement.classList.toggle('dark');
+      localStorage.setItem('theme', document.documentElement.classList.contains('dark') ? 'dark' : 'light');
+    }
+    if (localStorage.getItem('theme') === 'dark') document.documentElement.classList.add('dark');
+  </script>
+
+  <article class="chapter">
+
+    <header class="chapter-header">
+      <div class="chapter-number">Chapter 06</div>
+      <h1 class="chapter-title">Pre-training Fundamentals</h1>
+      <p class="chapter-lead">A Transformer's architecture defines what it <em>can</em> learn; pre-training determines what it <em>does</em> learn. The same architecture trained with masked language modeling becomes BERT; trained with causal language modeling it becomes GPT. Swap the data mixture from web text to code and you get Codex. The pre-training objective, the data, the optimizer, and the stability tricks together determine whether a billion-dollar training run produces a capable model or an expensive pile of random weights. This chapter covers the fundamental choices that every pre-training run must make — and the consequences of getting them wrong.</p>
+    </header>
+
+    <!-- ================================================================== -->
+    <!-- SECTION 1: PRE-TRAINING OBJECTIVES                                 -->
+    <!-- ================================================================== -->
+    <section class="chapter-section" id="pre-training-objectives">
+      <h2>Pre-training Objectives</h2>
+
+      <p>The pre-training objective defines what the model must predict, which determines what it learns. Different objectives produce models with fundamentally different capabilities — some excel at understanding, others at generation. The choice of objective is arguably the single most consequential decision in model design.</p>
+
+      <h3>Masked Language Modeling (MLM)</h3>
+
+      <p>BERT's <strong>masked language modeling</strong> randomly selects 15% of input tokens for prediction. Of those selected tokens, 80% are replaced with [MASK], 10% are replaced with a random token, and 10% are left unchanged. The model must predict the original token at each selected position. The 80/10/10 split prevents the model from learning that [MASK] is the only signal for prediction and ensures it maintains useful representations even for unmasked tokens.</p>
+
+      <div class="math-block">
+        $$\mathcal{L}_\text{MLM} = -\mathbb{E}\left[\sum_{i \in \mathcal{M}} \log P(x_i \mid \mathbf{x}_{\setminus \mathcal{M}})\right]$$
+      </div>
+
+      <p>where $\mathcal{M}$ is the set of masked positions and $\mathbf{x}_{\setminus \mathcal{M}}$ denotes the input with masked positions replaced. MLM is <strong>bidirectional</strong> — the model sees context on both sides of the masked position. This produces excellent representations for understanding tasks (classification, NER, question answering) but cannot generate text autoregressively.</p>
+
+      <h3>Causal Language Modeling (CLM)</h3>
+
+      <p><strong>Causal language modeling</strong> predicts the next token at every position, conditioned only on preceding tokens. The loss is the cross-entropy summed over all positions:</p>
+
+      <div class="math-block">
+        $$\mathcal{L}_\text{CLM} = -\sum_{t=1}^{T} \log P(x_t \mid x_1, \ldots, x_{t-1})$$
+      </div>
+
+      <p>Every token provides a training signal — CLM gets loss from 100% of tokens versus MLM's 15%. This makes CLM roughly 6-7× more sample-efficient in terms of gradient information per token processed. CLM also naturally supports generation: at inference time, the model simply continues predicting the next token. GPT, GPT-2, GPT-3, LLaMA, and nearly all modern large language models use CLM.</p>
+
+      <p>A complete CLM forward pass in PyTorch shows how the shift-by-one alignment between inputs and targets implements next-token prediction.</p>
+
+      <pre><code class="language-python">
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+def clm_forward(model, input_ids):
+    """Causal language modeling: predict next token at every position.
+
+    input_ids: (batch, seq_len) — token indices
+    """
+    # Model produces logits for every position
+    logits = model(input_ids)                          # (batch, seq_len, vocab_size)
+
+    # Shift: predict position i+1 from position i
+    # Input:  [The, cat, sat, on, the]
+    # Target: [cat, sat, on, the, mat]
+    shift_logits = logits[:, :-1, :]                   # (batch, seq_len-1, vocab_size)
+    shift_labels = input_ids[:, 1:]                    # (batch, seq_len-1)
+
+    # Cross-entropy loss averaged over all positions
+    loss = F.cross_entropy(
+        shift_logits.reshape(-1, shift_logits.size(-1)),
+        shift_labels.reshape(-1),
+        ignore_index=-100                              # skip padding tokens
+    )
+    return loss
+
+# One training step
+loss = clm_forward(model, batch["input_ids"].cuda())
+loss.backward()
+</code></pre>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 300" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="ch06-arr" viewBox="0 0 10 10" refX="9" refY="5"
+              markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+              <path d="M1 1L9 5L1 9" fill="none" stroke="context-stroke"
+                stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </marker>
+          </defs>
+
+          <!-- MLM (top) -->
+          <text x="60" y="30" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="600" fill="#534AB7">MLM (BERT-style)</text>
+          <text x="60" y="48" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">Bidirectional: sees all context</text>
+
+          <!-- Input tokens -->
+          <rect x="60"  y="60" width="80" height="32" rx="5" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="100" y="81" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#0F6E56">The</text>
+          <rect x="148" y="60" width="80" height="32" rx="5" fill="#534AB7" stroke="#534AB7"/>
+          <text x="188" y="81" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#FFFFFF">[MASK]</text>
+          <rect x="236" y="60" width="80" height="32" rx="5" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="276" y="81" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#0F6E56">sat</text>
+          <rect x="324" y="60" width="80" height="32" rx="5" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="364" y="81" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#0F6E56">on</text>
+          <rect x="412" y="60" width="80" height="32" rx="5" fill="#534AB7" stroke="#534AB7"/>
+          <text x="452" y="81" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#FFFFFF">[MASK]</text>
+          <rect x="500" y="60" width="80" height="32" rx="5" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="540" y="81" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#0F6E56">mat</text>
+
+          <!-- Predict arrows -->
+          <line x1="188" y1="92" x2="188" y2="112" stroke="#534AB7" stroke-width="1.5" marker-end="url(#ch06-arr)"/>
+          <text x="188" y="128" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#534AB7">→ "cat"</text>
+          <line x1="452" y1="92" x2="452" y2="112" stroke="#534AB7" stroke-width="1.5" marker-end="url(#ch06-arr)"/>
+          <text x="452" y="128" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#534AB7">→ "the"</text>
+
+          <!-- CLM (bottom) -->
+          <text x="60" y="170" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="600" fill="#993C1D">CLM (GPT-style)</text>
+          <text x="60" y="188" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">Autoregressive: sees only past</text>
+
+          <!-- Input tokens -->
+          <rect x="60"  y="200" width="80" height="32" rx="5" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="100" y="221" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#0F6E56">The</text>
+          <rect x="148" y="200" width="80" height="32" rx="5" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="188" y="221" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#0F6E56">cat</text>
+          <rect x="236" y="200" width="80" height="32" rx="5" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="276" y="221" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#0F6E56">sat</text>
+          <rect x="324" y="200" width="80" height="32" rx="5" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="364" y="221" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#0F6E56">on</text>
+          <rect x="412" y="200" width="80" height="32" rx="5" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="452" y="221" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#0F6E56">the</text>
+          <rect x="500" y="200" width="80" height="32" rx="5" fill="#FAECE7" stroke="#F0997B" stroke-width="1.5"/>
+          <text x="540" y="221" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#993C1D">?</text>
+
+          <!-- Predict arrows for each position -->
+          <line x1="100" y1="232" x2="100" y2="252" stroke="#993C1D" stroke-width="1" marker-end="url(#ch06-arr)"/>
+          <text x="100" y="268" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#993C1D">→ cat</text>
+          <line x1="188" y1="232" x2="188" y2="252" stroke="#993C1D" stroke-width="1" marker-end="url(#ch06-arr)"/>
+          <text x="188" y="268" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#993C1D">→ sat</text>
+          <line x1="276" y1="232" x2="276" y2="252" stroke="#993C1D" stroke-width="1" marker-end="url(#ch06-arr)"/>
+          <text x="276" y="268" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#993C1D">→ on</text>
+          <line x1="364" y1="232" x2="364" y2="252" stroke="#993C1D" stroke-width="1" marker-end="url(#ch06-arr)"/>
+          <text x="364" y="268" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#993C1D">→ the</text>
+          <line x1="452" y1="232" x2="452" y2="252" stroke="#993C1D" stroke-width="1" marker-end="url(#ch06-arr)"/>
+          <text x="452" y="268" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#993C1D">→ mat</text>
+          <line x1="540" y1="232" x2="540" y2="252" stroke="#993C1D" stroke-width="1" marker-end="url(#ch06-arr)"/>
+          <text x="540" y="268" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#993C1D">→ .</text>
+
+          <!-- Key difference annotation -->
+          <text x="650" y="80" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#534AB7">15% of tokens</text>
+          <text x="650" y="95" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#534AB7">provide loss signal</text>
+          <text x="650" y="220" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#993C1D">100% of tokens</text>
+          <text x="650" y="235" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#993C1D">provide loss signal</text>
+        </svg>
+        <figcaption>Figure 6.1 — Masked Language Modeling vs Causal Language Modeling. MLM (top) masks 15% of tokens and predicts them using bidirectional context — only masked positions contribute to the loss. CLM (bottom) predicts every next token using only left context — all positions contribute to the loss, making it 6-7× more sample-efficient per token processed.</figcaption>
+      </figure>
+
+      <h3>Span Corruption</h3>
+
+      <p>T5 uses <strong>span corruption</strong>: instead of masking individual tokens, it masks contiguous spans of tokens and replaces each span with a single sentinel token. The model must output the original tokens for each span, prefixed by the sentinel. This is more parameter-efficient than per-token masking because the model learns to reconstruct coherent spans rather than isolated tokens. Span lengths are sampled from a geometric distribution with mean 3. The corrupted input is shorter than the original (each span becomes one token), and the target contains only the masked spans, making the encoder-decoder setup efficient.</p>
+
+      <h3>Prefix LM</h3>
+
+      <p><strong>Prefix LM</strong> models (UniLM, some T5 variants) use bidirectional attention for a prefix portion of the input and causal attention for the rest. The prefix is the "context" — the model can look at all prefix tokens bidirectionally — while the "continuation" part is generated autoregressively. This hybrid approach combines the representational power of bidirectional encoding with the generation capability of causal modeling. The prefix length can be fixed or varied per example.</p>
+
+      <p>Prefix LMs are particularly natural for conditional generation tasks: the input (question, prompt, source language) becomes the prefix with full bidirectional attention, and the output (answer, continuation, translation) is generated causally. This avoids the waste of masking only 15% of tokens (MLM) while preserving some bidirectional context.</p>
+
+      <h3>Denoising Objectives</h3>
+
+      <p><strong>BART</strong> (Lewis et al., 2019) takes a more aggressive approach to corruption, applying multiple denoising transformations to the input:</p>
+
+      <ul>
+        <li><strong>Token masking:</strong> random tokens replaced with [MASK], like MLM.</li>
+        <li><strong>Token deletion:</strong> random tokens deleted entirely — the model must determine where tokens are missing.</li>
+        <li><strong>Text infilling:</strong> spans of text replaced with a single [MASK] token — the model must determine how many tokens are missing and generate them all.</li>
+        <li><strong>Sentence permutation:</strong> sentences within a document are shuffled — the model must reconstruct the correct order.</li>
+        <li><strong>Document rotation:</strong> the document is rotated so a random token becomes the start — the model must find the true beginning.</li>
+      </ul>
+
+      <p>The diversity of corruption types forces BART to develop robust representations that capture word-level, span-level, sentence-level, and document-level structure. BART found that text infilling was the single most effective corruption type, and it became the primary objective in practice.</p>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 280" xmlns="http://www.w3.org/2000/svg">
+          <!-- Comparison of corruption strategies -->
+          <text x="400" y="22" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="600" fill="#1A1A18">Pre-training Objective Comparison</text>
+
+          <!-- Header row -->
+          <text x="80" y="52" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#9C9A94">Objective</text>
+          <text x="260" y="52" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#9C9A94">Input → Target</text>
+          <text x="580" y="52" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#9C9A94">Context</text>
+          <text x="700" y="52" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#9C9A94">Models</text>
+          <line x1="40" y1="60" x2="760" y2="60" stroke="#E5E3DC" stroke-width="1"/>
+
+          <!-- MLM -->
+          <rect x="40" y="68" width="80" height="26" rx="4" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1"/>
+          <text x="80" y="86" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#534AB7">MLM</text>
+          <text x="260" y="86" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#5C5B56">The [MASK] sat → cat</text>
+          <text x="580" y="86" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#5C5B56">Bidirectional</text>
+          <text x="700" y="86" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">BERT</text>
+          <line x1="40" y1="100" x2="760" y2="100" stroke="#F1EFE8" stroke-width="0.5"/>
+
+          <!-- CLM -->
+          <rect x="40" y="108" width="80" height="26" rx="4" fill="#FAECE7" stroke="#F0997B" stroke-width="1"/>
+          <text x="80" y="126" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#993C1D">CLM</text>
+          <text x="260" y="126" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#5C5B56">The cat sat → on the mat</text>
+          <text x="580" y="126" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#5C5B56">Causal (left only)</text>
+          <text x="700" y="126" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">GPT, LLaMA</text>
+          <line x1="40" y1="140" x2="760" y2="140" stroke="#F1EFE8" stroke-width="0.5"/>
+
+          <!-- Span corruption -->
+          <rect x="40" y="148" width="80" height="26" rx="4" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="80" y="166" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#0F6E56">Span</text>
+          <text x="260" y="166" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#5C5B56">The &lt;X&gt; on → &lt;X&gt; cat sat</text>
+          <text x="580" y="166" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#5C5B56">Bidirectional (enc)</text>
+          <text x="700" y="166" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">T5</text>
+          <line x1="40" y1="180" x2="760" y2="180" stroke="#F1EFE8" stroke-width="0.5"/>
+
+          <!-- Prefix LM -->
+          <rect x="40" y="188" width="80" height="26" rx="4" fill="#FAEEDA" stroke="#EF9F27" stroke-width="1"/>
+          <text x="80" y="206" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#854F0B">Prefix LM</text>
+          <text x="260" y="206" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#5C5B56">[bidir] The cat | [causal] sat on</text>
+          <text x="580" y="206" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#5C5B56">Hybrid</text>
+          <text x="700" y="206" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">UniLM</text>
+          <line x1="40" y1="220" x2="760" y2="220" stroke="#F1EFE8" stroke-width="0.5"/>
+
+          <!-- Denoising -->
+          <rect x="40" y="228" width="80" height="26" rx="4" fill="#E6F1FB" stroke="#85B7EB" stroke-width="1"/>
+          <text x="80" y="246" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#185FA5">Denoise</text>
+          <text x="260" y="246" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#5C5B56">corrupt(doc) → original doc</text>
+          <text x="580" y="246" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#5C5B56">Bidirectional (enc)</text>
+          <text x="700" y="246" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">BART</text>
+
+          <!-- Winner annotation -->
+          <text x="400" y="274" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#993C1D">CLM dominates modern LLMs: simpler, more sample-efficient, and naturally supports generation</text>
+        </svg>
+        <figcaption>Figure 6.2 — Comparison of pre-training objectives. Each approach differs in what gets corrupted, what the model predicts, and what context it sees. CLM (causal) is the simplest and most sample-efficient, which is why it dominates modern LLM pre-training.</figcaption>
+      </figure>
+    </section>
+
+    <!-- ================================================================== -->
+    <!-- SECTION 2: DATA COLLECTION AND CURATION                            -->
+    <!-- ================================================================== -->
+    <section class="chapter-section" id="data-collection">
+      <h2>Data Collection and Curation</h2>
+
+      <p>Data is the fuel of pre-training. The quality, diversity, and scale of the pre-training corpus have a larger effect on model capabilities than most architectural choices. A model trained on clean, diverse data outperforms a larger model trained on noisy data.</p>
+
+      <h3>Web Crawl Data</h3>
+
+      <p>The foundation of most pre-training datasets is web crawl data. <strong>Common Crawl</strong> collects petabytes of raw HTML monthly, but raw web data is noisy — boilerplate, advertisements, duplicated content, toxic material. <strong>C4</strong> (Colossal Clean Crawled Corpus) was T5's cleaned version: 800GB of English text after filtering for quality. <strong>FineWeb</strong> (HuggingFace, 2024) refined the pipeline further with better deduplication and quality scoring. <strong>RedPajama</strong> and <strong>Dolma</strong> provide open-source alternatives to the proprietary datasets used by GPT-4 and Gemini.</p>
+
+      <h3>Quality Filtering</h3>
+
+      <p>Raw web text must be filtered aggressively. Typical steps include:</p>
+
+      <ul>
+        <li><strong>Language detection:</strong> fastText classifiers identify the language of each document, allowing language-specific filtering and controlled multilingual mixing.</li>
+        <li><strong>Perplexity filtering:</strong> a small language model scores each document. Very high perplexity (gibberish, machine-generated spam) and very low perplexity (repeated boilerplate) are removed. The filter keeps text that is surprising but coherent.</li>
+        <li><strong>Heuristic rules:</strong> removing documents that are too short, contain too many special characters, have excessive capitalization, or match known patterns of low-quality content (cookie notices, navigation menus).</li>
+      </ul>
+
+      <h3>Deduplication Methods</h3>
+
+      <p>Web data contains enormous amounts of duplication — the same article posted on hundreds of mirror sites, the same boilerplate text on every page of a website. Training on duplicated data wastes compute and can cause memorization of specific passages. Three main approaches handle this:</p>
+
+      <ul>
+        <li><strong>MinHash LSH:</strong> approximate document-level deduplication. Each document is converted to a set of shingles (n-grams), hashed to a compact signature, and compared via locality-sensitive hashing. Documents with high signature overlap are considered duplicates. This is fast enough to run on petabyte-scale corpora.</li>
+        <li><strong>Exact substring matching:</strong> finds and removes exact repeated substrings above a length threshold (e.g., 50 tokens). Catches boilerplate that appears within otherwise unique documents — copyright notices, cookie disclaimers, navigation text.</li>
+        <li><strong>Bloom filters:</strong> memory-efficient probabilistic data structures for checking if a chunk of text has been seen before, enabling streaming deduplication on data too large to fit in memory.</li>
+      </ul>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 190" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="ch06-arr3" viewBox="0 0 10 10" refX="9" refY="5"
+              markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+              <path d="M1 1L9 5L1 9" fill="none" stroke="context-stroke"
+                stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </marker>
+          </defs>
+
+          <text x="400" y="22" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="600" fill="#1A1A18">Data Curation Pipeline</text>
+
+          <!-- Raw crawl -->
+          <rect x="30" y="50" width="100" height="44" rx="6" fill="#FAECE7" stroke="#F0997B" stroke-width="1.5"/>
+          <text x="80" y="70" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#993C1D">Raw Crawl</text>
+          <text x="80" y="84" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">~100TB</text>
+
+          <line x1="130" y1="72" x2="155" y2="72" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch06-arr3)"/>
+
+          <!-- Language filter -->
+          <rect x="160" y="50" width="100" height="44" rx="6" fill="#FAEEDA" stroke="#EF9F27" stroke-width="1.5"/>
+          <text x="210" y="70" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#854F0B">Lang Filter</text>
+          <text x="210" y="84" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">-40%</text>
+
+          <line x1="260" y1="72" x2="285" y2="72" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch06-arr3)"/>
+
+          <!-- Quality filter -->
+          <rect x="290" y="50" width="100" height="44" rx="6" fill="#FAEEDA" stroke="#EF9F27" stroke-width="1.5"/>
+          <text x="340" y="70" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#854F0B">Quality Filter</text>
+          <text x="340" y="84" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">-50%</text>
+
+          <line x1="390" y1="72" x2="415" y2="72" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch06-arr3)"/>
+
+          <!-- Dedup -->
+          <rect x="420" y="50" width="100" height="44" rx="6" fill="#FAEEDA" stroke="#EF9F27" stroke-width="1.5"/>
+          <text x="470" y="70" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#854F0B">Dedup</text>
+          <text x="470" y="84" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">-30%</text>
+
+          <line x1="520" y1="72" x2="545" y2="72" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch06-arr3)"/>
+
+          <!-- Tokenize + pack -->
+          <rect x="550" y="50" width="100" height="44" rx="6" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <text x="600" y="70" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#534AB7">Tokenize</text>
+          <text x="600" y="84" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">+ pack</text>
+
+          <line x1="650" y1="72" x2="675" y2="72" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch06-arr3)"/>
+
+          <!-- Final dataset -->
+          <rect x="680" y="50" width="90" height="44" rx="6" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1.5"/>
+          <text x="725" y="70" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#0F6E56">Clean Data</text>
+          <text x="725" y="84" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">~2-15T tokens</text>
+
+          <!-- Annotation: data reduction -->
+          <text x="400" y="130" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#5C5B56">Typical pipeline retains only 5-15% of raw crawl data by volume</text>
+          <text x="400" y="150" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">Additional: contamination checks remove benchmark test data, safety filters remove toxic content</text>
+          <text x="400" y="175" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">Mix in books, code, academic papers, Wikipedia at controlled ratios</text>
+        </svg>
+        <figcaption>Figure 6.3 — Data curation pipeline from raw web crawl to clean training tokens. Each filtering stage removes a substantial fraction of the data. Language detection removes non-target languages (~40%), quality filters remove spam and low-quality content (~50% of remainder), and deduplication removes near-duplicate documents (~30%). The final clean dataset is typically 5-15% of the raw crawl volume.</figcaption>
+      </figure>
+
+      <h3>Data Mixture</h3>
+
+      <p>Pre-training data is a mixture of several sources, each contributing different capabilities:</p>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 220" xmlns="http://www.w3.org/2000/svg">
+          <!-- Stacked bar showing data mixture -->
+          <text x="400" y="22" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="600" fill="#1A1A18">Typical Pre-training Data Mixture (LLaMA-style)</text>
+
+          <!-- Bar -->
+          <rect x="80" y="50" width="420" height="50" rx="6" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1.5"/>
+          <text x="290" y="80" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#0F6E56">Web (67%)</text>
+
+          <rect x="500" y="50" width="90" height="50" rx="6" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <text x="545" y="80" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#534AB7">Code (15%)</text>
+
+          <rect x="590" y="50" width="60" height="50" rx="6" fill="#FAEEDA" stroke="#EF9F27" stroke-width="1.5"/>
+          <text x="620" y="80" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#854F0B">Books (8%)</text>
+
+          <rect x="650" y="50" width="50" height="50" rx="6" fill="#E6F1FB" stroke="#85B7EB" stroke-width="1.5"/>
+          <text x="675" y="80" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#185FA5">Acad. (5%)</text>
+
+          <rect x="700" y="50" width="40" height="50" rx="6" fill="#FAECE7" stroke="#F0997B" stroke-width="1.5"/>
+          <text x="720" y="80" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#993C1D">Wiki (5%)</text>
+
+          <!-- What each contributes -->
+          <text x="290" y="128" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#5C5B56">Conversational ability,</text>
+          <text x="290" y="144" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#5C5B56">world knowledge, diversity</text>
+
+          <text x="545" y="128" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#5C5B56">Reasoning,</text>
+          <text x="545" y="144" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#5C5B56">logic, structure</text>
+
+          <text x="620" y="128" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#5C5B56">Long-form</text>
+          <text x="620" y="142" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#5C5B56">coherence</text>
+
+          <text x="675" y="128" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#5C5B56">Formal</text>
+          <text x="675" y="142" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#5C5B56">knowledge</text>
+
+          <text x="720" y="128" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#5C5B56">Facts,</text>
+          <text x="720" y="142" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#5C5B56">structure</text>
+
+          <!-- Total -->
+          <text x="400" y="180" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#9C9A94">Total: ~2 trillion tokens (LLaMA-2) to ~15 trillion tokens (LLaMA-3)</text>
+          <text x="400" y="200" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">Ratios are approximate — exact mixtures are proprietary</text>
+        </svg>
+        <figcaption>Figure 6.4 — Approximate data mixture for a LLaMA-style pre-training run. Web text dominates by volume but is lowest quality per byte. Code contributes disproportionately to reasoning ability. Books and academic papers provide long-form coherence and formal knowledge. Wikipedia provides structured factual content.</figcaption>
+      </figure>
+
+      <h3>Data Contamination</h3>
+
+      <p>If benchmark test sets leak into pre-training data, evaluation results become meaningless — the model has memorized the answers. Preventing <strong>data contamination</strong> requires checking all pre-training data against all evaluation benchmarks, removing any matches. This is harder than it sounds: paraphrased versions of test items, partial overlaps, and chain-of-thought solutions to test problems all count as contamination. Major labs run n-gram overlap checks between pre-training data and benchmark test sets, removing any document with significant overlap.</p>
+
+      <h3>Tokenization and Packing</h3>
+
+      <p>After filtering and deduplication, documents are tokenized and packed into fixed-length sequences for efficient batching. Naively, each document would be padded to the maximum length, wasting compute on padding tokens. <strong>Packing</strong> concatenates multiple documents into a single sequence (separated by end-of-document tokens), filling the sequence length completely. The attention mask prevents cross-document attention. This eliminates padding waste entirely, which can save 10-30% of training compute.</p>
+    </section>
+
+    <!-- ================================================================== -->
+    <!-- SECTION 3: OPTIMIZATION FOR PRE-TRAINING                           -->
+    <!-- ================================================================== -->
+    <section class="chapter-section" id="optimization">
+      <h2>Optimization for Pre-training</h2>
+
+      <p>The optimizer and its hyperparameters determine how efficiently the model learns from data. Small changes — a different learning rate schedule, a different batch size ramp — can make the difference between a successful training run and a divergent one.</p>
+
+      <h3>AdamW</h3>
+
+      <p><strong>AdamW</strong> (Loshchilov and Hutter, 2019) is the universal optimizer for Transformer pre-training. Standard Adam applies weight decay to the gradient-adjusted updates, which is mathematically incorrect — it couples regularization with the adaptive learning rate, reducing the effective weight decay for parameters with large gradients. AdamW fixes this by applying weight decay directly to the weights, decoupled from the gradient update:</p>
+
+      <div class="math-block">
+        $$\begin{aligned}
+        m_t &= \beta_1 m_{t-1} + (1 - \beta_1) g_t \\
+        v_t &= \beta_2 v_{t-1} + (1 - \beta_2) g_t^2 \\
+        \theta_t &= \theta_{t-1} - \eta \left(\frac{\hat{m}_t}{\sqrt{\hat{v}_t} + \epsilon} + \lambda \theta_{t-1}\right)
+        \end{aligned}$$
+      </div>
+
+      <p>where $\hat{m}_t$ and $\hat{v}_t$ are bias-corrected moment estimates, $\eta$ is the learning rate, and $\lambda$ is the weight decay coefficient. Typical values: $\beta_1 = 0.9$, $\beta_2 = 0.95$, $\epsilon = 10^{-8}$, $\lambda = 0.1$.</p>
+
+      <h3>Learning Rate Schedules</h3>
+
+      <p>The learning rate schedule controls the pace of learning throughout training. Three variants are common in modern practice:</p>
+
+      <p><strong>Cosine decay with warmup</strong> is the most popular choice (LLaMA, PaLM, Gemini). The learning rate increases linearly during warmup (typically 1,000-2,000 steps), peaks at $\eta_\text{max}$ (e.g., $3 \times 10^{-4}$), then follows a cosine curve down to $\eta_\text{min}$ (typically $\eta_\text{max}/10$). The warmup phase prevents early instability: at initialization, the model's predictions are nearly random and gradients are noisy, so a large learning rate would push weights in unhelpful directions.</p>
+
+      <p><strong>Constant then decay</strong> holds the learning rate at $\eta_\text{max}$ for most of training, then decays (linearly or cosine) over the final 10-20% of steps. This simpler schedule performs comparably to full cosine decay in many settings and has a practical advantage: you can decide to extend training without needing to recompute the schedule. Chinchilla and some internal Google models have used this approach.</p>
+
+      <p><strong>Warmup-stable-decay (WSD)</strong> combines elements: warmup, then constant at peak, then rapid decay. This three-phase approach is gaining popularity because the constant phase is easy to reason about and the final decay phase can be tuned independently.</p>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 250" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="ch06-arr2" viewBox="0 0 10 10" refX="9" refY="5"
+              markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+              <path d="M1 1L9 5L1 9" fill="none" stroke="context-stroke"
+                stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </marker>
+          </defs>
+
+          <!-- Axes -->
+          <line x1="80" y1="190" x2="740" y2="190" stroke="#C8C6BE" stroke-width="1"/>
+          <line x1="80" y1="190" x2="80" y2="30" stroke="#C8C6BE" stroke-width="1"/>
+
+          <text x="410" y="240" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#9C9A94">Training Steps</text>
+          <text x="40" y="115" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#9C9A94" transform="rotate(-90,40,115)">Learning Rate</text>
+
+          <!-- Warmup region -->
+          <rect x="80" y="30" width="60" height="160" rx="0" fill="#EEEDFE" opacity="0.15"/>
+          <text x="110" y="48" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#534AB7">warmup</text>
+
+          <!-- Cosine curve (purple) -->
+          <polyline points="80,190 90,155 100,120 110,85 120,65 130,52 140,48 160,51 180,56 200,62 220,70 240,78 260,87 280,96 300,105 320,113 340,121 360,128 380,135 400,141 420,147 440,152 460,156 480,160 500,163 520,165 540,167 560,169 580,170 600,171 620,172 640,172 660,173 680,173 700,174 720,174 740,175"
+            fill="none" stroke="#534AB7" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+
+          <!-- Constant then decay (coral) -->
+          <polyline points="80,190 90,155 100,120 110,85 120,65 130,52 140,48 160,48 180,48 200,48 220,48 240,48 260,48 280,48 300,48 320,48 340,48 360,48 380,48 400,48 420,48 440,48 460,48 480,48 500,48 520,48 540,48 560,48 580,48 600,60 620,80 640,110 660,140 680,160 700,170 720,174 740,175"
+            fill="none" stroke="#993C1D" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="6 3"/>
+
+          <!-- Peak annotation -->
+          <text x="175" y="40" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#5C5B56">η_max</text>
+
+          <!-- End annotation -->
+          <text x="748" y="170" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">η_min</text>
+
+          <!-- Legend -->
+          <line x1="460" y1="28" x2="490" y2="28" stroke="#534AB7" stroke-width="2.5"/>
+          <text x="496" y="32" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#534AB7">Cosine decay</text>
+          <line x1="600" y1="28" x2="630" y2="28" stroke="#993C1D" stroke-width="2" stroke-dasharray="6 3"/>
+          <text x="636" y="32" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#993C1D">Constant then decay</text>
+
+          <!-- Tick labels -->
+          <text x="80" y="208" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">0</text>
+          <text x="140" y="208" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">2K</text>
+          <text x="740" y="208" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">T</text>
+        </svg>
+        <figcaption>Figure 6.5 — Two common learning rate schedules. Cosine decay (solid purple) is the standard for most LLMs: warmup, then smooth decay. Constant then decay (dashed coral) holds the peak rate longer and decays sharply at the end — simpler to manage and equally effective in many settings. Both share the linear warmup phase.</figcaption>
+      </figure>
+
+      <p>A pure PyTorch implementation of the cosine warmup schedule shows the two-phase logic directly.</p>
+
+      <pre><code class="language-python">
+import math
+
+class CosineWarmupScheduler:
+    """Linear warmup followed by cosine decay to min_lr."""
+    def __init__(self, optimizer, warmup_steps, total_steps,
+                 max_lr=3e-4, min_lr=3e-5):
+        self.optimizer = optimizer
+        self.warmup_steps = warmup_steps
+        self.total_steps = total_steps
+        self.max_lr = max_lr
+        self.min_lr = min_lr
+        self.step_count = 0
+
+    def step(self):
+        self.step_count += 1
+        if self.step_count <= self.warmup_steps:
+            # Linear warmup: 0 -> max_lr
+            lr = self.max_lr * (self.step_count / self.warmup_steps)
+        else:
+            # Cosine decay: max_lr -> min_lr
+            progress = (self.step_count - self.warmup_steps) / (self.total_steps - self.warmup_steps)
+            lr = self.min_lr + 0.5 * (self.max_lr - self.min_lr) * (1 + math.cos(math.pi * progress))
+
+        for param_group in self.optimizer.param_groups:
+            param_group["lr"] = lr
+        return lr
+
+# Usage: 2000 warmup steps, 100K total steps
+scheduler = CosineWarmupScheduler(optimizer, warmup_steps=2000, total_steps=100_000)
+for step, batch in enumerate(dataloader):
+    loss = clm_forward(model, batch["input_ids"])
+    loss.backward()
+    optimizer.step()
+    optimizer.zero_grad()
+    lr = scheduler.step()
+</code></pre>
+
+      <h3>Gradient Clipping</h3>
+
+      <p><strong>Global norm clipping</strong> at threshold 1.0 is standard: if the total gradient norm $\|\mathbf{g}\|$ exceeds 1.0, all gradients are scaled down by $1.0/\|\mathbf{g}\|$. This prevents catastrophic weight updates from individual batches containing unusual data (e.g., very long documents or pathological token sequences). Without gradient clipping, a single bad batch can spike the loss and destabilize training for thousands of subsequent steps.</p>
+
+      <h3>Mixed Precision Training</h3>
+
+      <p>Modern pre-training uses <strong>mixed precision</strong>: forward pass and backward pass computations in half-precision (FP16 or BF16), master weights in FP32. This halves memory usage for activations and doubles throughput on GPUs with tensor cores. <strong>BF16</strong> (Brain Float 16) is preferred over FP16 because it has the same exponent range as FP32, avoiding the need for loss scaling — underflow and overflow are rare with BF16.</p>
+
+      <pre><code class="language-python">
+# Mixed precision training loop (PyTorch 2.x)
+import torch
+
+model = model.cuda()
+optimizer = torch.optim.AdamW(
+    model.parameters(), lr=3e-4, weight_decay=0.1,
+    betas=(0.9, 0.95), eps=1e-8
+)
+
+for batch in dataloader:
+    optimizer.zero_grad()
+
+    # Forward pass in BF16 (no GradScaler needed with BF16)
+    with torch.amp.autocast("cuda", dtype=torch.bfloat16):
+        logits = model(batch["input_ids"])
+        loss = torch.nn.functional.cross_entropy(
+            logits.view(-1, logits.size(-1)),
+            batch["labels"].view(-1)
+        )
+
+    # Backward pass (gradients in BF16, accumulated in FP32)
+    loss.backward()
+
+    # Gradient clipping
+    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+
+    optimizer.step()  # Master weights updated in FP32
+</code></pre>
+
+      <h3>Weight Decay and Dropout</h3>
+
+      <p>Weight decay of $\lambda = 0.1$ is applied to all weight matrices but <em>not</em> to biases, embedding tables, or normalization parameters (which have their own scale dynamics). Modern large models (7B+ parameters) typically use <strong>no dropout</strong> during pre-training — at scale, the dataset is large enough relative to the model that overfitting is not the binding constraint. Dropout was important for smaller models (BERT-base, GPT-2) where the model-to-data ratio was less favorable.</p>
+    </section>
+
+    <!-- ================================================================== -->
+    <!-- SECTION 4: TRAINING STABILITY                                      -->
+    <!-- ================================================================== -->
+    <section class="chapter-section" id="training-stability">
+      <h2>Training Stability</h2>
+
+      <p>A multi-week pre-training run on thousands of GPUs is an exercise in engineering discipline. Hardware fails, data has surprises, and numerics have edge cases. Stability techniques and recovery strategies determine whether a training run completes successfully.</p>
+
+      <h3>Loss Spikes</h3>
+
+      <p>During pre-training, the loss usually decreases smoothly — but occasionally spikes upward dramatically before recovering. These <strong>loss spikes</strong> can be caused by:</p>
+
+      <ul>
+        <li><strong>Bad data batches:</strong> sequences with unusual token distributions or corrupt data that produce extreme gradients.</li>
+        <li><strong>Learning rate too high:</strong> the model steps past a good minimum into a high-loss region.</li>
+        <li><strong>Numerical instability:</strong> FP16 underflow in gradient computations, often in the attention softmax or layer norm.</li>
+      </ul>
+
+      <p>Recovery strategies include skipping the offending batch (if detected in time), rolling back to a recent checkpoint and reducing the learning rate, or simply continuing training and waiting for the loss to recover naturally (which it usually does if the spike was data-driven).</p>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 220" xmlns="http://www.w3.org/2000/svg">
+          <!-- Axes -->
+          <line x1="80" y1="180" x2="740" y2="180" stroke="#C8C6BE" stroke-width="1"/>
+          <line x1="80" y1="180" x2="80" y2="30" stroke="#C8C6BE" stroke-width="1"/>
+          <text x="410" y="210" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#9C9A94">Training Steps</text>
+          <text x="60" y="34" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#9C9A94">Loss</text>
+
+          <!-- Normal loss curve with spikes -->
+          <polyline points="80,50 120,65 160,78 200,88 240,96 280,103 300,108 320,105 330,60 340,70 350,100 360,108 380,112 400,115 420,118 440,120 460,122 480,124 500,126 520,127 540,128 560,129 570,45 580,80 590,120 600,130 620,131 640,132 660,133 680,134 700,135 720,136 740,137"
+            fill="none" stroke="#534AB7" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+
+          <!-- Spike annotations -->
+          <circle cx="330" cy="60" r="4" fill="#993C1D"/>
+          <line x1="330" y1="46" x2="330" y2="38" stroke="#993C1D" stroke-width="1" marker-end="url(#ch06-arr2)"/>
+          <text x="330" y="32" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#993C1D">loss spike</text>
+
+          <circle cx="570" cy="45" r="4" fill="#993C1D"/>
+          <line x1="570" y1="36" x2="570" y2="28" stroke="#993C1D" stroke-width="1"/>
+          <text x="570" y="24" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#993C1D">loss spike</text>
+
+          <!-- Recovery annotation -->
+          <text x="425" y="70" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">auto-recovers</text>
+          <line x1="380" y1="73" x2="360" y2="103" stroke="#9C9A94" stroke-width="0.5" stroke-dasharray="3 2"/>
+        </svg>
+        <figcaption>Figure 6.6 — Loss spikes during pre-training. The training loss (purple curve) generally decreases smoothly but occasionally spikes upward (coral dots). Most spikes are caused by data quality issues and the training auto-recovers within a few hundred steps. Severe spikes may require rolling back to a checkpoint.</figcaption>
+      </figure>
+
+      <h3>Gradient Accumulation</h3>
+
+      <p><strong>Gradient accumulation</strong> simulates large batch sizes by accumulating gradients over multiple forward-backward passes before performing a weight update. If the physical batch size is 2M tokens per GPU and you accumulate over 4 steps, the effective batch size is 8M tokens. This is essential when the desired batch size exceeds GPU memory. LLaMA-2 used an effective batch size of 4M tokens; some runs use 8-16M.</p>
+
+      <p>The implementation divides the loss by the accumulation count and only calls `optimizer.step()` every $k$ micro-batches.</p>
+
+      <pre><code class="language-python">
+def train_with_gradient_accumulation(model, dataloader, optimizer, scheduler,
+                                     accum_steps=8, max_norm=1.0):
+    """Simulate large batches by accumulating gradients over multiple micro-batches.
+
+    Effective batch size = micro_batch_size × accum_steps × num_gpus
+    """
+    optimizer.zero_grad()
+
+    for step, batch in enumerate(dataloader):
+        # Forward + backward on micro-batch (scale loss by accum_steps)
+        with torch.amp.autocast("cuda", dtype=torch.bfloat16):
+            logits = model(batch["input_ids"].cuda())
+            loss = F.cross_entropy(
+                logits[:, :-1].reshape(-1, logits.size(-1)),
+                batch["input_ids"][:, 1:].reshape(-1).cuda()
+            )
+            loss = loss / accum_steps  # normalize by accumulation steps
+
+        loss.backward()  # gradients accumulate in .grad buffers
+
+        if (step + 1) % accum_steps == 0:
+            # Only update weights after accumulating enough gradients
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
+            optimizer.step()
+            scheduler.step()
+            optimizer.zero_grad()
+            print(f"Step {(step + 1) // accum_steps}: loss={loss.item() * accum_steps:.4f}")
+
+# With micro_batch=4 and accum_steps=8: effective batch = 32 sequences
+</code></pre>
+
+      <h3>Batch Size Scaling and Warmup</h3>
+
+      <p>The <strong>linear scaling rule</strong> (Goyal et al., 2017) states that when you multiply the batch size by $k$, you should multiply the learning rate by $k$ as well. This maintains the signal-to-noise ratio of the gradient estimate.</p>
+
+      <p>For very large batch sizes, even the linear scaling rule is insufficient — you also need <strong>batch size warmup</strong>. The strategy is to start with a small batch size (e.g., 256K tokens) and gradually increase it over the first few thousand steps to the target size (e.g., 4M tokens). This works because early in training, the gradient direction changes rapidly from step to step, so a small batch with more frequent updates helps the model navigate the rapidly changing loss landscape. Once the model enters a smoother region of the loss surface, larger batches become efficient. LLaMA-2 and GPT-3 both used batch size warmup, ramping from a small initial batch to the full training batch over 1,000-4,000 steps.</p>
+
+      <h3>Checkpoint Strategy</h3>
+
+      <p>Checkpoints save the full training state: model weights, optimizer state (momentum buffers), learning rate scheduler state, data loader position, and random number generator states. A <strong>rolling checkpoint</strong> saves the most recent $k$ checkpoints and deletes older ones, limiting disk usage. <strong>Permanent checkpoints</strong> saved at regular intervals (every 1,000-5,000 steps) provide recovery points if a late-discovered issue requires re-training from an earlier state. For a 7B model, each checkpoint is about 28GB (14GB model + 14GB optimizer state), so a training run with 100 permanent checkpoints needs about 2.8TB of checkpoint storage.</p>
+
+      <h3>Resuming from Failure</h3>
+
+      <p>Hardware failures during multi-day training runs are inevitable — GPUs crash, networking drops, storage fills up. Clean resumption requires reproducing the exact data order and random state from the checkpoint. <strong>Deterministic data ordering</strong> typically uses a seeded shuffle computed upfront and stored. <strong>RNG state saving</strong> captures the random number generators for dropout, data augmentation, and any other stochastic components. With these, resuming from a checkpoint produces bit-identical training to a run that never interrupted — essential for reproducibility and debugging.</p>
+
+      <div class="callout callout-warning">
+        <div class="callout-title">Common Pitfall</div>
+        <p>Forgetting to save and restore the data loader's position is one of the most common bugs in training infrastructure. Without it, the model re-trains on early data after every resume, creating a data distribution skew where early training data is seen 2-3× more often than late data. This silently degrades model quality and is difficult to detect because the loss curve looks normal.</p>
+      </div>
+    </section>
+
+  </article>
+
+  <footer class="chapter-footer">
+    <div class="footer-nav">
+      <a href="ch05.html">&larr; Previous: Tokenization and Embeddings</a>
+      <a href="ch07.html">Next: Encoder-Only Models — BERT and Beyond &rarr;</a>
+    </div>
+  </footer>
+
+</body>
+</html>

@@ -1,0 +1,825 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Chapter 11: Instruction Tuning, RLHF, and Alignment — Transformer Research Book</title>
+  <link rel="stylesheet" href="../assets/style.css">
+  <link rel="stylesheet" href="../assets/math.css">
+  <link rel="stylesheet" href="../assets/prism.css">
+  <!-- KaTeX for math rendering -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"
+    onload="renderMathInElement(document.body, {
+      delimiters: [
+        {left: '$$', right: '$$', display: true},
+        {left: '$', right: '$', display: false}
+      ]
+    })">
+  </script>
+  <!-- Prism for code blocks -->
+  <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/prism.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-python.min.js"></script>
+</head>
+<body>
+  <nav class="chapter-nav">
+    <a href="../index.html" class="nav-home">← Table of Contents</a>
+    <span class="nav-chapter">Chapter 11</span>
+    <div style="display:flex; align-items:center; gap:1rem;">
+      <button class="theme-toggle" onclick="toggleTheme()" aria-label="Toggle dark mode">
+        <span class="icon-moon">&#9789;</span><span class="icon-sun">&#9788;</span>
+      </button>
+      <a href="ch12.html" class="nav-next">Next Chapter →</a>
+    </div>
+  </nav>
+  <script>
+    function toggleTheme() {
+      document.documentElement.classList.toggle('dark');
+      localStorage.setItem('theme', document.documentElement.classList.contains('dark') ? 'dark' : 'light');
+    }
+    if (localStorage.getItem('theme') === 'dark') document.documentElement.classList.add('dark');
+  </script>
+
+  <article class="chapter">
+
+    <header class="chapter-header">
+      <div class="chapter-number">Chapter 11</div>
+      <h1 class="chapter-title">Instruction Tuning, RLHF, and Alignment</h1>
+      <p class="chapter-lead">Ask GPT-3 "What is the capital of France?" and it might respond "What is the capital of Germany? What is the capital of Italy?" — it was trained to *continue* text, not to *answer* questions. InstructGPT, a 1.3-billion-parameter model fine-tuned with human feedback, was preferred by users over the raw 175-billion-parameter GPT-3. A model 100× smaller won — not because it knew more, but because it learned what humans actually wanted. This chapter explains the complete post-training pipeline that turns a raw next-token predictor into a helpful, harmless assistant: supervised fine-tuning on instruction data, reinforcement learning from human feedback, direct preference optimization, constitutional AI, and the fundamental trade-offs between safety and capability.</p>
+    </header>
+
+    <!-- ================================================================== -->
+    <!-- SECTION 1: SUPERVISED FINE-TUNING                                   -->
+    <!-- ================================================================== -->
+    <section class="chapter-section" id="supervised-fine-tuning">
+      <h2>Supervised Fine-Tuning (SFT)</h2>
+
+      <p>A pre-trained language model has learned the statistical structure of internet text — it can predict the next token with impressive accuracy. But the distribution of internet text is not the distribution of helpful responses. Web text contains arguments, spam, fiction, code, forum posts, and Wikipedia articles in roughly the proportions they appear online. Supervised fine-tuning reshapes this distribution: instead of predicting what comes next in any text, the model learns to produce the kind of responses a helpful assistant would give.</p>
+
+      <h3>Instruction-Following Data Collection</h3>
+
+      <p>The first ingredient is a dataset of (instruction, response) pairs. Several approaches have been used to create these datasets, each with different quality-cost tradeoffs:</p>
+
+      <p><strong>FLAN</strong> (Wei et al., 2022) aggregated over 1,800 NLP tasks into a unified instruction format. Each task was converted to natural language: "Translate the following sentence to French: ..." or "Is the following review positive or negative? ..." This was the first large-scale instruction mixture, and Flan-T5 (Chapter 9) demonstrated that it works for encoder-decoder models as well as decoder-only ones.</p>
+
+      <p><strong>Self-Instruct</strong> (Wang et al., 2023) used GPT-3 itself to generate instruction data. Starting from a small seed set of 175 human-written tasks, the model was prompted to generate new instructions, inputs, and outputs iteratively. This bootstrapping approach produced 52K diverse examples at near-zero annotation cost — the first instance of a theme that recurs throughout this chapter: using models to supervise models.</p>
+
+      <p><strong>Alpaca</strong> (Stanford, 2023) applied Self-Instruct to GPT-3.5-Turbo, generating 52K instruction examples for about $600 in API costs. These examples were used to fine-tune LLaMA-7B, creating a chatbot-like model that demonstrated surprisingly strong instruction-following for its size.</p>
+
+      <p><strong>ShareGPT</strong> collected real multi-turn conversations between users and ChatGPT, shared publicly by users. The quality is uneven — some conversations are insightful, others are trivial — but the diversity of real-world use cases is unmatched by synthetic data.</p>
+
+      <table>
+        <thead>
+          <tr><th>Dataset</th><th>Size</th><th>Source</th><th>Quality</th><th>Cost</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>FLAN</td><td>1,800+ tasks</td><td>Human-curated NLP datasets</td><td>High (structured)</td><td>High (years of NLP research)</td></tr>
+          <tr><td>Self-Instruct</td><td>52K</td><td>GPT-3 generated</td><td>Medium</td><td>~$100</td></tr>
+          <tr><td>Alpaca</td><td>52K</td><td>GPT-3.5-Turbo generated</td><td>Medium-High</td><td>~$600</td></tr>
+          <tr><td>ShareGPT</td><td>~90K turns</td><td>Real user conversations</td><td>Variable</td><td>Free (crowd-sourced)</td></tr>
+        </tbody>
+      </table>
+
+      <h3>Data Quality vs. Quantity</h3>
+
+      <p>The LIMA paper (Zhou et al., 2023) made a provocative claim: 1,000 carefully curated instruction-response pairs are sufficient for strong instruction-following. The authors called this the <strong>Superficial Alignment Hypothesis</strong> — alignment is mostly about learning the *format* (respond helpfully in a conversational style) rather than the *knowledge* (which is already in the pre-trained weights). A model fine-tuned on 1,000 high-quality examples outperformed models fine-tuned on 52,000 noisy ones.</p>
+
+      <p>This finding contrasts sharply with pre-training scaling laws (Chapter 10), where more data monotonically improves loss. SFT follows a different scaling regime entirely: quality dominates quantity. A few hundred carefully written, diverse demonstrations can teach the model the "assistant persona" without diluting its pre-trained knowledge.</p>
+
+      <h3>Prompt Formatting</h3>
+
+      <p>The model needs to know *where* it should generate — the format tells it which tokens are the instruction and which are the expected response. Modern LLMs use a chat template with role markers:</p>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 310" xmlns="http://www.w3.org/2000/svg">
+          <text x="400" y="22" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="600" fill="#1A1A18">Chat Template Structure</text>
+
+          <!-- System prompt block -->
+          <rect x="80" y="44" width="640" height="56" rx="6" fill="#E6F1FB" stroke="#85B7EB" stroke-width="1.5"/>
+          <rect x="80" y="44" width="100" height="22" rx="4" fill="#185FA5"/>
+          <text x="130" y="59" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="600" fill="#FFFFFF">&lt;|system|&gt;</text>
+          <text x="100" y="84" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#185FA5">You are a helpful, harmless, and honest AI assistant. Answer the user's</text>
+          <text x="100" y="96" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#185FA5">questions clearly and concisely.</text>
+
+          <!-- User turn block -->
+          <rect x="80" y="112" width="640" height="48" rx="6" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1.5"/>
+          <rect x="80" y="112" width="80" height="22" rx="4" fill="#0F6E56"/>
+          <text x="120" y="127" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="600" fill="#FFFFFF">&lt;|user|&gt;</text>
+          <text x="100" y="148" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#0F6E56">What causes the northern lights?</text>
+
+          <!-- Assistant turn block -->
+          <rect x="80" y="172" width="640" height="72" rx="6" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <rect x="80" y="172" width="100" height="22" rx="4" fill="#534AB7"/>
+          <text x="130" y="187" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="600" fill="#FFFFFF">&lt;|assistant|&gt;</text>
+          <text x="100" y="210" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#534AB7">The northern lights (aurora borealis) are caused by charged particles from the</text>
+          <text x="100" y="224" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#534AB7">sun colliding with gases in Earth's atmosphere. These collisions excite gas</text>
+          <text x="100" y="238" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#534AB7">molecules, which emit photons of light as they return to their ground state.</text>
+
+          <!-- Annotation brackets -->
+          <line x1="740" y1="44" x2="750" y2="44" stroke="#9C9A94" stroke-width="1"/>
+          <line x1="750" y1="44" x2="750" y2="160" stroke="#9C9A94" stroke-width="1"/>
+          <line x1="740" y1="160" x2="750" y2="160" stroke="#9C9A94" stroke-width="1"/>
+          <text x="760" y="106" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">Input</text>
+          <text x="760" y="118" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">(no loss)</text>
+
+          <line x1="740" y1="172" x2="750" y2="172" stroke="#9C9A94" stroke-width="1"/>
+          <line x1="750" y1="172" x2="750" y2="244" stroke="#9C9A94" stroke-width="1"/>
+          <line x1="740" y1="244" x2="750" y2="244" stroke="#9C9A94" stroke-width="1"/>
+          <text x="760" y="204" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#534AB7">Target</text>
+          <text x="760" y="216" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#534AB7">(compute</text>
+          <text x="760" y="228" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#534AB7">loss here)</text>
+
+          <!-- Bottom note -->
+          <text x="400" y="275" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#5C5B56">During SFT, cross-entropy loss is computed only on the assistant tokens.</text>
+          <text x="400" y="293" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#5C5B56">System and user tokens are inputs — the model learns to generate the assistant response.</text>
+        </svg>
+        <figcaption>Figure 11.1 — The chat template used for SFT training. Special tokens mark the role of each turn. The system prompt (blue) sets behavioral context. The user turn (teal) is the instruction. The assistant turn (purple) is the target — cross-entropy loss is computed only on these tokens. The model learns to produce helpful responses given the role structure.</figcaption>
+      </figure>
+
+      <p>The format matters more than it might seem. Without clear role markers, the model cannot distinguish between text it should *read* (the user's question) and text it should *write* (its answer). Chapter 8 discussed how GPT-4's system prompt acts as a behavioral control mechanism at inference time — the chat template is how the model learns to respect it during training.</p>
+
+      <h3>SFT Training Recipe</h3>
+
+      <p>SFT training is deliberately conservative. The pre-trained model already contains vast knowledge encoded in its weights — the goal is to adjust its behavior without destroying that knowledge. The standard recipe:</p>
+
+      <ul>
+        <li><strong>Learning rate:</strong> 1e-5 to 2e-5, roughly 10× lower than pre-training.</li>
+        <li><strong>Epochs:</strong> 1 to 3. More epochs risk overfitting to the instruction dataset's specific phrasings.</li>
+        <li><strong>Schedule:</strong> Cosine decay with warmup, typically 3-10% warmup steps.</li>
+        <li><strong>Regularization:</strong> Some teams mix a fraction of pre-training data into the SFT batch to prevent <strong>catastrophic forgetting</strong> — the model becoming good at chatting but losing factual knowledge or coding ability.</li>
+      </ul>
+
+      <p>Here is a minimal SFT training loop using the Alpaca instruction dataset from HuggingFace:</p>
+
+<pre><code class="language-python">
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from datasets import load_dataset
+
+# Load Alpaca instruction data from HuggingFace
+ds = load_dataset("tatsu-lab/alpaca", split="train[:5000]")
+
+def format_alpaca(example):
+    """Format an Alpaca example into a chat-style training string."""
+    instruction = example["instruction"]
+    inp = example.get("input", "")
+    output = example["output"]
+    if inp:
+        prompt = f"<|user|>\n{instruction}\n{inp}\n<|assistant|>\n"
+    else:
+        prompt = f"<|user|>\n{instruction}\n<|assistant|>\n"
+    return {"text": prompt + output, "prompt_len": len(prompt)}
+
+ds = ds.map(format_alpaca)
+
+# Assume a pre-trained GPT model and tokenizer are available
+# model = load_pretrained_gpt(...)
+# tokenizer = load_tokenizer(...)
+
+optimizer = torch.optim.AdamW(model.parameters(), lr=2e-5, weight_decay=0.01)
+
+for epoch in range(2):  # Few epochs to avoid catastrophic forgetting
+    for batch in dataloader:
+        input_ids = batch["input_ids"]                      # (B, S)
+        labels = input_ids.clone()
+        # Mask loss on prompt tokens — only train on assistant response
+        labels[:, :batch["prompt_len"]] = -100              # ignore prompt
+        logits = model(input_ids)                            # (B, S, vocab)
+        loss = F.cross_entropy(
+            logits[:, :-1].reshape(-1, logits.size(-1)),     # (B*(S-1), V)
+            labels[:, 1:].reshape(-1),                       # (B*(S-1),)
+            ignore_index=-100
+        )
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        optimizer.step()
+        optimizer.zero_grad()
+</code></pre>
+
+    </section>
+
+    <!-- ================================================================== -->
+    <!-- SECTION 2: RLHF                                                     -->
+    <!-- ================================================================== -->
+    <section class="chapter-section" id="rlhf">
+      <h2>Reinforcement Learning from Human Feedback (RLHF)</h2>
+
+      <p>SFT teaches the model the format of helpful responses. But it optimizes a proxy: cross-entropy on *demonstrations*, not the quality of the model's own generations. A model can achieve low SFT loss by memorizing the training examples' style while still producing unhelpful, incorrect, or harmful outputs when faced with novel prompts. RLHF addresses this gap by directly optimizing for human preferences.</p>
+
+      <h3>The InstructGPT Pipeline</h3>
+
+      <p>Ouyang et al. (2022) defined the modern alignment recipe in three stages. This pipeline — SFT, then reward model training, then reinforcement learning — remains the foundation of how production LLMs are aligned.</p>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 420" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="ch11-arr" viewBox="0 0 10 10" refX="9" refY="5"
+              markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+              <path d="M1 1L9 5L1 9" fill="none" stroke="context-stroke"
+                stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </marker>
+          </defs>
+
+          <text x="400" y="22" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="600" fill="#1A1A18">The InstructGPT Three-Stage Pipeline</text>
+
+          <!-- STAGE 1: SFT -->
+          <rect x="30" y="50" width="220" height="150" rx="8" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1.5"/>
+          <rect x="30" y="50" width="220" height="28" rx="8" fill="#0F6E56"/>
+          <text x="140" y="69" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#FFFFFF">Stage 1: Supervised Fine-Tuning</text>
+
+          <text x="50" y="102" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#0F6E56">Human demonstrators write</text>
+          <text x="50" y="118" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#0F6E56">ideal responses to prompts</text>
+
+          <rect x="60" y="132" width="160" height="28" rx="4" fill="#FFFFFF" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="140" y="150" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#0F6E56">Fine-tune GPT on demos</text>
+
+          <rect x="70" y="170" width="140" height="22" rx="4" fill="#0F6E56"/>
+          <text x="140" y="185" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#FFFFFF">→ SFT Model (π_ref)</text>
+
+          <!-- Arrow 1→2 -->
+          <line x1="250" y1="125" x2="290" y2="125" stroke="#9C9A94" stroke-width="2" marker-end="url(#ch11-arr)"/>
+
+          <!-- STAGE 2: Reward Model -->
+          <rect x="292" y="50" width="220" height="150" rx="8" fill="#FAECE7" stroke="#F0997B" stroke-width="1.5"/>
+          <rect x="292" y="50" width="220" height="28" rx="8" fill="#993C1D"/>
+          <text x="402" y="69" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#FFFFFF">Stage 2: Reward Model</text>
+
+          <text x="312" y="102" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#993C1D">Humans compare pairs of</text>
+          <text x="312" y="118" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#993C1D">model responses: A > B</text>
+
+          <rect x="322" y="132" width="160" height="28" rx="4" fill="#FFFFFF" stroke="#F0997B" stroke-width="1"/>
+          <text x="402" y="150" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#993C1D">Train Bradley-Terry RM</text>
+
+          <rect x="332" y="170" width="140" height="22" rx="4" fill="#993C1D"/>
+          <text x="402" y="185" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#FFFFFF">→ Reward Model (r_φ)</text>
+
+          <!-- Arrow 2→3 -->
+          <line x1="512" y1="125" x2="552" y2="125" stroke="#9C9A94" stroke-width="2" marker-end="url(#ch11-arr)"/>
+
+          <!-- STAGE 3: PPO -->
+          <rect x="554" y="50" width="220" height="150" rx="8" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <rect x="554" y="50" width="220" height="28" rx="8" fill="#534AB7"/>
+          <text x="664" y="69" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#FFFFFF">Stage 3: RL (PPO)</text>
+
+          <text x="574" y="102" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#534AB7">Policy generates responses;</text>
+          <text x="574" y="118" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#534AB7">RM scores them; PPO updates</text>
+
+          <rect x="584" y="132" width="160" height="28" rx="4" fill="#FFFFFF" stroke="#AFA9EC" stroke-width="1"/>
+          <text x="664" y="150" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#534AB7">Optimize π with KL penalty</text>
+
+          <rect x="594" y="170" width="140" height="22" rx="4" fill="#534AB7"/>
+          <text x="664" y="185" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#FFFFFF">→ Aligned Model (π_θ)</text>
+
+          <!-- Feedback loop arrow from RM to PPO -->
+          <path d="M402 200 L402 240 Q402 260 420 260 L664 260 Q680 260 680 240 L680 200" fill="none" stroke="#854F0B" stroke-width="1.5" stroke-dasharray="5 3"/>
+          <text x="540" y="255" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#854F0B">reward signal r_φ(x, y)</text>
+
+          <!-- KL reference arrow from SFT to PPO -->
+          <path d="M140 200 L140 300 Q140 320 160 320 L664 320 Q680 320 680 300 L680 200" fill="none" stroke="#0F6E56" stroke-width="1.5" stroke-dasharray="5 3"/>
+          <text x="400" y="338" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#0F6E56">KL penalty: D_KL(π_θ ∥ π_ref) — prevents drifting too far from SFT model</text>
+
+          <!-- Bottom summary -->
+          <rect x="100" y="370" width="600" height="36" rx="6" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="1"/>
+          <text x="400" y="390" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#5C5B56">Key insight: humans are better at comparing responses than writing them. Stage 2 leverages this.</text>
+        </svg>
+        <figcaption>Figure 11.2 — The InstructGPT three-stage alignment pipeline. Stage 1 fine-tunes on human demonstrations (SFT). Stage 2 trains a reward model on human preference comparisons (A is better than B). Stage 3 uses PPO to optimize the policy against the reward model while staying close to the SFT model via a KL penalty. The dashed lines show the two feedback signals: reward from the RM (amber) and KL regularization back to the SFT model (green).</figcaption>
+      </figure>
+
+      <p>The insight behind this pipeline is that humans are better at *judging* than *demonstrating*. Writing the perfect response to a complex question is hard. Comparing two responses and picking the better one is much easier. Stage 2 converts these cheap comparative judgments into a reward signal that Stage 3 can optimize.</p>
+
+      <h3>Reward Model Training: The Bradley-Terry Model</h3>
+
+      <p>The reward model takes a prompt $x$ and a response $y$ and outputs a scalar score $r_\phi(x, y)$ representing how good the response is. It is trained on human preference data: given a prompt and two responses, one preferred ($y_w$) and one rejected ($y_l$), the model learns to assign a higher score to the preferred response.</p>
+
+      <p>The <strong>Bradley-Terry model</strong> defines the probability that response $y_w$ is preferred over $y_l$ as a function of the reward difference:</p>
+
+      $$P(y_w \succ y_l \mid x) = \sigma\!\left(r_\phi(x, y_w) - r_\phi(x, y_l)\right)$$
+
+      <p>Here $\sigma$ is the sigmoid function ($\sigma(z) = 1/(1 + e^{-z})$, mapping any real number to a probability). The reward model loss is the negative log-likelihood of the observed preferences:</p>
+
+      $$\mathcal{L}_{\text{RM}} = -\mathbb{E}_{(x, y_w, y_l)}\!\left[\log \sigma\!\left(r_\phi(x, y_w) - r_\phi(x, y_l)\right)\right]$$
+
+      <p>Minimizing this loss pushes $r_\phi(x, y_w)$ up and $r_\phi(x, y_l)$ down — exactly what we want.</p>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 340" xmlns="http://www.w3.org/2000/svg">
+          <text x="400" y="22" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="600" fill="#1A1A18">Bradley-Terry Reward Model</text>
+
+          <!-- Prompt -->
+          <rect x="260" y="44" width="280" height="36" rx="6" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="1"/>
+          <text x="400" y="67" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#5C5B56">Prompt: "Explain quantum tunneling"</text>
+
+          <!-- Fork -->
+          <line x1="400" y1="80" x2="400" y2="100" stroke="#9C9A94" stroke-width="1.5"/>
+          <line x1="200" y1="100" x2="600" y2="100" stroke="#9C9A94" stroke-width="1.5"/>
+          <line x1="200" y1="100" x2="200" y2="116" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch11-arr)"/>
+          <line x1="600" y1="100" x2="600" y2="116" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch11-arr)"/>
+
+          <!-- Preferred response -->
+          <rect x="60" y="118" width="280" height="56" rx="6" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1.5"/>
+          <text x="80" y="138" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#0F6E56">✓ Preferred (y_w)</text>
+          <text x="80" y="158" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#5C5B56">"Quantum tunneling occurs when a</text>
+          <text x="80" y="170" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#5C5B56">particle passes through a barrier..."</text>
+
+          <!-- Rejected response -->
+          <rect x="460" y="118" width="280" height="56" rx="6" fill="#FAECE7" stroke="#F0997B" stroke-width="1.5"/>
+          <text x="480" y="138" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#993C1D">✗ Rejected (y_l)</text>
+          <text x="480" y="158" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#5C5B56">"Quantum tunneling is when things</text>
+          <text x="480" y="170" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#5C5B56">go through stuff. It's weird..."</text>
+
+          <!-- Arrows to reward model -->
+          <line x1="200" y1="174" x2="200" y2="210" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#ch11-arr)"/>
+          <line x1="600" y1="174" x2="600" y2="210" stroke="#F0997B" stroke-width="1.5" marker-end="url(#ch11-arr)"/>
+
+          <!-- Reward model -->
+          <rect x="100" y="212" width="600" height="36" rx="6" fill="#534AB7" stroke="#534AB7"/>
+          <text x="400" y="235" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="600" fill="#FFFFFF">Reward Model r_φ (GPT backbone + scalar value head)</text>
+
+          <!-- Reward scores -->
+          <line x1="250" y1="248" x2="250" y2="270" stroke="#0F6E56" stroke-width="1.5" marker-end="url(#ch11-arr)"/>
+          <rect x="190" y="272" width="120" height="28" rx="4" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1.5"/>
+          <text x="250" y="291" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#0F6E56">r = 3.2</text>
+
+          <line x1="550" y1="248" x2="550" y2="270" stroke="#993C1D" stroke-width="1.5" marker-end="url(#ch11-arr)"/>
+          <rect x="490" y="272" width="120" height="28" rx="4" fill="#FAECE7" stroke="#F0997B" stroke-width="1.5"/>
+          <text x="550" y="291" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#993C1D">r = 1.8</text>
+
+          <!-- Loss annotation -->
+          <text x="400" y="320" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#534AB7">Loss = −log σ(3.2 − 1.8) = −log σ(1.4) = 0.19</text>
+          <text x="400" y="338" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">Training pushes r(y_w) up and r(y_l) down until the difference matches human preferences</text>
+        </svg>
+        <figcaption>Figure 11.3 — Bradley-Terry reward model training. A prompt produces two candidate responses. A human labels which is preferred. The reward model (a GPT backbone with a scalar value head) scores both. The Bradley-Terry loss pushes the preferred response's score higher than the rejected one's.</figcaption>
+      </figure>
+
+      <p>Architecturally, the reward model is typically the SFT model itself with the language modeling head replaced by a single linear projection $\text{nn.Linear}(d_\text{model}, 1)$ that maps the last token's hidden state to a scalar reward. Unlike BERT (Chapter 7), which uses a [CLS] token for classification, decoder-only models extract the last-token representation — following the pattern established in Chapter 8.</p>
+
+      <p>Here is the reward model training in PyTorch, using preference data from HuggingFace:</p>
+
+<pre><code class="language-python">
+import torch
+import torch.nn as nn
+from datasets import load_dataset
+
+# Anthropic's preference dataset: each example has 'chosen' and 'rejected'
+ds = load_dataset("Anthropic/hh-rlhf", split="train[:5000]")
+
+class RewardModel(nn.Module):
+    """Reward model: pre-trained GPT backbone + scalar value head."""
+    def __init__(self, backbone, d_model):
+        super().__init__()
+        self.backbone = backbone                      # frozen or fine-tuned GPT
+        self.value_head = nn.Linear(d_model, 1)       # scalar reward output
+
+    def forward(self, input_ids):
+        h = self.backbone(input_ids)                   # (B, S, d_model)
+        reward = self.value_head(h[:, -1, :])          # (B, 1) — last token
+        return reward.squeeze(-1)                       # (B,)
+
+# Training loop: Bradley-Terry loss on preference pairs
+for batch in dataloader:
+    r_w = reward_model(batch["chosen_ids"])             # (B,) — preferred
+    r_l = reward_model(batch["rejected_ids"])           # (B,) — rejected
+    # Bradley-Terry: push r_w above r_l
+    loss = -torch.log(torch.sigmoid(r_w - r_l)).mean()
+    loss.backward()
+    optimizer.step()
+    optimizer.zero_grad()
+</code></pre>
+
+      <h3>PPO with KL Penalty</h3>
+
+      <p>With a trained reward model, we can now optimize the language model's policy $\pi_\theta$ to produce high-reward responses. The objective is:</p>
+
+      $$\max_\theta \; \mathbb{E}_{x \sim \mathcal{D},\, y \sim \pi_\theta(\cdot|x)}\!\left[r_\phi(x, y) - \beta \, D_{\text{KL}}\!\left(\pi_\theta(\cdot|x) \,\|\, \pi_{\text{ref}}(\cdot|x)\right)\right]$$
+
+      <p>The first term maximizes reward. The second term — the <strong>KL penalty</strong> — prevents the policy from drifting too far from the reference model $\pi_{\text{ref}}$ (the SFT model). The hyperparameter $\beta$ controls the strength of this constraint. Without the KL penalty, the policy quickly finds adversarial inputs that exploit imperfections in the reward model — producing responses that score high reward but are actually low quality.</p>
+
+      <p>A simplified PPO training step shows the core mechanics:</p>
+
+<pre><code class="language-python">
+@torch.no_grad()
+def compute_advantages(policy, ref_policy, reward_model, prompts, beta=0.1):
+    """Compute per-token advantages for PPO update."""
+    # Generate responses from current policy
+    sequences = policy.generate(prompts, max_new_tokens=256)   # (B, S)
+
+    # Log-probs under current and reference policies
+    old_logp = policy.log_prob(sequences)                       # (B, S)
+    ref_logp = ref_policy.log_prob(sequences)                   # (B, S)
+
+    # KL penalty: per-sequence divergence from reference
+    kl = (old_logp - ref_logp).sum(dim=-1)                      # (B,)
+
+    # Reward from RM, minus KL penalty
+    rewards = reward_model(sequences)                            # (B,)
+    advantages = rewards - beta * kl                              # (B,)
+    return sequences, old_logp, advantages
+
+def ppo_step(policy, sequences, old_logp, advantages, clip_eps=0.2):
+    """Single PPO update: clipped surrogate objective."""
+    new_logp = policy.log_prob(sequences)                        # (B, S)
+    # Importance sampling ratio
+    ratio = (new_logp.sum(-1) - old_logp.sum(-1).detach()).exp() # (B,)
+    # Clipped surrogate
+    surr1 = ratio * advantages
+    surr2 = torch.clamp(ratio, 1 - clip_eps, 1 + clip_eps) * advantages
+    loss = -torch.min(surr1, surr2).mean()
+    loss.backward()
+    optimizer.step()
+    optimizer.zero_grad()
+</code></pre>
+
+      <h3>Reward Hacking and Overoptimization</h3>
+
+      <p>The reward model is a proxy for human preferences — it is not a perfect oracle. When you optimize a proxy too aggressively, you exploit its weaknesses. Gao et al. (2023) showed this empirically: as the KL divergence from the reference model increases (meaning the policy has drifted further), the proxy reward keeps rising, but *true quality* (measured by a separate gold reward model or human evaluation) peaks and then declines.</p>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 300" xmlns="http://www.w3.org/2000/svg">
+          <text x="400" y="22" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="600" fill="#1A1A18">Reward Hacking: The Overoptimization Curve</text>
+
+          <!-- Axes -->
+          <line x1="100" y1="250" x2="720" y2="250" stroke="#C8C6BE" stroke-width="1"/>
+          <line x1="100" y1="250" x2="100" y2="50" stroke="#C8C6BE" stroke-width="1"/>
+          <text x="410" y="280" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#9C9A94">KL from reference model (D_KL) →</text>
+          <text x="40" y="150" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#9C9A94" transform="rotate(-90 40 150)">Quality</text>
+
+          <!-- Proxy reward: monotonically increasing (amber, dashed) -->
+          <path d="M120 220 Q250 180 400 130 Q550 90 700 60" stroke="#EF9F27" stroke-width="2" stroke-dasharray="6 3" fill="none"/>
+          <text x="710" y="55" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#854F0B">Proxy reward</text>
+          <text x="710" y="68" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#854F0B">(keeps rising)</text>
+
+          <!-- True quality: peaks then declines (purple, solid) -->
+          <path d="M120 215 Q200 160 320 100 Q380 80 420 78 Q480 82 540 110 Q620 160 700 190" stroke="#534AB7" stroke-width="2.5" fill="none"/>
+          <text x="710" y="188" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#534AB7">True quality</text>
+          <text x="710" y="201" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#534AB7">(peaks, then drops)</text>
+
+          <!-- Peak annotation -->
+          <circle cx="420" cy="78" r="6" fill="#534AB7" stroke="#EEEDFE" stroke-width="2"/>
+          <line x1="420" y1="84" x2="420" y2="250" stroke="#534AB7" stroke-width="1" stroke-dasharray="3 2"/>
+          <text x="420" y="64" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#534AB7">Optimal β</text>
+
+          <!-- Overoptimization zone -->
+          <rect x="440" y="50" width="260" height="196" rx="0" fill="#FAECE7" opacity="0.2"/>
+          <text x="570" y="240" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#993C1D">Overoptimization zone</text>
+          <text x="570" y="254" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#993C1D">(Goodhart's Law)</text>
+        </svg>
+        <figcaption>Figure 11.4 — The overoptimization curve (Gao et al., 2023). As the policy diverges further from the reference model (higher KL), the proxy reward (amber dashed) keeps increasing. But true quality (purple solid) peaks and then declines — the policy has found ways to exploit the reward model's weaknesses. The optimal KL budget (purple dot) balances reward maximization against overoptimization.</figcaption>
+      </figure>
+
+      <p>Concrete examples of reward hacking: the model learns to produce sycophantic responses ("What a brilliant question! You're absolutely right!"), excessively long and verbose answers (which tend to score higher on some reward models), or responses that use specific formatting patterns the reward model has a bias toward. Goodhart's Law — "when a measure becomes a target, it ceases to be a good measure" — is the fundamental challenge of RLHF.</p>
+
+      <div class="callout callout-warning">
+        <div class="callout-title">Warning: Goodhart's Law in Practice</div>
+        <p>Every RLHF system eventually encounters reward hacking. The reward model is a proxy for human preferences, and optimizing a proxy too aggressively always produces artifacts. The KL penalty is not optional — it is the primary defense against a policy that finds loopholes in the reward model. Ensemble reward models and periodic reward model retraining provide additional robustness.</p>
+      </div>
+
+      <h3>RLHF at Scale</h3>
+
+      <p>Different labs have adopted different approaches to RLHF at production scale:</p>
+
+      <p><strong>OpenAI</strong> (InstructGPT, GPT-4) uses PPO with extensive human annotation pipelines. Thousands of human annotators write demonstrations and compare model outputs. Red-teaming — deliberately trying to elicit harmful outputs — is a critical part of the annotation process.</p>
+
+      <p><strong>Anthropic</strong> (Claude family) combines RLHF with Constitutional AI (Section 4), using the model itself to generate preference labels guided by a set of principles. This reduces the need for human annotators while maintaining alignment quality.</p>
+
+      <p><strong>Google DeepMind</strong> (Gemini) uses rule-based reward models alongside human preferences, with adversarial probing to identify failure modes. The LLaMA 2-Chat models (Chapter 8) used rejection sampling alongside PPO, demonstrating that RLHF could be applied effectively to open-source models.</p>
+    </section>
+
+    <!-- ================================================================== -->
+    <!-- SECTION 3: DPO                                                      -->
+    <!-- ================================================================== -->
+    <section class="chapter-section" id="dpo">
+      <h2>Direct Preference Optimization (DPO)</h2>
+
+      <p>RLHF works, but it is complex. Three separate models (SFT policy, reward model, value function), a reinforcement learning loop, sensitive hyperparameters ($\beta$, PPO clip ratio, learning rate schedules for each component), and instability from on-policy sampling. DPO asks: can we get the same result with just a loss function?</p>
+
+      <h3>The Key Insight</h3>
+
+      <p>Rafailov et al. (2023) showed that the optimal policy under the KL-constrained RLHF objective has a closed-form solution. The reward function is implicitly defined by the ratio of the policy to the reference model:</p>
+
+      $$r^*(x, y) = \beta \log \frac{\pi^*(y|x)}{\pi_{\text{ref}}(y|x)} + \beta \log Z(x)$$
+
+      <p>where $Z(x)$ is a normalizing constant that depends only on the prompt. This identity means we can substitute the policy directly into the Bradley-Terry preference model — eliminating the need for a separate reward model entirely.</p>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 280" xmlns="http://www.w3.org/2000/svg">
+          <text x="400" y="22" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="600" fill="#1A1A18">RLHF vs. DPO: Pipeline Simplification</text>
+
+          <!-- Panel headers -->
+          <rect x="20" y="42" width="370" height="28" rx="5" fill="#FAECE7" stroke="#F0997B" stroke-width="1"/>
+          <text x="205" y="61" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#993C1D">RLHF: 3 Models + RL Loop</text>
+
+          <rect x="410" y="42" width="370" height="28" rx="5" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="595" y="61" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#0F6E56">DPO: 1 Loss Function</text>
+
+          <line x1="400" y1="38" x2="400" y2="270" stroke="#E5E3DC" stroke-width="1" stroke-dasharray="5 4"/>
+
+          <!-- RLHF side -->
+          <rect x="40" y="82" width="140" height="28" rx="4" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="110" y="101" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#0F6E56">Preference Data</text>
+          <line x1="180" y1="96" x2="200" y2="96" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch11-arr)"/>
+
+          <rect x="202" y="82" width="120" height="28" rx="4" fill="#FAECE7" stroke="#F0997B" stroke-width="1.5"/>
+          <text x="262" y="101" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#993C1D">Reward Model</text>
+          <line x1="262" y1="110" x2="262" y2="132" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch11-arr)"/>
+
+          <rect x="172" y="134" width="180" height="28" rx="4" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <text x="262" y="153" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#534AB7">RL (PPO) Loop</text>
+          <line x1="262" y1="162" x2="262" y2="182" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch11-arr)"/>
+
+          <rect x="190" y="184" width="144" height="28" rx="4" fill="#534AB7" stroke="#534AB7"/>
+          <text x="262" y="203" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#FFFFFF">Aligned Model</text>
+
+          <text x="205" y="236" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">3 models, RL sampling,</text>
+          <text x="205" y="252" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">sensitive hyperparameters</text>
+
+          <!-- DPO side -->
+          <rect x="430" y="82" width="140" height="28" rx="4" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="500" y="101" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#0F6E56">Preference Data</text>
+          <line x1="570" y1="96" x2="595" y2="96" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch11-arr)"/>
+
+          <!-- Ghosted reward model with X -->
+          <rect x="598" y="82" width="120" height="28" rx="4" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="1" stroke-dasharray="4 3"/>
+          <text x="658" y="101" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#C8C6BE">Reward Model</text>
+          <line x1="618" y1="82" x2="698" y2="110" stroke="#993C1D" stroke-width="2.5"/>
+          <line x1="698" y1="82" x2="618" y2="110" stroke="#993C1D" stroke-width="2.5"/>
+
+          <line x1="500" y1="110" x2="500" y2="136" stroke="#0F6E56" stroke-width="2" marker-end="url(#ch11-arr)"/>
+
+          <rect x="430" y="138" width="340" height="28" rx="4" fill="#0F6E56" stroke="#0F6E56"/>
+          <text x="600" y="157" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#FFFFFF">DPO Loss (standard supervised learning)</text>
+          <line x1="600" y1="166" x2="600" y2="186" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch11-arr)"/>
+
+          <rect x="528" y="188" width="144" height="28" rx="4" fill="#534AB7" stroke="#534AB7"/>
+          <text x="600" y="207" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#FFFFFF">Aligned Model</text>
+
+          <text x="595" y="240" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">1 model, 1 loss function,</text>
+          <text x="595" y="256" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">standard gradient descent</text>
+        </svg>
+        <figcaption>Figure 11.5 — RLHF (left) requires training a reward model, then running an RL loop with PPO. DPO (right) skips both — the same preference data is used directly as a supervised learning objective. The crossed-out reward model is the key simplification: DPO proves the reward is implicitly defined by the policy itself.</figcaption>
+      </figure>
+
+      <h3>The DPO Loss</h3>
+
+      <p>The DPO loss operates directly on preference pairs $(x, y_w, y_l)$ — the same data used to train the reward model in RLHF, but without the intermediate step:</p>
+
+      $$\mathcal{L}_{\text{DPO}}(\pi_\theta; \pi_{\text{ref}}) = -\mathbb{E}_{(x, y_w, y_l)}\!\left[\log\sigma\!\left(\beta \log\frac{\pi_\theta(y_w|x)}{\pi_{\text{ref}}(y_w|x)} - \beta \log\frac{\pi_\theta(y_l|x)}{\pi_{\text{ref}}(y_l|x)}\right)\right]$$
+
+      <p>Each log-ratio $\log(\pi_\theta(y|x) / \pi_{\text{ref}}(y|x))$ measures how much the current policy has shifted from the reference model for a given response. The loss says: the preferred response should shift *more* (become more likely under $\pi_\theta$ relative to $\pi_{\text{ref}}$) than the rejected response. The $\beta$ parameter controls the KL constraint strength, exactly as in the PPO objective.</p>
+
+      <p>The implementation is remarkably concise — this is the same preference data we used for the reward model above, but with no intermediate model needed:</p>
+
+<pre><code class="language-python">
+import torch
+import torch.nn.functional as F
+from datasets import load_dataset
+
+# Same preference data as the reward model — no RM needed this time
+ds = load_dataset("Anthropic/hh-rlhf", split="train[:5000]")
+
+def dpo_loss(policy, ref_policy, chosen_ids, rejected_ids, beta=0.1):
+    """Direct Preference Optimization — no reward model, no RL loop."""
+    # Log-probabilities under current policy (per-token, summed)
+    pi_logp_w = policy.log_prob(chosen_ids).sum(-1)        # (B,)
+    pi_logp_l = policy.log_prob(rejected_ids).sum(-1)      # (B,)
+
+    # Log-probabilities under frozen reference policy
+    with torch.no_grad():
+        ref_logp_w = ref_policy.log_prob(chosen_ids).sum(-1)   # (B,)
+        ref_logp_l = ref_policy.log_prob(rejected_ids).sum(-1) # (B,)
+
+    # Log-ratios: how much has the policy shifted from reference?
+    logr_w = pi_logp_w - ref_logp_w                         # (B,)
+    logr_l = pi_logp_l - ref_logp_l                         # (B,)
+
+    # DPO loss: preferred should shift more than rejected
+    loss = -F.logsigmoid(beta * (logr_w - logr_l)).mean()
+    return loss
+# Compare with Code Block 2: same dataset, same goal, but 15 lines instead of
+# a reward model + PPO loop
+</code></pre>
+
+      <div class="callout callout-insight">
+        <div class="callout-title">Key Insight</div>
+        <p>DPO and RLHF optimize the *same* objective — a KL-constrained reward maximization. The difference is computational, not mathematical. RLHF solves it iteratively through sampling and RL; DPO solves it in closed form via a supervised loss. This is why they often achieve comparable results — and why DPO is preferred when simplicity and stability matter more than on-policy exploration.</p>
+      </div>
+
+      <h3>Variants: IPO, KTO, SimPO, ORPO</h3>
+
+      <p>The success of DPO spawned a family of preference optimization methods, each removing a different requirement:</p>
+
+      <table>
+        <thead>
+          <tr><th>Method</th><th>Key Change</th><th>Needs Pairs?</th><th>Needs Ref Model?</th><th>Separate SFT?</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><strong>DPO</strong></td><td>Baseline: implicit reward from log-ratio</td><td>Yes</td><td>Yes</td><td>Yes</td></tr>
+          <tr><td><strong>IPO</strong></td><td>Squared hinge loss; prevents overfitting on easy pairs</td><td>Yes</td><td>Yes</td><td>Yes</td></tr>
+          <tr><td><strong>KTO</strong></td><td>Unpaired data (good/bad labels, not A-vs-B pairs)</td><td>No</td><td>Yes</td><td>Yes</td></tr>
+          <tr><td><strong>SimPO</strong></td><td>Avg log-prob as implicit reward; no reference model</td><td>Yes</td><td>No</td><td>Yes</td></tr>
+          <tr><td><strong>ORPO</strong></td><td>Combines SFT + alignment in one stage via odds-ratio</td><td>Yes</td><td>No</td><td>No</td></tr>
+        </tbody>
+      </table>
+
+      <p>The trend is clear: each variant removes one more component from the pipeline. ORPO is the most minimal — it requires only preference data and a single training stage, combining language modeling with an odds-ratio penalty that discourages generating rejected responses.</p>
+
+      <h3>When PPO Still Wins</h3>
+
+      <p>DPO is simpler and more stable, but PPO has advantages in specific regimes. Complex instruction following, mathematics, and coding — domains where the reward signal is sparse and can be verified programmatically — tend to favor PPO. The key difference is <strong>on-policy exploration</strong>: PPO generates new responses during training and learns from them, while DPO trains on a fixed preference dataset. When the distribution of good responses is narrow (as in mathematical proofs or correct code), the ability to explore diverse solution paths during training matters.</p>
+
+      <p>The reasoning models from Chapter 8 — o1, o3, and DeepSeek R1 — all rely on RL-based training, not DPO. When the task requires extended chains of reasoning, with verification at each step, on-policy RL appears critical for learning the exploration-exploitation balance that produces correct solution paths.</p>
+    </section>
+
+    <!-- ================================================================== -->
+    <!-- SECTION 4: CONSTITUTIONAL AI AND RLAIF                              -->
+    <!-- ================================================================== -->
+    <section class="chapter-section" id="constitutional-ai-rlaif">
+      <h2>Constitutional AI and RLAIF</h2>
+
+      <p>RLHF requires thousands of human annotators — expensive, slow, and difficult to scale. What if the model could supervise itself? Constitutional AI and RLAIF explore exactly this: replacing human preference labelers with the model itself, guided by a set of principles.</p>
+
+      <h3>Constitutional AI (Anthropic, 2022)</h3>
+
+      <p>Constitutional AI (CAI) operates in two phases. In the <strong>supervised phase</strong>, the model generates a response to a prompt, then critiques its own response against a set of natural-language principles (the "constitution"), and finally revises the response to address the critique. In the <strong>RL phase</strong>, the model itself provides preference labels — comparing original vs. revised responses — which are used for RLHF training.</p>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 380" xmlns="http://www.w3.org/2000/svg">
+          <text x="400" y="22" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="600" fill="#1A1A18">Constitutional AI: Self-Critique and Revision</text>
+
+          <!-- Phase 1 label -->
+          <rect x="30" y="42" width="350" height="24" rx="4" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1"/>
+          <text x="205" y="59" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#534AB7">Phase 1: Supervised (Critique → Revise)</text>
+
+          <!-- Step 1: Generate -->
+          <rect x="40" y="80" width="150" height="36" rx="6" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1.5"/>
+          <text x="115" y="103" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#0F6E56">1. Generate response</text>
+          <line x1="190" y1="98" x2="210" y2="98" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch11-arr)"/>
+
+          <!-- Step 2: Critique -->
+          <rect x="212" y="80" width="160" height="36" rx="6" fill="#FAEEDA" stroke="#EF9F27" stroke-width="1.5"/>
+          <text x="292" y="103" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#854F0B">2. Critique vs constitution</text>
+
+          <!-- Constitution box -->
+          <rect x="215" y="128" width="154" height="72" rx="4" fill="#FAEEDA" stroke="#EF9F27" stroke-width="1"/>
+          <text x="292" y="146" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="600" fill="#854F0B">Constitution:</text>
+          <text x="225" y="162" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#854F0B">• Choose the less harmful response</text>
+          <text x="225" y="176" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#854F0B">• Choose the more honest response</text>
+          <text x="225" y="190" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#854F0B">• Avoid encouraging illegal acts</text>
+
+          <!-- Arrow to revise -->
+          <line x1="292" y1="200" x2="292" y2="218" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch11-arr)"/>
+
+          <!-- Step 3: Revise -->
+          <rect x="212" y="220" width="160" height="36" rx="6" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <text x="292" y="243" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#534AB7">3. Revise response</text>
+
+          <!-- Loop arrow -->
+          <path d="M212 238 Q160 238 160 170 Q160 98 190 98" fill="none" stroke="#B4B2A9" stroke-width="1" stroke-dasharray="4 3"/>
+          <text x="140" y="170" text-anchor="end" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#9C9A94">iterate</text>
+
+          <!-- Phase 2 label -->
+          <rect x="420" y="42" width="350" height="24" rx="4" fill="#FAECE7" stroke="#F0997B" stroke-width="1"/>
+          <text x="595" y="59" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#993C1D">Phase 2: RL (AI-Labeled Preferences)</text>
+
+          <!-- Divider -->
+          <line x1="400" y1="38" x2="400" y2="370" stroke="#E5E3DC" stroke-width="1" stroke-dasharray="5 4"/>
+
+          <!-- Original response -->
+          <rect x="430" y="80" width="150" height="48" rx="6" fill="#FAECE7" stroke="#F0997B" stroke-width="1"/>
+          <text x="505" y="100" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#993C1D">Original response</text>
+          <text x="505" y="118" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#993C1D">(may be harmful)</text>
+
+          <!-- vs -->
+          <text x="620" y="108" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#9C9A94">vs</text>
+
+          <!-- Revised response -->
+          <rect x="640" y="80" width="130" height="48" rx="6" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1.5"/>
+          <text x="705" y="100" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#0F6E56">Revised response</text>
+          <text x="705" y="118" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#0F6E56">(improved)</text>
+
+          <!-- AI comparison -->
+          <line x1="595" y1="128" x2="595" y2="152" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch11-arr)"/>
+          <rect x="480" y="154" width="230" height="36" rx="6" fill="#534AB7" stroke="#534AB7"/>
+          <text x="595" y="177" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#FFFFFF">AI labels preference (RLAIF)</text>
+
+          <line x1="595" y1="190" x2="595" y2="214" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch11-arr)"/>
+          <rect x="480" y="216" width="230" height="36" rx="6" fill="#FAECE7" stroke="#F0997B" stroke-width="1.5"/>
+          <text x="595" y="239" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#993C1D">Standard RLHF / DPO training</text>
+
+          <!-- Bottom summary -->
+          <rect x="80" y="280" width="640" height="44" rx="6" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="1"/>
+          <text x="400" y="298" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#5C5B56">Write principles once → scale to millions of preference labels automatically</text>
+          <text x="400" y="316" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">Cost: ~$0.01/pair (AI) vs ~$1-3/pair (human annotators)</text>
+        </svg>
+        <figcaption>Figure 11.6 — Constitutional AI operates in two phases. Phase 1 (left): the model generates, self-critiques against a set of principles, and revises. Phase 2 (right): the AI compares original vs. revised responses to generate preference labels, which are used for RLHF or DPO training. The constitution is written once and scales to millions of comparisons.</figcaption>
+      </figure>
+
+      <h3>RLAIF: LLM as Preference Labeler</h3>
+
+      <p><strong>RLAIF</strong> (Reinforcement Learning from AI Feedback, Lee et al., 2023) generalizes the idea: replace human labelers with an LLM for any preference comparison, not just constitutional self-critique. The surprising finding is that RLAIF can match RLHF quality when the labeler LLM is strong enough and prompted with chain-of-thought reasoning. The cost reduction is dramatic: $0.01 per pair versus $1-3 per pair for human annotation, a 100-300× reduction.</p>
+
+      <h3>Self-Play Fine-Tuning (SPIN)</h3>
+
+      <p><strong>SPIN</strong> (Chen et al., 2024) takes the self-improvement idea further: the model plays against itself. In each iteration, the model tries to distinguish its own generated text from human-written text. The "real" label goes to human demonstrations, and the "fake" label goes to the model's own outputs. After training, the model improves, making the discrimination task harder in the next round. This iterative process is structurally similar to GAN training applied to language model alignment.</p>
+
+      <h3>Scalable Oversight</h3>
+
+      <p>As AI systems become more capable, human oversight becomes the bottleneck. How do you align a model that is smarter than you on the task being evaluated? This is the <strong>scalable oversight</strong> problem, and several research directions are being explored:</p>
+
+      <ul>
+        <li><strong>Weak-to-strong generalization</strong> (Burns et al., 2023): a small model supervises a large model. Surprisingly, the large model can sometimes generalize *beyond* the quality of the supervisor.</li>
+        <li><strong>Debate</strong> (Irving et al., 2018): two AI systems argue opposing positions; a human judge picks the winner. Even a weak judge can identify the more truthful argument when it is presented alongside a challenge.</li>
+        <li><strong>Amplification</strong> (Christiano et al., 2018): decompose hard oversight tasks into simpler subtasks that humans *can* evaluate accurately.</li>
+      </ul>
+
+      <p>These are frontier research directions — not deployed at production scale — but they point toward a future where alignment can continue to improve even as models surpass human ability on specific tasks.</p>
+    </section>
+
+    <!-- ================================================================== -->
+    <!-- SECTION 5: ALIGNMENT TAX                                            -->
+    <!-- ================================================================== -->
+    <section class="chapter-section" id="alignment-tax">
+      <h2>Alignment Tax and Capability Trade-offs</h2>
+
+      <p>Alignment improves the model's usefulness. But does it come at a cost to raw capability?</p>
+
+      <h3>Alignment Tax</h3>
+
+      <p>The evidence is mixed. On one hand, InstructGPT (1.3B, aligned) was preferred by users over GPT-3 (175B, unaligned) — alignment made the smaller model more useful, not less capable. On the other hand, some benchmarks — particularly code generation (HumanEval), factual QA (TriviaQA), and mathematical reasoning — show slight degradation after RLHF. The model becomes more cautious, sometimes refusing valid requests or hedging when the pre-trained model would have answered directly.</p>
+
+      <p>The nuanced answer: alignment *redistributes* capability. The model becomes much better at tasks humans care about (following instructions, being helpful, refusing harmful requests) and slightly worse at tasks measured by raw benchmark performance (unfiltered text completion, unrestricted code generation). Whether this is a "tax" depends on what you are optimizing for.</p>
+
+      <h3>Safety vs. Helpfulness: The Pareto Frontier</h3>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 340" xmlns="http://www.w3.org/2000/svg">
+          <text x="400" y="22" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="600" fill="#1A1A18">Safety vs. Helpfulness: The Alignment Frontier</text>
+
+          <!-- Axes -->
+          <line x1="100" y1="290" x2="720" y2="290" stroke="#C8C6BE" stroke-width="1"/>
+          <line x1="100" y1="290" x2="100" y2="50" stroke="#C8C6BE" stroke-width="1"/>
+          <text x="410" y="320" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#9C9A94">Helpfulness →</text>
+          <text x="50" y="170" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#9C9A94" transform="rotate(-90 50 170)">Safety →</text>
+
+          <!-- Pareto frontier curve -->
+          <path d="M160 80 Q250 82 350 100 Q450 125 550 180 Q620 220 680 270" stroke="#534AB7" stroke-width="2.5" fill="none"/>
+          <text x="350" y="80" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#534AB7">Pareto frontier</text>
+
+          <!-- "Too restrictive" region -->
+          <text x="150" y="110" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#854F0B" opacity="0.6">Too restrictive</text>
+          <text x="150" y="125" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#854F0B" opacity="0.6">(false refusals)</text>
+
+          <!-- "Too permissive" region -->
+          <text x="620" y="250" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#993C1D" opacity="0.6">Too permissive</text>
+          <text x="620" y="265" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#993C1D" opacity="0.6">(harmful outputs)</text>
+
+          <!-- Model dots on and off frontier -->
+          <!-- Base model: high helpfulness, low safety -->
+          <circle cx="660" cy="268" r="8" fill="#FAECE7" stroke="#F0997B" stroke-width="2"/>
+          <text x="648" y="260" text-anchor="end" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#993C1D">Base GPT</text>
+
+          <!-- Over-aligned: high safety, low helpfulness -->
+          <circle cx="180" cy="85" r="8" fill="#FAEEDA" stroke="#EF9F27" stroke-width="2"/>
+          <text x="200" y="78" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#854F0B">Over-aligned</text>
+
+          <!-- Good alignment: on the frontier -->
+          <circle cx="350" cy="100" r="7" fill="#534AB7" stroke="#EEEDFE" stroke-width="2"/>
+          <text x="362" y="115" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#534AB7">Claude</text>
+
+          <circle cx="440" cy="128" r="7" fill="#534AB7" stroke="#EEEDFE" stroke-width="2"/>
+          <text x="452" y="143" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#534AB7">GPT-4</text>
+
+          <circle cx="520" cy="168" r="7" fill="#534AB7" stroke="#EEEDFE" stroke-width="2"/>
+          <text x="532" y="183" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#534AB7">LLaMA 2-Chat</text>
+
+          <!-- Sub-optimal: off the frontier -->
+          <circle cx="400" cy="190" r="6" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="2"/>
+          <text x="412" y="205" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">Sub-optimal</text>
+          <text x="412" y="217" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">(room to improve both)</text>
+        </svg>
+        <figcaption>Figure 11.7 — The safety-helpfulness Pareto frontier. The purple curve is the boundary of achievable configurations — you cannot improve safety without reducing helpfulness (and vice versa) along this curve. The base model (coral) is maximally helpful but unsafe. Over-aligned models (amber) are safe but refuse too many legitimate requests. Production models (purple dots) sit at different points on the frontier, reflecting different values choices. Sub-optimal models (gray) can be improved on both dimensions.</figcaption>
+      </figure>
+
+      <p>Different labs target different points on this frontier, and the choice is fundamentally about values, not technology. A model deployed for medical advice should prioritize safety over helpfulness. A model for creative writing should prioritize helpfulness. The alignment pipeline does not dictate where on the frontier to sit — it provides the tools to reach any point on it.</p>
+
+      <h3>System Prompts and Meta-Prompting</h3>
+
+      <p>The system prompt is the runtime mechanism for alignment. The same base model can serve radically different use cases depending on its system prompt: "You are a helpful coding assistant" vs. "You are a careful medical information provider." This decouples the alignment *capability* (trained during RLHF) from the alignment *policy* (specified at inference time via the system prompt).</p>
+
+      <p>Chapter 8 introduced system prompts as a behavioral control mechanism in GPT-4. Here we see the other side of that story: the alignment training teaches the model to *follow* system prompt instructions faithfully. Without SFT and RLHF, the model would ignore the system prompt — it is just another piece of text in the context window. The alignment pipeline teaches the model to treat it as a persistent behavioral constraint.</p>
+
+      <p><strong>Meta-prompting</strong> takes this one step further: the system prompt itself is generated or refined by another model or automated process. This enables dynamic alignment — adjusting the model's behavior based on the user's context, the task type, or the risk level of the request — without retraining.</p>
+    </section>
+
+  </article>
+
+  <footer class="chapter-footer">
+    <div class="footer-nav">
+      <a href="ch10.html">← Previous: Scaling Laws and Emergent Abilities</a>
+      <a href="ch12.html">Next: Long-Context and Memory Augmentation →</a>
+    </div>
+  </footer>
+
+</body>
+</html>

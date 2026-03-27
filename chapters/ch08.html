@@ -1,0 +1,1593 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Chapter 08: Decoder-Only Models — The GPT Lineage — Transformer Research Book</title>
+  <link rel="stylesheet" href="../assets/style.css">
+  <link rel="stylesheet" href="../assets/math.css">
+  <link rel="stylesheet" href="../assets/prism.css">
+  <!-- KaTeX for math rendering -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"
+    onload="renderMathInElement(document.body, {
+      delimiters: [
+        {left: '$$', right: '$$', display: true},
+        {left: '$', right: '$', display: false}
+      ]
+    })">
+  </script>
+  <!-- Prism for code blocks -->
+  <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/prism.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-python.min.js"></script>
+</head>
+<body>
+  <nav class="chapter-nav">
+    <a href="../index.html" class="nav-home">← Table of Contents</a>
+    <span class="nav-chapter">Chapter 08</span>
+    <div style="display:flex; align-items:center; gap:1rem;">
+      <button class="theme-toggle" onclick="toggleTheme()" aria-label="Toggle dark mode">
+        <span class="icon-moon">&#9789;</span><span class="icon-sun">&#9788;</span>
+      </button>
+      <a href="ch09.html" class="nav-next">Next Chapter →</a>
+    </div>
+  </nav>
+  <script>
+    function toggleTheme() {
+      document.documentElement.classList.toggle('dark');
+      localStorage.setItem('theme', document.documentElement.classList.contains('dark') ? 'dark' : 'light');
+    }
+    if (localStorage.getItem('theme') === 'dark') document.documentElement.classList.add('dark');
+  </script>
+
+  <article class="chapter">
+
+    <header class="chapter-header">
+      <div class="chapter-number">Chapter 08</div>
+      <h1 class="chapter-title">Decoder-Only Models — The GPT Lineage</h1>
+      <p class="chapter-lead">BERT showed that a masked language model trained on unlabeled text could learn powerful representations. But BERT cannot write a sentence. It fills in blanks — it does not generate. The decoder-only architecture flips the paradigm: instead of masking random tokens and predicting them bidirectionally, it reads text left-to-right and predicts the next token, one at a time, autoregressively. This simple shift — from fill-in-the-blank to next-word prediction — turned out to be the foundation for the most capable AI systems ever built. By the end of this chapter you will understand the entire GPT lineage from GPT-1's modest 117M parameters to GPT-4's multimodal frontier, the explosion of open-source alternatives that democratized large language models, and the architectural refinements like GQA, MQA, and MLA that make modern decoders fast enough to deploy at scale.</p>
+    </header>
+
+    <!-- ================================================================== -->
+    <!-- GPT-1 -->
+    <!-- ================================================================== -->
+    <section class="chapter-section" id="gpt-1">
+      <h2>GPT-1 (Radford et al., 2018)</h2>
+
+      <p>The core idea behind GPT-1 is disarmingly simple: take a standard Transformer decoder, train it to predict the next token on a large corpus of unlabeled text, then fine-tune it on downstream tasks. Before GPT-1, the dominant paradigm for NLP was to train task-specific architectures from scratch or use shallow pre-trained word embeddings like Word2Vec or GloVe. GPT-1 demonstrated that a single pre-trained model could be adapted to classification, entailment, similarity, and question answering simply by adding a thin task-specific layer on top.</p>
+
+      <h3>Architecture: A 12-Layer Transformer Decoder</h3>
+
+      <p>GPT-1 uses a 12-layer Transformer decoder with 768-dimensional embeddings, 12 attention heads ($d_k = 64$ per head), and a feed-forward hidden size of 3072. The total parameter count is approximately 117 million. Each layer applies causal (masked) self-attention followed by a position-wise FFN with GELU activation, using the original post-norm variant with learned positional embeddings for a context window of 512 tokens.</p>
+
+      <p>The causal mask is the defining structural choice. At every position $i$, the model can only attend to positions $j \leq i$. This means the representation at position $i$ is a function of the prefix $(x_1, x_2, \ldots, x_i)$ only — exactly what we need for autoregressive generation.</p>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 420" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="ch08-arr" viewBox="0 0 10 10" refX="9" refY="5"
+              markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+              <path d="M1 1L9 5L1 9" fill="none" stroke="context-stroke"
+                stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </marker>
+          </defs>
+
+          <!-- Title -->
+          <text x="400" y="24" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="600" fill="#1A1A18">GPT-1 Architecture</text>
+
+          <!-- Input Embeddings -->
+          <rect x="180" y="370" width="440" height="36" rx="6" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1.5"/>
+          <text x="400" y="393" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="500" fill="#0F6E56">Token Embeddings + Learned Positional Embeddings</text>
+
+          <!-- Arrow up -->
+          <line x1="400" y1="370" x2="400" y2="350" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch08-arr)"/>
+
+          <!-- Transformer Block -->
+          <rect x="160" y="140" width="480" height="210" rx="10" fill="none" stroke="#B4B2A9" stroke-width="1" stroke-dasharray="5 4"/>
+          <text x="660" y="250" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#9C9A94">× 12</text>
+
+          <!-- Layer Norm 1 -->
+          <rect x="220" y="300" width="360" height="32" rx="6" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="1"/>
+          <text x="400" y="321" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#5C5B56">Layer Norm</text>
+
+          <line x1="400" y1="300" x2="400" y2="284" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch08-arr)"/>
+
+          <!-- Masked Self-Attention -->
+          <rect x="220" y="248" width="360" height="36" rx="6" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <text x="400" y="271" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="500" fill="#534AB7">Causal Multi-Head Self-Attention</text>
+
+          <!-- Residual arrow (left side) -->
+          <line x1="195" y1="340" x2="195" y2="240" stroke="#AFA9EC" stroke-width="1" stroke-dasharray="4 3"/>
+          <line x1="195" y1="240" x2="218" y2="240" stroke="#AFA9EC" stroke-width="1" marker-end="url(#ch08-arr)"/>
+          <text x="185" y="290" text-anchor="end" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">residual</text>
+
+          <line x1="400" y1="248" x2="400" y2="232" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch08-arr)"/>
+
+          <!-- Layer Norm 2 -->
+          <rect x="220" y="196" width="360" height="32" rx="6" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="1"/>
+          <text x="400" y="217" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#5C5B56">Layer Norm</text>
+
+          <line x1="400" y1="196" x2="400" y2="180" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch08-arr)"/>
+
+          <!-- FFN -->
+          <rect x="220" y="148" width="360" height="32" rx="6" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1.5"/>
+          <text x="400" y="169" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="500" fill="#0F6E56">FFN (GELU activation)</text>
+
+          <!-- Residual arrow (right side) -->
+          <line x1="605" y1="240" x2="605" y2="148" stroke="#5DCAA5" stroke-width="1" stroke-dasharray="4 3"/>
+          <line x1="605" y1="148" x2="582" y2="148" stroke="#5DCAA5" stroke-width="1" marker-end="url(#ch08-arr)"/>
+          <text x="615" y="194" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">residual</text>
+
+          <!-- Arrow up to output -->
+          <line x1="400" y1="140" x2="400" y2="114" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch08-arr)"/>
+
+          <!-- Output Layer -->
+          <rect x="180" y="78" width="440" height="36" rx="6" fill="#FAECE7" stroke="#F0997B" stroke-width="1.5"/>
+          <text x="400" y="101" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="500" fill="#993C1D">Linear → Softmax over Vocabulary</text>
+
+          <!-- Arrow to prediction -->
+          <line x1="400" y1="78" x2="400" y2="58" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch08-arr)"/>
+          <text x="400" y="50" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#993C1D">P(next token)</text>
+        </svg>
+        <figcaption>Figure 8.1 — GPT-1 architecture: a 12-layer Transformer decoder with post-norm layer normalization, causal self-attention, and GELU-activated FFN. The causal mask prevents each position from attending to future tokens. Dashed lines indicate residual connections.</figcaption>
+      </figure>
+
+      <h3>Unsupervised Pre-Training + Supervised Fine-Tuning</h3>
+
+      <p>GPT-1 trains in two phases. First, it performs unsupervised pre-training on the BooksCorpus (~7,000 unpublished books, ~800M tokens), maximizing the standard language modeling objective:</p>
+
+      $$L_{\text{LM}} = \sum_{i} \log P(x_i \mid x_1, \ldots, x_{i-1}; \Theta)$$
+
+      <p>The model learns to predict each token $x_i$ given all preceding tokens. This objective forces the model to develop rich internal representations of syntax, semantics, and world knowledge — not because it was told to, but because predicting the next word accurately requires understanding what the text is about.</p>
+
+      <p>A minimal GPT-1-style decoder block in PyTorch shows how the causal mask, residual connections, and post-norm fit together:</p>
+
+<pre><code class="language-python">
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+class GPTBlock(nn.Module):
+    """Single GPT-1 decoder block: causal self-attention + FFN with post-norm."""
+    def __init__(self, d_model, n_heads, d_ff):
+        super().__init__()
+        self.d_k = d_model // n_heads
+        self.n_heads = n_heads
+        self.W_qkv = nn.Linear(d_model, 3 * d_model)   # fused QKV projection
+        self.W_o = nn.Linear(d_model, d_model)
+        self.norm1 = nn.LayerNorm(d_model)
+        self.ffn = nn.Sequential(
+            nn.Linear(d_model, d_ff),
+            nn.GELU(),
+            nn.Linear(d_ff, d_model),
+        )
+        self.norm2 = nn.LayerNorm(d_model)
+
+    def forward(self, x):
+        B, S, D = x.shape
+        qkv = self.W_qkv(x)                                    # (B, S, 3*D)
+        Q, K, V = qkv.chunk(3, dim=-1)
+        Q = Q.view(B, S, self.n_heads, self.d_k).transpose(1, 2)  # (B, H, S, d_k)
+        K = K.view(B, S, self.n_heads, self.d_k).transpose(1, 2)
+        V = V.view(B, S, self.n_heads, self.d_k).transpose(1, 2)
+
+        # Causal mask: each position attends only to itself and earlier positions
+        scores = Q @ K.transpose(-2, -1) / (self.d_k ** 0.5)   # (B, H, S, S)
+        causal_mask = torch.triu(torch.ones(S, S, device=x.device), diagonal=1).bool()
+        scores.masked_fill_(causal_mask, float('-inf'))
+        attn_out = (F.softmax(scores, dim=-1) @ V)              # (B, H, S, d_k)
+        attn_out = attn_out.transpose(1, 2).reshape(B, S, D)    # (B, S, D)
+
+        # Post-norm: residual first, then normalize (GPT-1 style)
+        x = self.norm1(x + self.W_o(attn_out))
+        x = self.norm2(x + self.ffn(x))
+        return x
+
+# GPT-1 config: 12 layers, d_model=768, 12 heads, d_ff=3072
+blocks = nn.ModuleList([GPTBlock(768, 12, 3072) for _ in range(12)])
+</code></pre>
+
+      <p>Second, GPT-1 is fine-tuned on each downstream task with a task-specific classification head. The authors add a linear layer on top of the final transformer hidden state and combine the task loss with the language modeling loss as an auxiliary objective:</p>
+
+      $$L_{\text{total}} = L_{\text{task}} + \lambda \cdot L_{\text{LM}}$$
+
+      <p>where $\lambda$ is a mixing coefficient (typically 0.5). The auxiliary LM loss acts as a regularizer, keeping the model from forgetting what it learned during pre-training.</p>
+
+      <h3>Task-Specific Input Transformations</h3>
+
+      <p>GPT-1 handles diverse tasks by reformatting inputs with special delimiter tokens rather than changing the architecture. For classification, the input is simply the text followed by a delimiter. For natural language inference, the premise and hypothesis are concatenated with a delimiter between them. For question answering, the document and question are concatenated. This approach — reshaping the input, not the model — became the template for everything that followed.</p>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 310" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="ch08-arr2" viewBox="0 0 10 10" refX="9" refY="5"
+              markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+              <path d="M1 1L9 5L1 9" fill="none" stroke="context-stroke"
+                stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </marker>
+          </defs>
+
+          <text x="400" y="24" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="600" fill="#1A1A18">GPT-1 Task-Specific Input Formats</text>
+
+          <!-- Classification -->
+          <text x="40" y="68" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#5C5B56">Classification</text>
+          <rect x="160" y="50" width="80" height="32" rx="5" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="200" y="71" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#0F6E56">[START]</text>
+          <rect x="248" y="50" width="280" height="32" rx="5" fill="#FFFFFF" stroke="#E5E3DC" stroke-width="1"/>
+          <text x="388" y="71" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#5C5B56">Text</text>
+          <rect x="536" y="50" width="90" height="32" rx="5" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <text x="581" y="71" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#534AB7">[EXTRACT]</text>
+          <line x1="581" y1="50" x2="581" y2="40" stroke="#534AB7" stroke-width="1.5" marker-end="url(#ch08-arr2)"/>
+          <text x="620" y="38" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#534AB7">→ Linear</text>
+
+          <!-- NLI -->
+          <text x="40" y="138" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#5C5B56">Entailment</text>
+          <rect x="160" y="120" width="80" height="32" rx="5" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="200" y="141" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#0F6E56">[START]</text>
+          <rect x="248" y="120" width="120" height="32" rx="5" fill="#FFFFFF" stroke="#E5E3DC" stroke-width="1"/>
+          <text x="308" y="141" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#5C5B56">Premise</text>
+          <rect x="376" y="120" width="60" height="32" rx="5" fill="#FAEEDA" stroke="#EF9F27" stroke-width="1"/>
+          <text x="406" y="141" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#854F0B">[DELIM]</text>
+          <rect x="444" y="120" width="120" height="32" rx="5" fill="#FFFFFF" stroke="#E5E3DC" stroke-width="1"/>
+          <text x="504" y="141" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#5C5B56">Hypothesis</text>
+          <rect x="572" y="120" width="90" height="32" rx="5" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <text x="617" y="141" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#534AB7">[EXTRACT]</text>
+
+          <!-- Similarity -->
+          <text x="40" y="208" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#5C5B56">Similarity</text>
+          <rect x="160" y="190" width="80" height="32" rx="5" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="200" y="211" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#0F6E56">[START]</text>
+          <rect x="248" y="190" width="100" height="32" rx="5" fill="#FFFFFF" stroke="#E5E3DC" stroke-width="1"/>
+          <text x="298" y="211" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#5C5B56">Text A</text>
+          <rect x="356" y="190" width="60" height="32" rx="5" fill="#FAEEDA" stroke="#EF9F27" stroke-width="1"/>
+          <text x="386" y="211" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#854F0B">[DELIM]</text>
+          <rect x="424" y="190" width="100" height="32" rx="5" fill="#FFFFFF" stroke="#E5E3DC" stroke-width="1"/>
+          <text x="474" y="211" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#5C5B56">Text B</text>
+          <rect x="532" y="190" width="90" height="32" rx="5" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <text x="577" y="211" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#534AB7">[EXTRACT]</text>
+
+          <!-- QA -->
+          <text x="40" y="278" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#5C5B56">QA</text>
+          <rect x="160" y="260" width="80" height="32" rx="5" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="200" y="281" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#0F6E56">[START]</text>
+          <rect x="248" y="260" width="100" height="32" rx="5" fill="#FFFFFF" stroke="#E5E3DC" stroke-width="1"/>
+          <text x="298" y="281" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#5C5B56">Context</text>
+          <rect x="356" y="260" width="60" height="32" rx="5" fill="#FAEEDA" stroke="#EF9F27" stroke-width="1"/>
+          <text x="386" y="281" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#854F0B">[DELIM]</text>
+          <rect x="424" y="260" width="100" height="32" rx="5" fill="#FFFFFF" stroke="#E5E3DC" stroke-width="1"/>
+          <text x="474" y="281" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#5C5B56">Question</text>
+          <rect x="532" y="260" width="90" height="32" rx="5" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <text x="577" y="281" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#534AB7">[EXTRACT]</text>
+        </svg>
+        <figcaption>Figure 8.2 — GPT-1's task-specific input transformations. All tasks share the same architecture — only the input format changes. Special tokens [START], [DELIM], and [EXTRACT] structure the input so the final hidden state at the [EXTRACT] token can be used for classification.</figcaption>
+      </figure>
+
+      <p>GPT-1 achieved state-of-the-art on 9 of 12 benchmarks it was evaluated on, beating models that were specifically designed for each task. The key insight was not the architecture (which was a standard Transformer decoder) but the recipe: unsupervised pre-training on large text, then supervised fine-tuning. This two-phase recipe became the blueprint for the entire field.</p>
+    </section>
+
+    <!-- ================================================================== -->
+    <!-- GPT-2 -->
+    <!-- ================================================================== -->
+    <section class="chapter-section" id="gpt-2">
+      <h2>GPT-2 (Radford et al., 2019)</h2>
+
+      <p>GPT-2 asked a provocative question: what happens if we just make GPT-1 bigger and train it on more data? The answer was surprisingly powerful. GPT-2 scaled to 1.5B parameters — roughly 10× larger than GPT-1 — and demonstrated that a language model could perform tasks it was never explicitly trained for, simply by predicting the next token.</p>
+
+      <h3>Scaling to 1.5B Parameters</h3>
+
+      <p>GPT-2 was released in four sizes, establishing the convention of model families at different scales:</p>
+
+      <table>
+        <tr><th>Model</th><th>Layers</th><th>$d_{\text{model}}$</th><th>Heads</th><th>Parameters</th></tr>
+        <tr><td>GPT-2 Small</td><td>12</td><td>768</td><td>12</td><td>117M</td></tr>
+        <tr><td>GPT-2 Medium</td><td>24</td><td>1024</td><td>16</td><td>345M</td></tr>
+        <tr><td>GPT-2 Large</td><td>36</td><td>1280</td><td>20</td><td>774M</td></tr>
+        <tr><td>GPT-2 XL</td><td>48</td><td>1600</td><td>25</td><td>1.5B</td></tr>
+      </table>
+
+      <p>The architecture remained nearly identical to GPT-1 with a few modifications: layer normalization was moved to the input of each sub-block (pre-norm), an additional layer norm was added after the final self-attention block, the context length was extended from 512 to 1024, and the vocabulary was built using byte-level BPE with 50,257 tokens. Byte-level BPE is significant because it can encode *any* string — no unknown tokens, ever.</p>
+
+      <h3>WebText: 40GB of High-Quality Web Text</h3>
+
+      <p>The training data was equally important. The authors scraped outbound links from Reddit posts with at least 3 karma — a simple human quality filter. The resulting dataset, WebText, contained roughly 8 million documents and 40GB of text. This was substantially larger and more diverse than BooksCorpus, and the quality signal from Reddit's voting system proved surprisingly effective.</p>
+
+      <h3>Zero-Shot Task Performance</h3>
+
+      <p>The breakthrough result of GPT-2 was not a new benchmark score but a new capability: zero-shot task performance. Without any fine-tuning at all, GPT-2 could perform tasks like summarization, translation, and question answering — simply by conditioning on a natural language prompt. Feed it "TL;DR:" after an article, and it produces a summary. Feed it "Q: ... A:", and it answers questions.</p>
+
+      <p>This was the first clear evidence that next-token prediction at sufficient scale produces models that implicitly learn to follow instructions embedded in the text distribution. The paper's title captured the insight precisely: "Language Models are Unsupervised Multitask Learners."</p>
+
+      <p>Performance increased monotonically with model size across every task. The 1.5B model scored 55 F1 on CoQA (conversational QA) without ever seeing a QA training example — a remarkable result that suggested the path to more capable models was simply scale.</p>
+    </section>
+
+    <!-- ================================================================== -->
+    <!-- GPT-3 -->
+    <!-- ================================================================== -->
+    <section class="chapter-section" id="gpt-3">
+      <h2>GPT-3 (Brown et al., 2020) and In-Context Learning</h2>
+
+      <p>If GPT-2 hinted at emergent capability, GPT-3 made it undeniable. At 175 billion parameters — 100× larger than GPT-2 XL — GPT-3 was the first model where in-context learning became reliable enough to be practically useful. You could show it a few examples of a task in the prompt, and it would learn the pattern on the fly, with no gradient update.</p>
+
+      <h3>175B Parameters: The First Frontier-Scale Model</h3>
+
+      <p>GPT-3 used 96 Transformer layers with $d_{\text{model}} = 12288$, 96 attention heads, and alternating dense and sparse attention layers. It was trained on a filtered version of Common Crawl (410B tokens) mixed with WebText2, Books1, Books2, and English Wikipedia, totaling roughly 300B tokens. Training required approximately $3.14 \times 10^{23}$ FLOPs — thousands of GPU-years.</p>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 380" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="ch08-arr3" viewBox="0 0 10 10" refX="9" refY="5"
+              markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+              <path d="M1 1L9 5L1 9" fill="none" stroke="context-stroke"
+                stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </marker>
+          </defs>
+
+          <text x="400" y="24" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="600" fill="#1A1A18">GPT Family: Parameter Growth (Log Scale)</text>
+
+          <!-- Y axis -->
+          <line x1="120" y1="50" x2="120" y2="340" stroke="#C8C6BE" stroke-width="1"/>
+          <!-- X axis -->
+          <line x1="120" y1="340" x2="740" y2="340" stroke="#C8C6BE" stroke-width="1"/>
+
+          <!-- Y axis labels (log scale) -->
+          <text x="110" y="320" text-anchor="end" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">100M</text>
+          <line x1="115" y1="316" x2="125" y2="316" stroke="#C8C6BE" stroke-width="1"/>
+          <text x="110" y="263" text-anchor="end" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">1B</text>
+          <line x1="115" y1="259" x2="125" y2="259" stroke="#C8C6BE" stroke-width="1"/>
+          <text x="110" y="206" text-anchor="end" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">10B</text>
+          <line x1="115" y1="202" x2="125" y2="202" stroke="#C8C6BE" stroke-width="1"/>
+          <text x="110" y="149" text-anchor="end" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">100B</text>
+          <line x1="115" y1="145" x2="125" y2="145" stroke="#C8C6BE" stroke-width="1"/>
+          <text x="110" y="92" text-anchor="end" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">1T</text>
+          <line x1="115" y1="88" x2="125" y2="88" stroke="#C8C6BE" stroke-width="1"/>
+
+          <!-- Gridlines -->
+          <line x1="120" y1="316" x2="740" y2="316" stroke="#E5E3DC" stroke-width="0.5"/>
+          <line x1="120" y1="259" x2="740" y2="259" stroke="#E5E3DC" stroke-width="0.5"/>
+          <line x1="120" y1="202" x2="740" y2="202" stroke="#E5E3DC" stroke-width="0.5"/>
+          <line x1="120" y1="145" x2="740" y2="145" stroke="#E5E3DC" stroke-width="0.5"/>
+
+          <!-- Data points -->
+          <!-- GPT-1: 117M → y≈312 at x=180 (2018) -->
+          <circle cx="180" cy="312" r="7" fill="#534AB7" stroke="#EEEDFE" stroke-width="2"/>
+          <text x="180" y="300" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#534AB7">GPT-1</text>
+          <text x="180" y="355" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">2018</text>
+
+          <!-- GPT-2: 1.5B → y≈249 at x=280 (2019) -->
+          <circle cx="280" cy="249" r="9" fill="#534AB7" stroke="#EEEDFE" stroke-width="2"/>
+          <text x="280" y="237" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#534AB7">GPT-2</text>
+          <text x="280" y="355" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">2019</text>
+
+          <!-- GPT-3: 175B → y≈131 at x=380 (2020) -->
+          <circle cx="380" cy="131" r="12" fill="#534AB7" stroke="#EEEDFE" stroke-width="2"/>
+          <text x="380" y="116" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#534AB7">GPT-3</text>
+          <text x="380" y="355" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">2020</text>
+
+          <!-- GPT-4: ~1.8T (estimated MoE) → y≈83 at x=570 (2023) -->
+          <circle cx="570" cy="83" r="15" fill="#534AB7" stroke="#EEEDFE" stroke-width="2"/>
+          <text x="570" y="65" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#534AB7">GPT-4</text>
+          <text x="570" y="355" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">2023</text>
+
+          <!-- Connecting line -->
+          <line x1="180" y1="312" x2="280" y2="249" stroke="#AFA9EC" stroke-width="1.5"/>
+          <line x1="280" y1="249" x2="380" y2="131" stroke="#AFA9EC" stroke-width="1.5"/>
+          <line x1="380" y1="131" x2="570" y2="83" stroke="#AFA9EC" stroke-width="1.5" stroke-dasharray="4 3"/>
+
+          <!-- Open-source models for context -->
+          <circle cx="480" cy="249" r="6" fill="#0F6E56" stroke="#E1F5EE" stroke-width="2"/>
+          <text x="480" y="237" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#0F6E56">LLaMA 7B</text>
+
+          <circle cx="520" cy="195" r="6" fill="#0F6E56" stroke="#E1F5EE" stroke-width="2"/>
+          <text x="520" y="183" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#0F6E56">LLaMA 65B</text>
+
+          <circle cx="640" cy="110" r="8" fill="#0F6E56" stroke="#E1F5EE" stroke-width="2"/>
+          <text x="640" y="98" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#0F6E56">LLaMA 3 405B</text>
+          <text x="640" y="355" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">2024</text>
+
+          <!-- Legend -->
+          <circle cx="550" cy="310" r="5" fill="#534AB7"/>
+          <text x="562" y="314" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#5C5B56">GPT family (OpenAI)</text>
+          <circle cx="550" cy="330" r="5" fill="#0F6E56"/>
+          <text x="562" y="334" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#5C5B56">Open-source (various)</text>
+        </svg>
+        <figcaption>Figure 8.3 — Parameter count growth in the GPT family and major open-source models. Circle area is proportional to parameter count. The GPT-4 estimate reflects rumored MoE total parameters; its active parameters per forward pass are likely smaller. The dashed line indicates the gap where no official GPT model was released.</figcaption>
+      </figure>
+
+      <h3>Few-Shot Learning: Task Demonstration in the Prompt</h3>
+
+      <p>GPT-3's signature capability was **in-context learning** (ICL). Instead of fine-tuning on task-specific data, you provide a few examples of the desired input-output mapping directly in the prompt. The model reads these demonstrations and generalizes to new inputs — all within a single forward pass, with zero parameter updates.</p>
+
+      <p>The paper systematically compared three settings:</p>
+      <ul>
+        <li><strong>Zero-shot</strong>: only the task description is provided, no examples</li>
+        <li><strong>One-shot</strong>: one input-output example is shown</li>
+        <li><strong>Few-shot</strong>: typically 10–100 examples in the prompt</li>
+      </ul>
+
+      <p>Few-shot GPT-3 matched or exceeded fine-tuned BERT-large on several benchmarks. On SuperGLUE, few-shot GPT-3 scored within a few points of fine-tuned T5-11B. On translation (English→French), it approached the performance of supervised baselines. This was striking because GPT-3 was never explicitly trained on labeled task data — it inferred the task from the demonstration pattern.</p>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 430" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="ch08-arr-icl" viewBox="0 0 10 10" refX="9" refY="5"
+              markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+              <path d="M1 1L9 5L1 9" fill="none" stroke="context-stroke"
+                stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </marker>
+          </defs>
+
+          <text x="400" y="22" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="600" fill="#1A1A18">In-Context Learning: Zero-Shot → One-Shot → Few-Shot</text>
+
+          <!-- === ZERO-SHOT === -->
+          <rect x="30" y="42" width="230" height="24" rx="4" fill="#FAECE7" stroke="#F0997B" stroke-width="1"/>
+          <text x="145" y="59" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#993C1D">Zero-Shot</text>
+
+          <!-- Prompt content -->
+          <rect x="30" y="74" width="230" height="120" rx="6" fill="#FFFFFF" stroke="#E5E3DC" stroke-width="1"/>
+          <text x="44" y="96" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#5C5B56">Translate English to French:</text>
+          <text x="44" y="116" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#5C5B56">  </text>
+          <rect x="44" y="124" width="200" height="22" rx="3" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="144" y="140" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#0F6E56">cheese → </text>
+          <text x="44" y="176" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">Task description only.</text>
+          <text x="44" y="190" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">No examples provided.</text>
+
+          <!-- Output -->
+          <line x1="145" y1="194" x2="145" y2="210" stroke="#534AB7" stroke-width="1.5" marker-end="url(#ch08-arr-icl)"/>
+          <rect x="60" y="212" width="170" height="24" rx="4" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <text x="145" y="229" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#534AB7">fromage ✗ (often wrong)</text>
+
+          <!-- Accuracy bar -->
+          <rect x="60" y="248" width="170" height="8" rx="4" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="0.5"/>
+          <rect x="60" y="248" width="51" height="8" rx="4" fill="#F0997B"/>
+          <text x="145" y="272" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">~30% accuracy</text>
+
+          <!-- === ONE-SHOT === -->
+          <rect x="285" y="42" width="230" height="24" rx="4" fill="#FAEEDA" stroke="#EF9F27" stroke-width="1"/>
+          <text x="400" y="59" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#854F0B">One-Shot</text>
+
+          <rect x="285" y="74" width="230" height="120" rx="6" fill="#FFFFFF" stroke="#E5E3DC" stroke-width="1"/>
+          <text x="299" y="96" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#5C5B56">Translate English to French:</text>
+          <rect x="299" y="104" width="200" height="22" rx="3" fill="#FAEEDA" stroke="#EF9F27" stroke-width="1"/>
+          <text x="399" y="120" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#854F0B">sea otter → loutre de mer</text>
+          <text x="299" y="140" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">↑ one demonstration</text>
+          <rect x="299" y="150" width="200" height="22" rx="3" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="399" y="166" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#0F6E56">cheese → </text>
+
+          <line x1="400" y1="194" x2="400" y2="210" stroke="#534AB7" stroke-width="1.5" marker-end="url(#ch08-arr-icl)"/>
+          <rect x="315" y="212" width="170" height="24" rx="4" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <text x="400" y="229" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#534AB7">fromage ✓</text>
+
+          <rect x="315" y="248" width="170" height="8" rx="4" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="0.5"/>
+          <rect x="315" y="248" width="102" height="8" rx="4" fill="#EF9F27"/>
+          <text x="400" y="272" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">~60% accuracy</text>
+
+          <!-- === FEW-SHOT === -->
+          <rect x="540" y="42" width="230" height="24" rx="4" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="655" y="59" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#0F6E56">Few-Shot (k=3)</text>
+
+          <rect x="540" y="74" width="230" height="120" rx="6" fill="#FFFFFF" stroke="#E5E3DC" stroke-width="1"/>
+          <text x="554" y="92" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#5C5B56">Translate English to French:</text>
+          <rect x="554" y="98" width="200" height="18" rx="3" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="654" y="112" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#0F6E56">sea otter → loutre de mer</text>
+          <rect x="554" y="118" width="200" height="18" rx="3" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="654" y="132" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#0F6E56">peppermint → menthe poivrée</text>
+          <rect x="554" y="138" width="200" height="18" rx="3" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="654" y="152" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#0F6E56">plush giraffe → girafe en peluche</text>
+          <text x="554" y="170" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">↑ three demonstrations</text>
+          <rect x="554" y="174" width="200" height="18" rx="3" fill="#FAEEDA" stroke="#EF9F27" stroke-width="1"/>
+          <text x="654" y="188" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#854F0B">cheese → </text>
+
+          <line x1="655" y1="194" x2="655" y2="210" stroke="#534AB7" stroke-width="1.5" marker-end="url(#ch08-arr-icl)"/>
+          <rect x="570" y="212" width="170" height="24" rx="4" fill="#534AB7" stroke="#534AB7"/>
+          <text x="655" y="229" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#FFFFFF">fromage ✓✓</text>
+
+          <rect x="570" y="248" width="170" height="8" rx="4" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="0.5"/>
+          <rect x="570" y="248" width="145" height="8" rx="4" fill="#0F6E56"/>
+          <text x="655" y="272" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">~85% accuracy</text>
+
+          <!-- Bottom insight -->
+          <rect x="60" y="294" width="680" height="50" rx="8" fill="#FFFFFF" stroke="#E5E3DC" stroke-width="1"/>
+          <text x="400" y="314" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#1A1A18">No gradient updates anywhere. Same frozen model.</text>
+          <text x="400" y="334" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#5C5B56">Adding examples in the prompt is enough for the model to infer the task pattern on the fly.</text>
+
+          <!-- Evolution arrows -->
+          <text x="400" y="378" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#534AB7">The paradigm shift: GPT-1 fine-tunes per task → GPT-2 zero-shot → GPT-3 few-shot ICL</text>
+          <text x="400" y="398" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">Each step removes one training requirement: first the task head, then the gradient updates, then the labeled examples.</text>
+        </svg>
+        <figcaption>Figure 8.10 — In-context learning: the same frozen GPT-3 model produces increasingly accurate translations as more demonstrations are added to the prompt. Zero-shot provides only a task description. One-shot adds a single example. Few-shot adds several examples. No parameters are updated — the model infers the input-output pattern from the prompt structure alone. Accuracy bars are illustrative of the general trend reported in Brown et al. (2020).</figcaption>
+      </figure>
+
+      <h3>Prompt Engineering as a Skill</h3>
+
+      <p>ICL introduced a new interface for interacting with models: the prompt. The quality of GPT-3's output was highly sensitive to how the prompt was constructed — the choice of exemplars, their ordering, the phrasing of the task instruction, even the formatting of the output field. **Task framing** — presenting the same underlying task in different formats, such as rephrasing classification as multiple choice, cloze completion, or natural language inference — could dramatically alter performance. This created a new skill — **prompt engineering** — where human expertise shifted from designing architectures and loss functions to designing textual inputs.</p>
+
+      <h3>Limitations</h3>
+
+      <p>GPT-3 was not without significant limitations. Its context window was 2,048 tokens — adequate for short tasks but insufficient for multi-document reasoning. Inference cost was enormous: a single forward pass through 175B parameters required ~350 GFLOPs. The model hallucinated freely, generating plausible-sounding but factually incorrect text with high confidence. And it had no mechanism for self-correction or grounding in external knowledge.</p>
+    </section>
+
+    <!-- ================================================================== -->
+    <!-- Open-Source Lineage -->
+    <!-- ================================================================== -->
+    <section class="chapter-section" id="open-source-lineage">
+      <h2>The Open-Source Lineage</h2>
+
+      <p>GPT-3 proved that large decoder-only models were transformatively capable, but it was closed — accessible only through an API with rate limits and cost barriers. Starting in 2022, a wave of open-weight models demonstrated that the GPT recipe could be reproduced, improved upon, and freely distributed. This section traces the key models that shifted the balance of power from proprietary to open.</p>
+
+      <h3>OPT (Meta, 2022)</h3>
+
+      <p>OPT (Open Pre-trained Transformer) was Meta's explicit attempt to provide a reproducible baseline at GPT-3 scale. The 175B-parameter model was trained on a roughly comparable data mixture and released with full training logs, hyperparameters, and code. This transparency was the point: the paper documented training instabilities, loss spikes, and hardware failures in detail, giving the community its first realistic picture of what training a frontier model actually looks like.</p>
+
+      <p>OPT's performance was slightly below GPT-3 on most benchmarks but within the same ballpark, confirming that the architecture and training recipe — not some secret sauce — were the key ingredients.</p>
+
+      <h3>BLOOM (BigScience, 2022)</h3>
+
+      <p>BLOOM was a collaborative effort involving over 1,000 researchers across 70 countries. At 176B parameters, it was the first open multilingual large language model, trained on the ROOTS corpus covering 46 natural languages and 13 programming languages. BLOOM used ALiBi positional embeddings instead of learned positions, which provided better length generalization. The project demonstrated that frontier-scale training could be organized as a community effort rather than a corporate one.</p>
+
+      <h3>Falcon (Technology Innovation Institute, 2023)</h3>
+
+      <p>Falcon emphasized data quality over data quantity. Its RefinedWeb dataset was a carefully filtered and deduplicated extract of Common Crawl, and the authors showed that web data alone — without curated book or Wikipedia sources — could produce competitive models when the filtering was aggressive enough. Falcon-40B used GQA (grouped-query attention, detailed later in this chapter), which reduced KV cache memory and accelerated inference significantly.</p>
+
+      <h3>LLaMA: The Inflection Point</h3>
+
+      <p>LLaMA (Touvron et al., 2023) was a watershed moment for open-source LLMs. Meta trained models at 7B, 13B, 33B, and 65B parameters using *only* publicly available data — no proprietary datasets. The key insight was that smaller models trained on more tokens could match or exceed larger models trained on fewer tokens (consistent with the Chinchilla scaling laws). LLaMA-13B outperformed GPT-3 (175B) on most benchmarks despite being 13× smaller.</p>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 370" xmlns="http://www.w3.org/2000/svg">
+          <!-- Timeline axis -->
+          <line x1="60" y1="180" x2="760" y2="180" stroke="#C8C6BE" stroke-width="1.5"/>
+
+          <!-- Year markers -->
+          <text x="100" y="200" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">2022</text>
+          <line x1="100" y1="175" x2="100" y2="185" stroke="#C8C6BE" stroke-width="1"/>
+          <text x="300" y="200" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">2023</text>
+          <line x1="300" y1="175" x2="300" y2="185" stroke="#C8C6BE" stroke-width="1"/>
+          <text x="500" y="200" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">2024</text>
+          <line x1="500" y1="175" x2="500" y2="185" stroke="#C8C6BE" stroke-width="1"/>
+          <text x="700" y="200" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">2025</text>
+          <line x1="700" y1="175" x2="700" y2="185" stroke="#C8C6BE" stroke-width="1"/>
+
+          <text x="400" y="24" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="600" fill="#1A1A18">Open-Source Decoder Timeline</text>
+
+          <!-- OPT — above line -->
+          <circle cx="100" cy="180" r="6" fill="#0F6E56" stroke="#E1F5EE" stroke-width="2"/>
+          <text x="100" y="160" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#0F6E56">OPT 175B</text>
+          <text x="100" y="146" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">Meta</text>
+
+          <!-- BLOOM — below line -->
+          <circle cx="160" cy="180" r="6" fill="#0F6E56" stroke="#E1F5EE" stroke-width="2"/>
+          <text x="160" y="220" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#0F6E56">BLOOM 176B</text>
+          <text x="160" y="234" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">BigScience</text>
+
+          <!-- LLaMA 1 — above -->
+          <circle cx="270" cy="180" r="8" fill="#534AB7" stroke="#EEEDFE" stroke-width="2"/>
+          <text x="270" y="155" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#534AB7">LLaMA</text>
+          <text x="270" y="141" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">7B–65B</text>
+
+          <!-- Falcon — below -->
+          <circle cx="330" cy="180" r="6" fill="#0F6E56" stroke="#E1F5EE" stroke-width="2"/>
+          <text x="330" y="220" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#0F6E56">Falcon</text>
+          <text x="330" y="234" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">TII</text>
+
+          <!-- LLaMA 2 — above -->
+          <circle cx="380" cy="180" r="8" fill="#534AB7" stroke="#EEEDFE" stroke-width="2"/>
+          <text x="380" y="155" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#534AB7">LLaMA 2</text>
+          <text x="380" y="141" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">7B–70B + Chat</text>
+
+          <!-- Mistral — below -->
+          <circle cx="420" cy="180" r="6" fill="#993C1D" stroke="#FAECE7" stroke-width="2"/>
+          <text x="420" y="220" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#993C1D">Mistral 7B</text>
+          <text x="420" y="234" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">Sliding window</text>
+
+          <!-- Mixtral — above -->
+          <circle cx="470" cy="180" r="6" fill="#993C1D" stroke="#FAECE7" stroke-width="2"/>
+          <text x="470" y="155" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#993C1D">Mixtral 8×7B</text>
+          <text x="470" y="141" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">Sparse MoE</text>
+
+          <!-- LLaMA 3 — below -->
+          <circle cx="530" cy="180" r="9" fill="#534AB7" stroke="#EEEDFE" stroke-width="2"/>
+          <text x="530" y="220" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#534AB7">LLaMA 3</text>
+          <text x="530" y="234" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">8B–70B, GQA</text>
+
+          <!-- DeepSeek V2 — above -->
+          <circle cx="580" cy="180" r="7" fill="#854F0B" stroke="#FAEEDA" stroke-width="2"/>
+          <text x="580" y="155" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#854F0B">DeepSeek V2</text>
+          <text x="580" y="141" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">MLA + MoE</text>
+
+          <!-- LLaMA 3.1 405B — below -->
+          <circle cx="620" cy="180" r="10" fill="#534AB7" stroke="#EEEDFE" stroke-width="2"/>
+          <text x="620" y="220" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#534AB7">LLaMA 3.1</text>
+          <text x="620" y="234" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">405B, 128K ctx</text>
+
+          <!-- DeepSeek V3 — above -->
+          <circle cx="660" cy="180" r="8" fill="#854F0B" stroke="#FAEEDA" stroke-width="2"/>
+          <text x="660" y="155" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#854F0B">DeepSeek V3</text>
+          <text x="660" y="141" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">671B MoE</text>
+
+          <!-- Qwen 2.5 — below -->
+          <circle cx="610" cy="180" r="6" fill="#0F6E56" stroke="#E1F5EE" stroke-width="2"/>
+          <text x="610" y="220" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#0F6E56">Qwen 2.5</text>
+          <text x="610" y="234" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">Alibaba</text>
+
+          <!-- DeepSeek R1 — above, larger circle to indicate impact -->
+          <circle cx="720" cy="180" r="9" fill="#854F0B" stroke="#FAEEDA" stroke-width="2"/>
+          <text x="720" y="155" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#854F0B">DeepSeek R1</text>
+          <text x="720" y="141" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">Reasoning</text>
+
+          <!-- Legend -->
+          <circle cx="180" cy="310" r="5" fill="#534AB7"/>
+          <text x="192" y="314" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#5C5B56">LLaMA family (Meta)</text>
+          <circle cx="350" cy="310" r="5" fill="#993C1D"/>
+          <text x="362" y="314" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#5C5B56">Mistral / Mixtral</text>
+          <circle cx="510" cy="310" r="5" fill="#854F0B"/>
+          <text x="522" y="314" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#5C5B56">DeepSeek</text>
+          <circle cx="180" cy="330" r="5" fill="#0F6E56"/>
+          <text x="192" y="334" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#5C5B56">Other open-source</text>
+        </svg>
+        <figcaption>Figure 8.4 — Timeline of major open-source decoder-only models from 2022 to 2025. Circle size roughly corresponds to model scale. The LLaMA family (purple) established the dominant recipe; Mistral/Mixtral (coral) introduced sparse MoE to open models; DeepSeek (amber) pioneered multi-head latent attention and open reasoning models.</figcaption>
+      </figure>
+
+      <p>LLaMA's architectural choices became the de facto standard for open models: RMSNorm (instead of LayerNorm), SwiGLU activation in the FFN, rotary positional embeddings (RoPE), and pre-norm placement. Nearly every open-source LLM released after LLaMA adopted this configuration.</p>
+
+      <h3>LLaMA 2: Chat Models and RLHF</h3>
+
+      <p>LLaMA 2 (Touvron et al., 2023) scaled training data to 2 trillion tokens (40% more than LLaMA 1) and released models at 7B, 13B, and 70B parameters. The 70B model used GQA with 8 key-value heads (vs. 64 query heads), reducing KV cache memory by 8× and enabling substantially faster inference at long context lengths.</p>
+
+      <p>The most significant addition was LLaMA 2-Chat: models fine-tuned with supervised fine-tuning (SFT) on instruction data followed by reinforcement learning from human feedback (RLHF). The RLHF process used rejection sampling and PPO to align the model's outputs with human preferences for helpfulness and safety. LLaMA 2-Chat demonstrated that open models could be meaningfully aligned, not just capable.</p>
+
+      <h3>LLaMA 3, 3.1, and 3.3</h3>
+
+      <p>The LLaMA 3 family (2024) pushed the recipe further. LLaMA 3 8B and 70B used a 128K-token vocabulary (up from 32K), GQA across all sizes, and were trained on over 15 trillion tokens — a 7.5× increase over LLaMA 2. The expanded vocabulary and training data brought strong multilingual capabilities, with significantly improved performance across languages including German, French, Italian, Portuguese, Hindi, Spanish, and Thai compared to LLaMA 2. The 8B model matched or exceeded LLaMA 2 70B on many benchmarks, demonstrating the power of training smaller models on substantially more data.</p>
+
+      <p>LLaMA 3.1 introduced the 405B-parameter model with a 128K context window, making it the largest open-weight dense model. LLaMA 3.3 70B achieved performance competitive with the 405B model through improved training and data, showing that quality could often substitute for raw size.</p>
+
+      <h3>Mistral 7B and Mixtral</h3>
+
+      <p>Mistral 7B (Jiang et al., 2023) demonstrated that a 7B model with the right architectural choices could match LLaMA 2 13B. Its innovations included **sliding window attention** (window size 4,096, with some layers attending globally), allowing long-context inference without quadratic memory growth. It used GQA with 8 key-value heads.</p>
+
+      <p>Mixtral 8×7B extended the Mistral architecture with a **sparse Mixture of Experts** (MoE): each FFN layer was replaced by 8 expert FFN networks, with a router selecting the top 2 experts per token. The total parameter count was 46.7B, but only 12.9B parameters were active per forward pass. This yielded GPT-3.5-level performance at a fraction of the inference cost. Mixtral 8×22B scaled the recipe further, with 141B total parameters and 39B active.</p>
+
+      <h3>DeepSeek V2 and V3</h3>
+
+      <p>Developed by the Chinese AI lab DeepSeek, DeepSeek V2 (2024) introduced two innovations that set it apart from the LLaMA-derivative models. First, **Multi-head Latent Attention (MLA)**, which compresses the key-value cache into a low-rank latent space, dramatically reducing memory while preserving or improving quality. Second, DeepSeekMoE, which uses a fine-grained expert architecture with more experts at smaller size plus shared experts that process every token.</p>
+
+      <p>DeepSeek V3 scaled to 671B total parameters (37B active per token) with 256 routed experts and 1 shared expert per MoE layer. It was trained on 14.8 trillion tokens and achieved performance competitive with closed-source frontier models. The training cost was reported at approximately $5.5 million — dramatically lower than comparable models — due to aggressive training efficiency optimizations including FP8 mixed precision and Multi-Token Prediction (MTP) as an auxiliary objective.</p>
+
+      <p><strong>DeepSeek R1</strong> (January 2025) applied inference-time reasoning to the open-source world. Built on top of DeepSeek V3, R1 was trained with reinforcement learning to produce long chains of thought before answering — similar to OpenAI's o1 but with fully open weights. R1 matched o1-preview on math (AIME 2024: 79.8%) and coding benchmarks while being freely available. The distilled variants (DeepSeek R1-Distill, available at 1.5B to 70B) showed that reasoning capabilities could be distilled from a large reasoning model into much smaller ones, making inference-time reasoning accessible without frontier-scale compute.</p>
+
+      <h3>Qwen, Gemma, and the Global Open Ecosystem</h3>
+
+      <p>By 2024, the open-source landscape was no longer a two-player game between Meta and Mistral. <strong>Qwen 2.5</strong> (Alibaba, late 2024) released models from 0.5B to 72B parameters with strong multilingual performance, particularly in Chinese and English. Qwen 2.5 72B matched LLaMA 3.1 70B on most English benchmarks while significantly outperforming it on Chinese tasks. The Qwen family also included specialized code (Qwen2.5-Coder) and math (Qwen2.5-Math) variants, and QwQ — a reasoning model in the o1/R1 mold.</p>
+
+      <p><strong>Gemma 2</strong> (Google, mid 2024) provided open-weight models at 2B, 9B, and 27B parameters built on technology from the Gemini family. Gemma 2 27B was competitive with models 2-3× its size, partly due to knowledge distillation from larger Gemini models during training. Google's willingness to open-source models derived from their proprietary frontier research signaled that the open-source ecosystem had become strategically important even for labs that also sell API access.</p>
+
+      <p>The open-source ecosystem in 2025 spans models from three continents: Meta's LLaMA (US), Mistral (France), DeepSeek and Qwen (China), and Google's Gemma (US). Competition among these families has driven rapid improvements in quality, efficiency, and specialization — to the point where open models now match or exceed closed models from just 12 months prior.</p>
+    </section>
+
+    <!-- ================================================================== -->
+    <!-- GPT-4 and the Closed Frontier -->
+    <!-- ================================================================== -->
+    <section class="chapter-section" id="gpt-4">
+      <h2>GPT-4 and the Closed Frontier</h2>
+
+      <p>While open-source models democratized large language models, OpenAI continued to push the frontier with proprietary systems. GPT-4 (2023) represented a qualitative leap: the first commercially deployed LLM capable of vision understanding, sophisticated reasoning, and 128K-token context windows.</p>
+
+      <h3>GPT-4V: Multimodal Input</h3>
+
+      <p>GPT-4 introduced vision capabilities (GPT-4V), accepting interleaved text and image inputs. The model could analyze photographs, interpret charts, read handwritten text, and reason about visual content in conjunction with textual instructions. The architecture details were never disclosed, but the system likely uses a vision encoder (ViT-based) that projects image patches into the same embedding space as text tokens, allowing the decoder to attend to both modalities through standard self-attention.</p>
+
+      <h3>RLHF and System Prompts at Scale</h3>
+
+      <p>GPT-4 incorporated extensive RLHF training and introduced the concept of a **system prompt** as a first-class mechanism for controlling model behavior. The system prompt is prepended to every conversation and acts as persistent instruction context. This enabled API users to create specialized agents ("You are a medical assistant...", "You are a Python tutor...") without fine-tuning, using the model's strong instruction-following ability to condition its behavior dynamically.</p>
+
+      <h3>Long Context: What Changes at 128K</h3>
+
+      <p>GPT-4 Turbo extended the context window to 128K tokens — roughly 300 pages of text. This was a qualitative shift, not just a quantitative one. With 128K tokens, the model could process entire codebases, legal contracts, or book-length documents in a single forward pass. The architectural changes needed to support this context length — likely involving some form of attention sparsity, positional interpolation, or KV cache compression — were not disclosed but represented significant engineering challenges.</p>
+
+      <h3>GPT-4o: Native Multimodal</h3>
+
+      <p>GPT-4o ("omni," 2024) unified text, vision, and audio into a single model with a single architecture. Unlike GPT-4V, which used a separate vision encoder, GPT-4o natively processed all three modalities, enabling real-time voice conversation with the ability to see and discuss images simultaneously. The "omni" architecture represented a move toward the unified multimodal models discussed in Part V of this book.</p>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 320" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="ch08-arr4" viewBox="0 0 10 10" refX="9" refY="5"
+              markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+              <path d="M1 1L9 5L1 9" fill="none" stroke="context-stroke"
+                stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </marker>
+          </defs>
+
+          <text x="400" y="24" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="600" fill="#1A1A18">GPT-4V vs GPT-4o: Multimodal Architecture Comparison</text>
+
+          <!-- Left panel: GPT-4V -->
+          <rect x="30" y="40" width="350" height="34" rx="5" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1"/>
+          <text x="205" y="62" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="600" fill="#534AB7">GPT-4V — Separate Encoders</text>
+
+          <!-- Right panel: GPT-4o -->
+          <rect x="420" y="40" width="350" height="34" rx="5" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="595" y="62" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="600" fill="#0F6E56">GPT-4o — Unified Architecture</text>
+
+          <!-- Divider -->
+          <line x1="400" y1="36" x2="400" y2="300" stroke="#E5E3DC" stroke-width="1" stroke-dasharray="5 4"/>
+
+          <!-- GPT-4V: separate encoders -->
+          <rect x="60" y="100" width="100" height="36" rx="6" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1.5"/>
+          <text x="110" y="123" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#0F6E56">Text Enc.</text>
+
+          <rect x="180" y="100" width="100" height="36" rx="6" fill="#FAEEDA" stroke="#EF9F27" stroke-width="1.5"/>
+          <text x="230" y="123" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#854F0B">Vision Enc.</text>
+
+          <rect x="300" y="100" width="60" height="36" rx="6" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="1"/>
+          <text x="330" y="123" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#9C9A94">(none)</text>
+          <text x="330" y="93" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">Audio</text>
+
+          <!-- Arrows down -->
+          <line x1="110" y1="136" x2="110" y2="160" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch08-arr4)"/>
+          <line x1="230" y1="136" x2="230" y2="160" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch08-arr4)"/>
+
+          <!-- Projection -->
+          <rect x="70" y="160" width="240" height="32" rx="6" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="1"/>
+          <text x="190" y="181" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#5C5B56">Cross-modal projection</text>
+
+          <line x1="190" y1="192" x2="190" y2="210" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch08-arr4)"/>
+
+          <!-- Decoder -->
+          <rect x="60" y="210" width="260" height="40" rx="6" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <text x="190" y="235" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="500" fill="#534AB7">Language Decoder</text>
+
+          <line x1="190" y1="250" x2="190" y2="268" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch08-arr4)"/>
+          <text x="190" y="285" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#993C1D">Text Output Only</text>
+
+          <!-- GPT-4o: unified -->
+          <rect x="450" y="100" width="90" height="36" rx="6" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1.5"/>
+          <text x="495" y="123" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#0F6E56">Text</text>
+
+          <rect x="550" y="100" width="90" height="36" rx="6" fill="#FAEEDA" stroke="#EF9F27" stroke-width="1.5"/>
+          <text x="595" y="123" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#854F0B">Vision</text>
+
+          <rect x="650" y="100" width="90" height="36" rx="6" fill="#E6F1FB" stroke="#85B7EB" stroke-width="1.5"/>
+          <text x="695" y="123" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#185FA5">Audio</text>
+
+          <!-- Arrows down to unified -->
+          <line x1="495" y1="136" x2="495" y2="160" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch08-arr4)"/>
+          <line x1="595" y1="136" x2="595" y2="160" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch08-arr4)"/>
+          <line x1="695" y1="136" x2="695" y2="160" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch08-arr4)"/>
+
+          <!-- Unified tokenizer -->
+          <rect x="450" y="160" width="300" height="32" rx="6" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="1"/>
+          <text x="600" y="181" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#5C5B56">Unified tokenization</text>
+
+          <line x1="600" y1="192" x2="600" y2="210" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch08-arr4)"/>
+
+          <!-- Single decoder -->
+          <rect x="450" y="210" width="300" height="40" rx="6" fill="#534AB7" stroke="#534AB7"/>
+          <text x="600" y="235" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="500" fill="#FFFFFF">Unified Multimodal Decoder</text>
+
+          <line x1="600" y1="250" x2="600" y2="268" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch08-arr4)"/>
+          <text x="600" y="285" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#993C1D">Text + Audio Output</text>
+        </svg>
+        <figcaption>Figure 8.5 — Comparison of GPT-4V (separate vision encoder projected into a text-only decoder) versus GPT-4o (unified architecture processing text, vision, and audio natively). GPT-4o can generate both text and audio outputs, while GPT-4V produces text only.</figcaption>
+      </figure>
+
+      <h3>Reasoning Models: o1, o3, and Inference-Time Compute</h3>
+
+      <p>In September 2024, OpenAI released <strong>o1</strong>, a model that marked a paradigm shift in how decoder-only models solve hard problems. Instead of producing an answer in a single forward pass, o1 generates a long internal chain-of-thought — spending more tokens (and thus more compute) "thinking" before producing a final answer. On math olympiad problems (AIME 2024), o1 scored 83% compared to GPT-4o's 13%. On competition-level coding (Codeforces), it reached the 89th percentile.</p>
+
+      <p>The key insight is <strong>inference-time compute scaling</strong>: model quality improves not only by training a bigger model (training-time compute) but by letting a fixed model think longer at inference time. The model learns during training *when* to think more and *how* to decompose hard problems into intermediate steps. The chain-of-thought tokens are not shown to the user — the model reasons internally and returns only the final answer.</p>
+
+      <p><strong>o3</strong> (early 2025) extended this approach further, achieving human-expert-level performance on the ARC-AGI benchmark (a visual reasoning test designed to resist brute-force pattern matching) and scoring 96.7% on AIME 2024. These results demonstrated that inference-time compute scaling is a complementary axis to parameter scaling — and potentially a more cost-effective one for reasoning-heavy tasks.</p>
+
+      <h3>The Broader Closed Frontier</h3>
+
+      <p>OpenAI is not alone at the frontier. <strong>Anthropic's Claude</strong> family (Claude 3 Opus/Sonnet/Haiku in early 2024, Claude 3.5 Sonnet mid-2024, Claude 4 / Opus 4 in 2025) introduced extended thinking capabilities, strong instruction following, and 200K-token context windows. Claude models consistently ranked among the top on coding, reasoning, and long-context benchmarks.</p>
+
+      <p><strong>Google's Gemini</strong> family (Gemini 1.5 Pro in early 2024, Gemini 2.0 Flash in late 2024) pushed the context window frontier to 1 million tokens with Gemini 1.5 Pro — an order of magnitude beyond GPT-4 Turbo. Gemini 2.0 Flash introduced native tool use and multimodal output. Google's Gemma open models (discussed below) provided open-weight counterparts at smaller scales.</p>
+
+      <p>The closed frontier in 2025 is defined by three axes of competition: parameter scale and data quality, inference-time reasoning (o1/o3 style), and native multimodality. All major labs are pursuing all three simultaneously.</p>
+    </section>
+
+    <!-- ================================================================== -->
+    <!-- Architectural Refinements -->
+    <!-- ================================================================== -->
+    <section class="chapter-section" id="architectural-refinements">
+      <h2>Architectural Refinements in Modern Decoders</h2>
+
+      <p>The basic Transformer decoder architecture has remained remarkably stable since GPT-1, but the details have evolved substantially. Modern decoders differ from the original in three critical areas: how they handle key-value heads (GQA, MQA, MLA), how they manage local vs. global attention (sliding window), and how they encode position (RoPE, discussed in Chapter 5). This section focuses on the attention mechanism refinements that have become standard in production models.</p>
+
+      <h3>The KV Cache Bottleneck</h3>
+
+      <p>To understand why these refinements matter, we need to understand the core bottleneck of autoregressive inference. During generation, the model produces tokens one at a time. At step $t$, it needs the key and value projections of *all* previous tokens — this is the **KV cache**. For a model with $L$ layers, $H$ heads, and head dimension $d_k$, the KV cache at sequence length $n$ requires:</p>
+
+      $$\text{KV cache memory} = 2 \times L \times H \times n \times d_k \times \text{sizeof(dtype)}$$
+
+      <p>For LLaMA 1 65B ($L=80$, $H=64$, $d_k=128$) at $n=4096$ in FP16, this is approximately 40 GB — *just for the cache*, independent of the model weights. At 128K context, this balloons to over 1.2 TB. The cache grows linearly with sequence length and linearly with the number of KV heads. Reducing the number of KV heads directly reduces cache size.</p>
+
+      <h3>Multi-Query Attention (MQA)</h3>
+
+      <p>**Multi-Query Attention** (Shazeer, 2019) is the most aggressive reduction: all query heads share a *single* key head and a single value head. In standard multi-head attention (MHA), we have $H$ query heads, $H$ key heads, and $H$ value heads. In MQA, we have $H$ query heads but only 1 key head and 1 value head.</p>
+
+      $$\text{MHA:} \quad Q_i = XW_Q^i, \quad K_i = XW_K^i, \quad V_i = XW_V^i \quad \text{for } i = 1, \ldots, H$$
+      $$\text{MQA:} \quad Q_i = XW_Q^i, \quad K = XW_K, \quad V = XW_V \quad \text{for } i = 1, \ldots, H$$
+
+      <p>Here each $XW_Q^i$ is a matrix multiplication ($\mathbb{R}^{n \times d} \times \mathbb{R}^{d \times d_k} \to \mathbb{R}^{n \times d_k}$), projecting all $n$ token representations into the $d_k$-dimensional query space for head $i$. In MHA, the key and value projections are similarly per-head. In MQA, the single $K$ and $V$ are shared across all query heads.</p>
+
+      <p>The KV cache shrinks by a factor of $H$ — from 40 GB to 625 MB for the example above. The quality cost is modest: MQA typically degrades benchmark performance by 1–2% relative to MHA, but inference throughput increases by 2–5× due to reduced memory bandwidth pressure.</p>
+
+      <h3>Grouped-Query Attention (GQA)</h3>
+
+      <p>**Grouped-Query Attention** (Ainslie et al., 2023) is the middle ground between MHA and MQA. Instead of $H$ KV heads (MHA) or 1 KV head (MQA), GQA uses $G$ KV heads, where $1 < G < H$. Each group of $H/G$ query heads shares one key head and one value head.</p>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 360" xmlns="http://www.w3.org/2000/svg">
+
+          <text x="400" y="24" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="600" fill="#1A1A18">Multi-Head vs Grouped-Query vs Multi-Query Attention</text>
+
+          <!-- Panel labels -->
+          <rect x="40" y="44" width="220" height="28" rx="5" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1"/>
+          <text x="150" y="63" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#534AB7">MHA (H=8 KV heads)</text>
+
+          <rect x="290" y="44" width="220" height="28" rx="5" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="400" y="63" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#0F6E56">GQA (G=2 KV heads)</text>
+
+          <rect x="540" y="44" width="220" height="28" rx="5" fill="#FAECE7" stroke="#F0997B" stroke-width="1"/>
+          <text x="650" y="63" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#993C1D">MQA (1 KV head)</text>
+
+          <!-- MHA: 8 Q heads, 8 KV heads -->
+          <!-- Q row -->
+          <text x="40" y="105" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">Q</text>
+          <rect x="58" y="90" width="22" height="22" rx="3" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1"/>
+          <rect x="83" y="90" width="22" height="22" rx="3" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1"/>
+          <rect x="108" y="90" width="22" height="22" rx="3" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1"/>
+          <rect x="133" y="90" width="22" height="22" rx="3" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1"/>
+          <rect x="158" y="90" width="22" height="22" rx="3" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1"/>
+          <rect x="183" y="90" width="22" height="22" rx="3" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1"/>
+          <rect x="208" y="90" width="22" height="22" rx="3" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1"/>
+          <rect x="233" y="90" width="22" height="22" rx="3" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1"/>
+
+          <!-- KV row -->
+          <text x="40" y="155" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">KV</text>
+          <rect x="58" y="140" width="22" height="22" rx="3" fill="#534AB7" stroke="#534AB7" stroke-width="1"/>
+          <rect x="83" y="140" width="22" height="22" rx="3" fill="#534AB7" stroke="#534AB7" stroke-width="1"/>
+          <rect x="108" y="140" width="22" height="22" rx="3" fill="#534AB7" stroke="#534AB7" stroke-width="1"/>
+          <rect x="133" y="140" width="22" height="22" rx="3" fill="#534AB7" stroke="#534AB7" stroke-width="1"/>
+          <rect x="158" y="140" width="22" height="22" rx="3" fill="#534AB7" stroke="#534AB7" stroke-width="1"/>
+          <rect x="183" y="140" width="22" height="22" rx="3" fill="#534AB7" stroke="#534AB7" stroke-width="1"/>
+          <rect x="208" y="140" width="22" height="22" rx="3" fill="#534AB7" stroke="#534AB7" stroke-width="1"/>
+          <rect x="233" y="140" width="22" height="22" rx="3" fill="#534AB7" stroke="#534AB7" stroke-width="1"/>
+
+          <!-- Lines from each Q to its KV -->
+          <line x1="69" y1="112" x2="69" y2="140" stroke="#AFA9EC" stroke-width="1"/>
+          <line x1="94" y1="112" x2="94" y2="140" stroke="#AFA9EC" stroke-width="1"/>
+          <line x1="119" y1="112" x2="119" y2="140" stroke="#AFA9EC" stroke-width="1"/>
+          <line x1="144" y1="112" x2="144" y2="140" stroke="#AFA9EC" stroke-width="1"/>
+          <line x1="169" y1="112" x2="169" y2="140" stroke="#AFA9EC" stroke-width="1"/>
+          <line x1="194" y1="112" x2="194" y2="140" stroke="#AFA9EC" stroke-width="1"/>
+          <line x1="219" y1="112" x2="219" y2="140" stroke="#AFA9EC" stroke-width="1"/>
+          <line x1="244" y1="112" x2="244" y2="140" stroke="#AFA9EC" stroke-width="1"/>
+
+          <!-- GQA: 8 Q heads, 2 KV heads -->
+          <!-- Q row -->
+          <text x="290" y="105" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">Q</text>
+          <rect x="308" y="90" width="22" height="22" rx="3" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <rect x="333" y="90" width="22" height="22" rx="3" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <rect x="358" y="90" width="22" height="22" rx="3" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <rect x="383" y="90" width="22" height="22" rx="3" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <rect x="408" y="90" width="22" height="22" rx="3" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <rect x="433" y="90" width="22" height="22" rx="3" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <rect x="458" y="90" width="22" height="22" rx="3" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <rect x="483" y="90" width="22" height="22" rx="3" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+
+          <!-- KV row — 2 heads, wider -->
+          <text x="290" y="155" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">KV</text>
+          <rect x="308" y="140" width="97" height="22" rx="3" fill="#0F6E56" stroke="#0F6E56" stroke-width="1"/>
+          <text x="356" y="155" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#FFFFFF">Group 1</text>
+          <rect x="408" y="140" width="97" height="22" rx="3" fill="#0F6E56" stroke="#0F6E56" stroke-width="1"/>
+          <text x="456" y="155" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#FFFFFF">Group 2</text>
+
+          <!-- Lines from Q to grouped KV -->
+          <line x1="319" y1="112" x2="356" y2="140" stroke="#5DCAA5" stroke-width="1"/>
+          <line x1="344" y1="112" x2="356" y2="140" stroke="#5DCAA5" stroke-width="1"/>
+          <line x1="369" y1="112" x2="356" y2="140" stroke="#5DCAA5" stroke-width="1"/>
+          <line x1="394" y1="112" x2="356" y2="140" stroke="#5DCAA5" stroke-width="1"/>
+          <line x1="419" y1="112" x2="456" y2="140" stroke="#5DCAA5" stroke-width="1"/>
+          <line x1="444" y1="112" x2="456" y2="140" stroke="#5DCAA5" stroke-width="1"/>
+          <line x1="469" y1="112" x2="456" y2="140" stroke="#5DCAA5" stroke-width="1"/>
+          <line x1="494" y1="112" x2="456" y2="140" stroke="#5DCAA5" stroke-width="1"/>
+
+          <!-- MQA: 8 Q heads, 1 KV head -->
+          <!-- Q row -->
+          <text x="540" y="105" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">Q</text>
+          <rect x="558" y="90" width="22" height="22" rx="3" fill="#FAECE7" stroke="#F0997B" stroke-width="1"/>
+          <rect x="583" y="90" width="22" height="22" rx="3" fill="#FAECE7" stroke="#F0997B" stroke-width="1"/>
+          <rect x="608" y="90" width="22" height="22" rx="3" fill="#FAECE7" stroke="#F0997B" stroke-width="1"/>
+          <rect x="633" y="90" width="22" height="22" rx="3" fill="#FAECE7" stroke="#F0997B" stroke-width="1"/>
+          <rect x="658" y="90" width="22" height="22" rx="3" fill="#FAECE7" stroke="#F0997B" stroke-width="1"/>
+          <rect x="683" y="90" width="22" height="22" rx="3" fill="#FAECE7" stroke="#F0997B" stroke-width="1"/>
+          <rect x="708" y="90" width="22" height="22" rx="3" fill="#FAECE7" stroke="#F0997B" stroke-width="1"/>
+          <rect x="733" y="90" width="22" height="22" rx="3" fill="#FAECE7" stroke="#F0997B" stroke-width="1"/>
+
+          <!-- KV row — 1 head, full width -->
+          <text x="540" y="155" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">KV</text>
+          <rect x="558" y="140" width="197" height="22" rx="3" fill="#993C1D" stroke="#993C1D" stroke-width="1"/>
+          <text x="656" y="155" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#FFFFFF">Single shared KV</text>
+
+          <!-- Lines from Q to single KV -->
+          <line x1="569" y1="112" x2="656" y2="140" stroke="#F0997B" stroke-width="1"/>
+          <line x1="594" y1="112" x2="656" y2="140" stroke="#F0997B" stroke-width="1"/>
+          <line x1="619" y1="112" x2="656" y2="140" stroke="#F0997B" stroke-width="1"/>
+          <line x1="644" y1="112" x2="656" y2="140" stroke="#F0997B" stroke-width="1"/>
+          <line x1="669" y1="112" x2="656" y2="140" stroke="#F0997B" stroke-width="1"/>
+          <line x1="694" y1="112" x2="656" y2="140" stroke="#F0997B" stroke-width="1"/>
+          <line x1="719" y1="112" x2="656" y2="140" stroke="#F0997B" stroke-width="1"/>
+          <line x1="744" y1="112" x2="656" y2="140" stroke="#F0997B" stroke-width="1"/>
+
+          <!-- KV Cache comparison -->
+          <text x="400" y="200" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="600" fill="#1A1A18">KV Cache Size Comparison (relative)</text>
+
+          <!-- MHA bar -->
+          <rect x="58" y="220" width="197" height="24" rx="4" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1"/>
+          <text x="157" y="237" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#534AB7">8× (baseline)</text>
+
+          <!-- GQA bar -->
+          <rect x="308" y="220" width="49" height="24" rx="4" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="332" y="237" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#0F6E56">2×</text>
+          <text x="370" y="237" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#5C5B56">4× reduction</text>
+
+          <!-- MQA bar -->
+          <rect x="558" y="220" width="25" height="24" rx="4" fill="#FAECE7" stroke="#F0997B" stroke-width="1"/>
+          <text x="570" y="237" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#993C1D">1×</text>
+          <text x="596" y="237" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#5C5B56">8× reduction</text>
+
+          <!-- Quality note -->
+          <text x="150" y="275" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">Best quality</text>
+          <text x="400" y="275" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">≈ MHA quality</text>
+          <text x="650" y="275" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">Slight degradation</text>
+
+          <!-- Usage -->
+          <text x="150" y="295" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">GPT, BERT</text>
+          <text x="400" y="295" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">LLaMA 2/3, Mistral</text>
+          <text x="650" y="295" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">PaLM, Falcon-40B</text>
+        </svg>
+        <figcaption>Figure 8.6 — Comparison of Multi-Head Attention (MHA), Grouped-Query Attention (GQA), and Multi-Query Attention (MQA). Top: each small square is a query head; solid colored blocks are KV heads. Lines show which KV head each query head uses. Bottom: relative KV cache size. GQA with 2 groups achieves a 4× cache reduction with negligible quality loss.</figcaption>
+      </figure>
+
+      <p>LLaMA 2 70B uses $G=8$ KV groups for 64 query heads (8 query heads per KV group). LLaMA 3 uses GQA across all model sizes. The Ainslie et al. paper showed that an existing MHA model can be "uptrained" to GQA by mean-pooling adjacent KV heads and continuing training for a small fraction of the original compute — a practical migration path.</p>
+
+      <p>A minimal PyTorch implementation of GQA:</p>
+
+      <pre><code class="language-python">
+class GroupedQueryAttention(nn.Module):
+    """GQA: n_q query heads share n_kv key-value heads (n_q must be divisible by n_kv)."""
+    def __init__(self, d_model, n_q_heads, n_kv_heads):
+        super().__init__()
+        assert n_q_heads % n_kv_heads == 0
+        self.n_q = n_q_heads
+        self.n_kv = n_kv_heads
+        self.group_size = n_q_heads // n_kv_heads  # queries per KV head
+        self.d_head = d_model // n_q_heads
+
+        self.W_Q = nn.Linear(d_model, n_q_heads * self.d_head, bias=False)
+        self.W_K = nn.Linear(d_model, n_kv_heads * self.d_head, bias=False)
+        self.W_V = nn.Linear(d_model, n_kv_heads * self.d_head, bias=False)
+        self.W_O = nn.Linear(n_q_heads * self.d_head, d_model, bias=False)
+
+    def forward(self, x):
+        B, S, _ = x.shape
+        Q = self.W_Q(x).view(B, S, self.n_q, self.d_head).transpose(1, 2)
+        K = self.W_K(x).view(B, S, self.n_kv, self.d_head).transpose(1, 2)
+        V = self.W_V(x).view(B, S, self.n_kv, self.d_head).transpose(1, 2)
+
+        # Repeat each KV head for its group of query heads
+        # (B, n_kv, S, d_head) -> (B, n_q, S, d_head)
+        K = K.repeat_interleave(self.group_size, dim=1)
+        V = V.repeat_interleave(self.group_size, dim=1)
+
+        # Standard scaled dot-product attention
+        scores = (Q @ K.transpose(-2, -1)) / (self.d_head ** 0.5)
+        attn = F.softmax(scores, dim=-1)
+        out = (attn @ V).transpose(1, 2).contiguous().view(B, S, -1)
+        return self.W_O(out)
+
+# LLaMA 3 8B config: 32 query heads, 8 KV heads -> 4x cache reduction
+gqa = GroupedQueryAttention(d_model=4096, n_q_heads=32, n_kv_heads=8)
+      </code></pre>
+
+      <h3>Sliding Window Attention in Mistral</h3>
+
+      <p>Standard causal attention lets each token attend to *all* previous tokens, producing an $O(n^2)$ attention matrix. **Sliding window attention** restricts each token to attend only to the $W$ most recent tokens, where $W$ is the window size. Mistral 7B uses $W=4096$.</p>
+
+      <p>The key insight is that information propagates through layers. At layer 1, token $i$ sees tokens in $[i-W, i]$. At layer 2, the representation of token $i-W$ already contains information about tokens as far back as $i-2W$. After $L$ layers, the effective receptive field is $L \times W$. For Mistral with $L=32$ and $W=4096$, the theoretical receptive field is 131,072 tokens — far beyond the training context length.</p>
+
+      <p>In practice, Mistral interleaves sliding window layers with a few global attention layers. This hybrid approach maintains the ability to directly retrieve information from distant positions when needed while keeping average memory usage much lower than full quadratic attention.</p>
+
+      <figure class="diagram-figure diagram-interactive">
+        <div class="widget-container" id="widget-ch08-slidingwindow">
+          <style>
+            #widget-ch08-slidingwindow .controls {
+              display: flex; gap: 1rem; padding: 1rem 1.5rem 0;
+              font-family: system-ui, -apple-system, sans-serif; font-size: 13px; color: #5C5B56;
+            }
+            #widget-ch08-slidingwindow .controls label {
+              display: flex; align-items: center; gap: 8px;
+            }
+          </style>
+
+          <div class="controls">
+            <label>
+              Window size W: <span id="ch08-sw-val">3</span>
+              <input type="range" min="1" max="6" step="1" value="3"
+                style="width:140px; accent-color:#534AB7;"
+                oninput="updateCh08SlidingWindow(parseInt(this.value))">
+            </label>
+            <label>
+              Layers: <span id="ch08-layer-val">2</span>
+              <input type="range" min="1" max="4" step="1" value="2"
+                style="width:140px; accent-color:#0F6E56;"
+                oninput="updateCh08Layers(parseInt(this.value))">
+            </label>
+          </div>
+
+          <svg id="ch08-sw-svg" width="100%" viewBox="0 0 800 240">
+            <!-- Will be populated by JS -->
+          </svg>
+
+          <p style="font-family:system-ui; font-size:13px; color:#9C9A94; font-style:italic;
+                    padding:0.5rem 1.5rem 1rem;" id="ch08-sw-observation">
+            Adjust sliders to explore sliding window attention.
+          </p>
+        </div>
+
+        <script>
+          var ch08SwW = 3;
+          var ch08SwL = 2;
+
+          function updateCh08SlidingWindow(w) {
+            ch08SwW = w;
+            document.getElementById('ch08-sw-val').textContent = w;
+            ch08RenderSW();
+          }
+
+          function updateCh08Layers(l) {
+            ch08SwL = l;
+            document.getElementById('ch08-layer-val').textContent = l;
+            ch08RenderSW();
+          }
+
+          function ch08RenderSW() {
+            var svg = document.getElementById('ch08-sw-svg');
+            var w = ch08SwW;
+            var layers = ch08SwL;
+            var nTokens = 10;
+            var tokenW = 50;
+            var gap = 12;
+            var totalW = nTokens * tokenW + (nTokens - 1) * gap;
+            var startX = (800 - totalW) / 2;
+            var queryIdx = 7; // highlight token 8 (index 7)
+
+            var html = '';
+
+            // Draw tokens
+            for (var i = 0; i < nTokens; i++) {
+              var x = startX + i * (tokenW + gap);
+              var inWindow = (i >= queryIdx - w && i <= queryIdx);
+              var inReceptive = (i >= queryIdx - w * layers && i <= queryIdx);
+
+              var fill = '#FFFFFF';
+              var stroke = '#E5E3DC';
+              var strokeW = '1';
+              var textFill = '#5C5B56';
+
+              if (i === queryIdx) {
+                fill = '#534AB7';
+                stroke = '#534AB7';
+                strokeW = '1.5';
+                textFill = '#FFFFFF';
+              } else if (inWindow) {
+                fill = '#EEEDFE';
+                stroke = '#AFA9EC';
+                strokeW = '1.5';
+                textFill = '#534AB7';
+              } else if (inReceptive) {
+                fill = '#F1EFE8';
+                stroke = '#C8C6BE';
+                strokeW = '1';
+                textFill = '#9C9A94';
+              }
+
+              html += '<rect x="' + x + '" y="80" width="' + tokenW + '" height="34" rx="5" fill="' + fill + '" stroke="' + stroke + '" stroke-width="' + strokeW + '"/>';
+              html += '<text x="' + (x + tokenW/2) + '" y="102" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="' + textFill + '">t' + (i+1) + '</text>';
+            }
+
+            // Window bracket
+            var wStart = Math.max(0, queryIdx - w);
+            var bracketX1 = startX + wStart * (tokenW + gap) - 4;
+            var bracketX2 = startX + queryIdx * (tokenW + gap) + tokenW + 4;
+            html += '<rect x="' + bracketX1 + '" y="72" width="' + (bracketX2 - bracketX1) + '" height="50" rx="8" fill="none" stroke="#534AB7" stroke-width="1.5" stroke-dasharray="5 3"/>';
+            html += '<text x="' + ((bracketX1 + bracketX2)/2) + '" y="64" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#534AB7">Direct window (W=' + w + ')</text>';
+
+            // Receptive field bracket (if larger than window)
+            var rStart = Math.max(0, queryIdx - w * layers);
+            if (rStart < wStart) {
+              var rX1 = startX + rStart * (tokenW + gap) - 8;
+              var rX2 = bracketX2 + 4;
+              html += '<rect x="' + rX1 + '" y="130" width="' + (rX2 - rX1) + '" height="40" rx="10" fill="none" stroke="#9C9A94" stroke-width="1" stroke-dasharray="4 3"/>';
+              html += '<text x="' + ((rX1 + rX2)/2) + '" y="184" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">Effective receptive field after ' + layers + ' layers (W×L = ' + (w * layers) + ')</text>';
+            }
+
+            // Legend
+            html += '<rect x="200" y="210" width="14" height="14" rx="2" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1"/>';
+            html += '<text x="220" y="222" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#5C5B56">Direct attention</text>';
+            html += '<rect x="350" y="210" width="14" height="14" rx="2" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="1"/>';
+            html += '<text x="370" y="222" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#5C5B56">Indirect (via layers)</text>';
+            html += '<rect x="530" y="210" width="14" height="14" rx="2" fill="#534AB7" stroke="#534AB7" stroke-width="1"/>';
+            html += '<text x="550" y="222" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#5C5B56">Query token</text>';
+
+            svg.innerHTML = html;
+
+            var receptive = Math.min(w * layers, queryIdx + 1);
+            document.getElementById('ch08-sw-observation').textContent =
+              'Token t8 directly attends to ' + Math.min(w + 1, queryIdx + 1) + ' tokens. ' +
+              'After ' + layers + ' layer' + (layers > 1 ? 's' : '') + ', information from ' + receptive +
+              ' tokens can reach t8. Receptive field = W × L = ' + w + ' × ' + layers + ' = ' + (w * layers) + '.';
+          }
+
+          ch08RenderSW();
+        </script>
+
+        <figcaption>Figure 8.7 — Interactive: Sliding window attention. The purple token (t8) directly attends only to tokens within window W. But after multiple layers, information from a much wider receptive field can reach it indirectly. Adjust W and layers to see how the effective receptive field grows.</figcaption>
+      </figure>
+
+      <h3>Multi-Head Latent Attention (MLA) in DeepSeek</h3>
+
+      <p>MLA, introduced in DeepSeek-V2, takes a fundamentally different approach to KV cache reduction. Instead of reducing the *number* of KV heads (like GQA/MQA), MLA compresses the KV representations into a low-rank latent space.</p>
+
+      <p>In standard attention, at each layer we store the full key and value matrices in the cache: $K \in \mathbb{R}^{n \times d_k H}$ and $V \in \mathbb{R}^{n \times d_v H}$. MLA instead stores a single compressed latent vector $c_t \in \mathbb{R}^{d_c}$ per token, where $d_c \ll d_k H$:</p>
+
+      $$c_t = W_{\text{DKV}}\, h_t$$
+
+      <p>where juxtaposition denotes matrix multiplication (matrix multiply, $\mathbb{R}^{d_c \times d} \times \mathbb{R}^{d} \to \mathbb{R}^{d_c}$).</p>
+
+      <p>At inference time, the keys and values are reconstructed from this compressed representation:</p>
+
+      $$K_t = W_{\text{UK}}\, c_t, \quad V_t = W_{\text{UV}}\, c_t$$
+
+      <p>where $W_{\text{UK}}$ and $W_{\text{UV}}$ are up-projection matrices. The compression ratio can be extreme: DeepSeek-V2 uses $d_c = 512$ to represent what would otherwise be 12,288 dimensions of KV data — a 24× compression. The critical insight is that the attention computation can be reformulated to absorb the up-projection matrices into the query projection, so the reconstruction never needs to be materialized explicitly. This makes the effective cache size comparable to MQA while preserving significantly more representational capacity.</p>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 300" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="ch08-arr5" viewBox="0 0 10 10" refX="9" refY="5"
+              markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+              <path d="M1 1L9 5L1 9" fill="none" stroke="context-stroke"
+                stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </marker>
+          </defs>
+
+          <!-- Left: Standard MHA -->
+          <rect x="30" y="16" width="340" height="28" rx="5" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1"/>
+          <text x="200" y="35" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#534AB7">Standard MHA — KV Cache</text>
+
+          <!-- Right: MLA -->
+          <rect x="430" y="16" width="340" height="28" rx="5" fill="#FAEEDA" stroke="#EF9F27" stroke-width="1"/>
+          <text x="600" y="35" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#854F0B">MLA — Compressed Latent Cache</text>
+
+          <!-- Divider -->
+          <line x1="400" y1="10" x2="400" y2="280" stroke="#E5E3DC" stroke-width="1" stroke-dasharray="5 4"/>
+
+          <!-- Standard: h_t -->
+          <rect x="140" y="70" width="120" height="32" rx="6" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="1"/>
+          <text x="200" y="91" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="500" fill="#5C5B56">h_t</text>
+
+          <!-- Standard: W_K and W_V projections -->
+          <line x1="170" y1="102" x2="120" y2="130" stroke="#534AB7" stroke-width="1.5" marker-end="url(#ch08-arr5)"/>
+          <line x1="230" y1="102" x2="280" y2="130" stroke="#534AB7" stroke-width="1.5" marker-end="url(#ch08-arr5)"/>
+
+          <rect x="60" y="130" width="120" height="32" rx="6" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <text x="120" y="151" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#534AB7">K_t = W_K h_t</text>
+
+          <rect x="220" y="130" width="120" height="32" rx="6" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <text x="280" y="151" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#534AB7">V_t = W_V h_t</text>
+
+          <!-- Cache: store K and V -->
+          <line x1="120" y1="162" x2="120" y2="190" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch08-arr5)"/>
+          <line x1="280" y1="162" x2="280" y2="190" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch08-arr5)"/>
+
+          <rect x="50" y="190" width="300" height="40" rx="6" fill="#534AB7" stroke="#534AB7"/>
+          <text x="200" y="210" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#FFFFFF">KV Cache: 2 × H × d_k per token</text>
+          <text x="200" y="224" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#AFA9EC">e.g., 12,288 values per token per layer</text>
+
+          <!-- MLA: h_t -->
+          <rect x="540" y="70" width="120" height="32" rx="6" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="1"/>
+          <text x="600" y="91" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="500" fill="#5C5B56">h_t</text>
+
+          <!-- MLA: down-projection -->
+          <line x1="600" y1="102" x2="600" y2="130" stroke="#854F0B" stroke-width="1.5" marker-end="url(#ch08-arr5)"/>
+
+          <rect x="520" y="130" width="160" height="32" rx="6" fill="#FAEEDA" stroke="#EF9F27" stroke-width="1.5"/>
+          <text x="600" y="151" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#854F0B">c_t = W_DKV h_t</text>
+
+          <!-- Cache: store compressed c_t -->
+          <line x1="600" y1="162" x2="600" y2="190" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch08-arr5)"/>
+
+          <rect x="490" y="190" width="220" height="40" rx="6" fill="#854F0B" stroke="#854F0B"/>
+          <text x="600" y="210" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#FFFFFF">Latent Cache: d_c per token</text>
+          <text x="600" y="224" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#FAEEDA">e.g., 512 values per token per layer</text>
+
+          <!-- Comparison -->
+          <text x="200" y="258" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#534AB7">12,288 dims</text>
+          <text x="600" y="258" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#854F0B">512 dims → 24× smaller</text>
+        </svg>
+        <figcaption>Figure 8.8 — Standard MHA stores full key and value projections in the KV cache (left). MLA compresses them into a low-rank latent vector c_t (right), achieving dramatically smaller cache size. During inference, the up-projection matrices W_UK and W_UV are absorbed into the query computation, avoiding explicit decompression.</figcaption>
+      </figure>
+
+      <h3>Putting It All Together</h3>
+
+      <p>The table below summarizes the attention mechanisms used in major decoder-only models:</p>
+
+      <table>
+        <tr><th>Model</th><th>Attention Type</th><th>KV Heads</th><th>Query Heads</th><th>Reduction</th></tr>
+        <tr><td>GPT-3</td><td>MHA</td><td>96</td><td>96</td><td>1× (baseline)</td></tr>
+        <tr><td>PaLM</td><td>MQA</td><td>1</td><td>48</td><td>48×</td></tr>
+        <tr><td>LLaMA 1</td><td>MHA</td><td>32/40/52/64</td><td>same</td><td>1×</td></tr>
+        <tr><td>LLaMA 2 70B</td><td>GQA</td><td>8</td><td>64</td><td>8×</td></tr>
+        <tr><td>LLaMA 3 8B</td><td>GQA</td><td>8</td><td>32</td><td>4×</td></tr>
+        <tr><td>Mistral 7B</td><td>GQA + SW</td><td>8</td><td>32</td><td>4× + window</td></tr>
+        <tr><td>DeepSeek-V2</td><td>MLA</td><td>—</td><td>128</td><td>~24×</td></tr>
+      </table>
+
+      <p>The trend is clear: modern decoders are converging on aggressive KV cache reduction as the primary lever for inference efficiency. GQA has become the default for most open models. MLA represents the next frontier, trading architectural complexity for extreme compression. Sliding window attention provides an orthogonal optimization that limits per-layer memory regardless of the KV head strategy.</p>
+
+      <div class="callout callout-insight">
+        <div class="callout-title">Key Insight</div>
+        <p>The fundamental bottleneck of autoregressive decoding is not compute — it is memory bandwidth. At inference time, the model generates one token at a time, and each forward pass is limited by how fast it can read the KV cache from memory. GQA, MQA, and MLA all reduce cache size, but their real purpose is to reduce the memory bandwidth required per decoding step, which directly translates to higher tokens-per-second throughput.</p>
+      </div>
+
+    </section>
+
+    <!-- ================================================================== -->
+    <!-- Autoregressive Generation -->
+    <!-- ================================================================== -->
+    <section class="chapter-section" id="autoregressive-generation">
+      <h2>How Autoregressive Generation Works</h2>
+
+      <p>Everything in this chapter depends on a single mechanism: autoregressive generation. The model generates text one token at a time, where each new token is conditioned on the entire prefix of previously generated tokens. Understanding the mechanics — and the engineering that makes it practical — is essential for reasoning about the capabilities and limitations of decoder-only models.</p>
+
+      <h3>The Prefill-Decode Split</h3>
+
+      <p>Generation proceeds in two phases. In the **prefill** phase, the model processes the entire input prompt in parallel — this is a standard forward pass, identical to training, and it produces the KV cache for all prompt tokens. In the **decode** phase, the model generates tokens one at a time. Each decode step processes only the new token's embedding, computes its attention against the cached keys and values, runs the FFN, and produces logits for the next token.</p>
+
+      <p>The prefill phase is compute-bound (lots of matrix multiplications over the full prompt). The decode phase is memory-bandwidth-bound (each step reads the entire KV cache but performs relatively little computation per token). This asymmetry is why KV cache size matters so much for throughput: a smaller cache means each decode step can complete faster.</p>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 360" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="ch08-arr-pd" viewBox="0 0 10 10" refX="9" refY="5"
+              markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+              <path d="M1 1L9 5L1 9" fill="none" stroke="context-stroke"
+                stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </marker>
+          </defs>
+
+          <text x="400" y="22" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="600" fill="#1A1A18">The Prefill–Decode Split</text>
+
+          <!-- === PREFILL PHASE (left) === -->
+          <rect x="20" y="40" width="370" height="28" rx="5" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="205" y="59" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#0F6E56">Phase 1: Prefill (one forward pass)</text>
+
+          <!-- Prompt tokens processed in parallel -->
+          <rect x="40" y="80" width="44" height="28" rx="4" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="62" y="99" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#0F6E56">What</text>
+          <rect x="88" y="80" width="30" height="28" rx="4" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="103" y="99" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#0F6E56">is</text>
+          <rect x="122" y="80" width="34" height="28" rx="4" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="139" y="99" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#0F6E56">the</text>
+          <rect x="160" y="80" width="64" height="28" rx="4" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="192" y="99" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#0F6E56">capital</text>
+          <rect x="228" y="80" width="28" height="28" rx="4" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="242" y="99" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#0F6E56">of</text>
+          <rect x="260" y="80" width="60" height="28" rx="4" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="290" y="99" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#0F6E56">France</text>
+          <rect x="324" y="80" width="24" height="28" rx="4" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="336" y="99" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#0F6E56">?</text>
+
+          <!-- Big bracket around all tokens -->
+          <text x="365" y="99" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">← all at once</text>
+
+          <!-- Arrow down to KV cache -->
+          <line x1="200" y1="112" x2="200" y2="134" stroke="#5DCAA5" stroke-width="2" marker-end="url(#ch08-arr-pd)"/>
+
+          <!-- KV cache being built -->
+          <rect x="40" y="136" width="308" height="36" rx="6" fill="#0F6E56" stroke="#0F6E56"/>
+          <text x="194" y="159" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#FFFFFF">KV Cache Built (7 positions)</text>
+
+          <!-- Properties -->
+          <rect x="40" y="186" width="308" height="60" rx="6" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="1"/>
+          <text x="194" y="206" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#0F6E56">Compute-bound</text>
+          <text x="194" y="224" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#5C5B56">GPU cores fully utilized — parallel matmuls</text>
+          <text x="194" y="240" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#5C5B56">over all prompt tokens simultaneously</text>
+
+          <!-- Divider -->
+          <line x1="400" y1="36" x2="400" y2="340" stroke="#E5E3DC" stroke-width="1" stroke-dasharray="5 4"/>
+
+          <!-- === DECODE PHASE (right) === -->
+          <rect x="410" y="40" width="370" height="28" rx="5" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1"/>
+          <text x="595" y="59" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#534AB7">Phase 2: Decode (one token at a time)</text>
+
+          <!-- Step 1: generate "The" -->
+          <rect x="420" y="80" width="152" height="24" rx="3" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="0.5"/>
+          <text x="496" y="96" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">read KV cache (7 pos)</text>
+          <rect x="580" y="80" width="42" height="24" rx="4" fill="#534AB7" stroke="#534AB7"/>
+          <text x="601" y="96" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="600" fill="#FFFFFF">The</text>
+          <text x="636" y="96" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">← step 1</text>
+
+          <!-- Step 2: generate "capital" -->
+          <rect x="420" y="110" width="152" height="24" rx="3" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="0.5"/>
+          <text x="496" y="126" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">read KV cache (8 pos)</text>
+          <rect x="580" y="110" width="64" height="24" rx="4" fill="#534AB7" stroke="#534AB7"/>
+          <text x="612" y="126" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="600" fill="#FFFFFF">capital</text>
+          <text x="656" y="126" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">← step 2</text>
+
+          <!-- Step 3 -->
+          <rect x="420" y="140" width="152" height="24" rx="3" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="0.5"/>
+          <text x="496" y="156" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">read KV cache (9 pos)</text>
+          <rect x="580" y="140" width="28" height="24" rx="4" fill="#534AB7" stroke="#534AB7"/>
+          <text x="594" y="156" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="600" fill="#FFFFFF">of</text>
+
+          <!-- Step 4 -->
+          <rect x="420" y="170" width="152" height="24" rx="3" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="0.5"/>
+          <text x="496" y="186" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">read KV cache (10 pos)</text>
+          <rect x="580" y="170" width="54" height="24" rx="4" fill="#534AB7" stroke="#534AB7"/>
+          <text x="607" y="186" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="600" fill="#FFFFFF">France</text>
+
+          <!-- Step 5 -->
+          <rect x="420" y="200" width="152" height="24" rx="3" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="0.5"/>
+          <text x="496" y="216" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">read KV cache (11 pos)</text>
+          <rect x="580" y="200" width="24" height="24" rx="4" fill="#534AB7" stroke="#534AB7"/>
+          <text x="592" y="216" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="600" fill="#FFFFFF">is</text>
+
+          <!-- Step 6 -->
+          <rect x="420" y="230" width="152" height="24" rx="3" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="0.5"/>
+          <text x="496" y="246" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">read KV cache (12 pos)</text>
+          <rect x="580" y="230" width="44" height="24" rx="4" fill="#FAECE7" stroke="#F0997B" stroke-width="1.5"/>
+          <text x="602" y="246" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#993C1D">Paris</text>
+
+          <!-- Step 7: EOS -->
+          <rect x="420" y="260" width="152" height="24" rx="3" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="0.5"/>
+          <text x="496" y="276" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">read KV cache (13 pos)</text>
+          <rect x="580" y="260" width="38" height="24" rx="4" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="1"/>
+          <text x="599" y="276" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">EOS</text>
+
+          <!-- Properties -->
+          <rect x="420" y="296" width="350" height="40" rx="6" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="1"/>
+          <text x="595" y="312" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#534AB7">Memory-bandwidth-bound</text>
+          <text x="595" y="328" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#5C5B56">Each step reads entire KV cache but processes only 1 token</text>
+        </svg>
+        <figcaption>Figure 8.11 — The two phases of autoregressive generation. Prefill (left) processes all prompt tokens in parallel to build the KV cache — this is compute-bound, with GPU cores fully utilized. Decode (right) generates one token per step, reading the growing KV cache each time — this is memory-bandwidth-bound, since each step moves far more data than it computes. The growing gray bars show that cache reads get larger at every step, which is why KV cache compression (GQA, MQA, MLA) directly improves generation throughput.</figcaption>
+      </figure>
+
+      <p>A minimal PyTorch implementation of causal self-attention with KV caching:</p>
+
+      <pre><code class="language-python">
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+class CausalSelfAttention(nn.Module):
+    """Single-head causal self-attention with KV cache for efficient decoding."""
+    def __init__(self, d_model):
+        super().__init__()
+        self.W_Q = nn.Linear(d_model, d_model, bias=False)
+        self.W_K = nn.Linear(d_model, d_model, bias=False)
+        self.W_V = nn.Linear(d_model, d_model, bias=False)
+        self.W_O = nn.Linear(d_model, d_model, bias=False)
+        self.d = d_model
+
+    def forward(self, x, kv_cache=None):
+        Q = self.W_Q(x)                          # (batch, seq_len, d)
+        K_new = self.W_K(x)                      # (batch, seq_len, d)
+        V_new = self.W_V(x)                      # (batch, seq_len, d)
+
+        if kv_cache is not None:
+            K_prev, V_prev = kv_cache
+            K = torch.cat([K_prev, K_new], dim=1) # append new keys
+            V = torch.cat([V_prev, V_new], dim=1) # append new values
+        else:
+            K, V = K_new, V_new
+
+        # Scaled dot-product attention with causal mask
+        scores = (Q @ K.transpose(-2, -1)) / (self.d ** 0.5)
+        seq_q, seq_k = scores.size(-2), scores.size(-1)
+        causal_mask = torch.triu(torch.ones(seq_q, seq_k, device=x.device), diagonal=seq_k - seq_q + 1).bool()
+        scores.masked_fill_(causal_mask, float('-inf'))
+        attn = F.softmax(scores, dim=-1)
+        out = self.W_O(attn @ V)
+
+        return out, (K, V)  # return updated cache for next step
+      </code></pre>
+
+      <h3>Sampling Strategies</h3>
+
+      <p>The output logits define a probability distribution over the vocabulary. How we select from this distribution determines the quality and diversity of generated text:</p>
+
+      <ul>
+        <li><strong>Greedy decoding</strong>: always pick the highest-probability token. Deterministic but repetitive.</li>
+        <li><strong>Temperature sampling</strong>: divide logits by temperature $\tau$ before softmax. $\tau < 1$ sharpens the distribution (more deterministic); $\tau > 1$ flattens it (more random).</li>
+        <li><strong>Top-$k$ sampling</strong>: restrict the distribution to the $k$ highest-probability tokens, then renormalize and sample.</li>
+        <li><strong>Top-$p$ (nucleus) sampling</strong>: find the smallest set of tokens whose cumulative probability exceeds $p$, then sample from that set. Adapts dynamically to the confidence of the model.</li>
+      </ul>
+
+      <p>In practice, production systems combine temperature with top-$p$: $\tau = 0.7$, $p = 0.95$ is a common configuration that produces diverse but coherent text.</p>
+
+      <pre><code class="language-python">
+import torch
+import torch.nn.functional as F
+
+def sample_next_token(logits, temperature=0.7, top_p=0.95):
+    """Sample from logits with temperature and nucleus (top-p) filtering."""
+    # Apply temperature
+    scaled_logits = logits / temperature
+
+    # Sort in descending order
+    sorted_logits, sorted_indices = torch.sort(scaled_logits, descending=True)
+    cumulative_probs = torch.cumsum(F.softmax(sorted_logits, dim=-1), dim=-1)
+
+    # Remove tokens with cumulative probability above top_p
+    sorted_indices_to_remove = cumulative_probs > top_p
+    # Keep at least the first token
+    sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
+    sorted_indices_to_remove[..., 0] = False
+
+    # Set removed logits to -inf
+    indices_to_remove = sorted_indices[sorted_indices_to_remove]
+    scaled_logits[indices_to_remove] = float('-inf')
+
+    # Sample
+    probs = F.softmax(scaled_logits, dim=-1)
+    next_token = torch.multinomial(probs, num_samples=1)
+    return next_token
+      </code></pre>
+
+      <p>Putting it all together — the complete generation loop that uses KV-cached attention and nucleus sampling. This is the code that runs when a GPT model produces text:</p>
+
+<pre><code class="language-python">
+@torch.no_grad()
+def generate(model, prompt_ids, max_new_tokens=100, temperature=0.7, top_p=0.95):
+    """Complete GPT generation loop with KV cache.
+
+    Args:
+        model: a decoder-only Transformer with .forward(token_ids, kv_cache)
+               returning (logits, updated_kv_cache)
+        prompt_ids: (1, prompt_len) tensor of token IDs
+    """
+    # Phase 1: Prefill — process entire prompt in parallel, build KV cache
+    logits, kv_cache = model(prompt_ids, kv_cache=None)   # (1, prompt_len, vocab)
+
+    # Sample first new token from the last position's logits
+    next_token = sample_next_token(logits[0, -1], temperature, top_p)  # (1,)
+    generated = [next_token.item()]
+
+    # Phase 2: Decode — one token at a time, reusing cached keys/values
+    for _ in range(max_new_tokens - 1):
+        token_input = next_token.view(1, 1)               # (1, 1) — single token
+        logits, kv_cache = model(token_input, kv_cache)    # (1, 1, vocab)
+        next_token = sample_next_token(logits[0, -1], temperature, top_p)
+        generated.append(next_token.item())
+
+        if next_token.item() == eos_token_id:
+            break
+
+    return generated
+</code></pre>
+
+      <p>The two phases from Figure 8.11 are visible in the code: the prefill pass processes <code>prompt_ids</code> (all tokens at once), and the decode loop processes one <code>token_input</code> at a time while passing the growing <code>kv_cache</code> through. Every decode step reads the entire cache but computes attention for only one new query — this is why the decode phase is memory-bandwidth-bound.</p>
+    </section>
+
+    <!-- ================================================================== -->
+    <!-- Decoder vs Encoder Comparison -->
+    <!-- ================================================================== -->
+    <section class="chapter-section" id="decoder-vs-encoder">
+      <h2>Why Decoders Won</h2>
+
+      <p>BERT-style encoder-only models dominated NLU benchmarks from 2018 to 2020. Then decoder-only models swept past them — not just for generation tasks where decoders have a structural advantage, but for understanding tasks too. GPT-3 demonstrated competitive NLU performance through in-context learning, and subsequent decoder models have surpassed BERT-class models on virtually every benchmark. Why?</p>
+
+      <p>Three factors explain the shift:</p>
+
+      <p><strong>Scale efficiency.</strong> Decoder-only models need only one set of parameters — there is no encoder-decoder split, no cross-attention, no separate embedding. Every parameter contributes to a single, unified forward pass. This means a 70B decoder has 70B parameters all working toward prediction, while a 70B encoder-decoder splits its capacity.</p>
+
+      <p><strong>Zero-shot generality.</strong> Next-token prediction on diverse web text produces a model that has implicitly learned *every* text-based task present in the training distribution. Classification, extraction, translation, reasoning, coding — all are special cases of "predict what comes next." Masked language modeling, by contrast, learns to fill in blanks — a narrower set of skills.</p>
+
+      <p><strong>Scaling laws favor decoders.</strong> The Chinchilla scaling laws showed that optimal performance requires scaling data and parameters together. Decoder pre-training can consume effectively unlimited text data because the objective (next-token prediction) works on any text. Masked language modeling requires more careful data curation and augmentation strategies.</p>
+
+      <p>This does not mean encoder-only models are obsolete — BERT-class models remain extremely efficient for classification and retrieval when fine-tuned. But for general-purpose AI systems, the decoder-only architecture has proven to be the most scalable and versatile foundation.</p>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 280" xmlns="http://www.w3.org/2000/svg">
+          <!-- Panel headers -->
+          <rect x="30" y="16" width="340" height="34" rx="5" fill="#FAECE7" stroke="#F0997B" stroke-width="1"/>
+          <text x="200" y="38" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="600" fill="#993C1D">Encoder-Only (BERT)</text>
+
+          <rect x="430" y="16" width="340" height="34" rx="5" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="600" y="38" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="600" fill="#0F6E56">Decoder-Only (GPT)</text>
+
+          <!-- Vertical divider -->
+          <line x1="400" y1="10" x2="400" y2="260" stroke="#E5E3DC" stroke-width="1" stroke-dasharray="5 4"/>
+
+          <!-- BERT side -->
+          <text x="200" y="80" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#5C5B56">Bidirectional attention</text>
+
+          <!-- 5 tokens, all see each other -->
+          <rect x="60" y="100" width="50" height="28" rx="4" fill="#FAECE7" stroke="#F0997B" stroke-width="1"/>
+          <text x="85" y="119" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#993C1D">The</text>
+          <rect x="120" y="100" width="50" height="28" rx="4" fill="#993C1D" stroke="#993C1D"/>
+          <text x="145" y="119" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#FFFFFF">[MASK]</text>
+          <rect x="180" y="100" width="50" height="28" rx="4" fill="#FAECE7" stroke="#F0997B" stroke-width="1"/>
+          <text x="205" y="119" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#993C1D">sat</text>
+          <rect x="240" y="100" width="50" height="28" rx="4" fill="#FAECE7" stroke="#F0997B" stroke-width="1"/>
+          <text x="265" y="119" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#993C1D">on</text>
+          <rect x="300" y="100" width="50" height="28" rx="4" fill="#FAECE7" stroke="#F0997B" stroke-width="1"/>
+          <text x="325" y="119" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#993C1D">mat</text>
+
+          <!-- Bidirectional arrows -->
+          <line x1="85" y1="130" x2="145" y2="148" stroke="#F0997B" stroke-width="1"/>
+          <line x1="205" y1="130" x2="145" y2="148" stroke="#F0997B" stroke-width="1"/>
+          <line x1="265" y1="130" x2="145" y2="148" stroke="#F0997B" stroke-width="1"/>
+          <line x1="325" y1="130" x2="145" y2="148" stroke="#F0997B" stroke-width="1"/>
+          <text x="145" y="162" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#993C1D">→ "cat"</text>
+
+          <text x="200" y="195" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">Sees ALL tokens (past + future)</text>
+          <text x="200" y="215" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">Predict masked tokens</text>
+          <text x="200" y="235" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">Cannot generate text</text>
+
+          <!-- GPT side -->
+          <text x="600" y="80" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#5C5B56">Causal (left-to-right) attention</text>
+
+          <rect x="460" y="100" width="50" height="28" rx="4" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="485" y="119" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#0F6E56">The</text>
+          <rect x="520" y="100" width="50" height="28" rx="4" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="545" y="119" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#0F6E56">cat</text>
+          <rect x="580" y="100" width="50" height="28" rx="4" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="605" y="119" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#0F6E56">sat</text>
+          <rect x="640" y="100" width="50" height="28" rx="4" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="665" y="119" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#0F6E56">on</text>
+          <rect x="700" y="100" width="50" height="28" rx="4" fill="#0F6E56" stroke="#0F6E56"/>
+          <text x="725" y="119" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#FFFFFF">???</text>
+
+          <!-- Causal arrows (left-to-right only) -->
+          <line x1="485" y1="130" x2="725" y2="148" stroke="#5DCAA5" stroke-width="0.8"/>
+          <line x1="545" y1="130" x2="725" y2="148" stroke="#5DCAA5" stroke-width="1.2"/>
+          <line x1="605" y1="130" x2="725" y2="148" stroke="#5DCAA5" stroke-width="1"/>
+          <line x1="665" y1="130" x2="725" y2="148" stroke="#5DCAA5" stroke-width="2"/>
+          <text x="725" y="162" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#0F6E56">→ "the"</text>
+
+          <text x="600" y="195" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">Sees only PAST tokens</text>
+          <text x="600" y="215" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">Predict next token at every position</text>
+          <text x="600" y="235" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">Natural text generation</text>
+        </svg>
+        <figcaption>Figure 8.9 — Structural comparison between encoder-only (BERT) and decoder-only (GPT) models. BERT uses bidirectional attention and predicts masked tokens. GPT uses causal attention and predicts the next token. The causal constraint enables autoregressive generation but means each token's representation is built from left context only.</figcaption>
+      </figure>
+    </section>
+
+    <!-- ================================================================== -->
+    <!-- Summary -->
+    <!-- ================================================================== -->
+    <section class="chapter-section" id="looking-forward">
+      <h2>From Decoders to Everything</h2>
+
+      <p>The decoder-only architecture started as one of three Transformer variants (alongside encoder-only and encoder-decoder) and has become the dominant paradigm for general-purpose AI systems. The trajectory from GPT-1 to o3 traces a path from "language model" to "reasoning engine" — from a system that predicts the next token to one that can spend minutes thinking through a math proof before answering.</p>
+
+      <p>Two scaling axes now drive progress. <strong>Training-time compute</strong> — more parameters, more data, better data — took us from GPT-1 (117M) to GPT-4 (~1T). <strong>Inference-time compute</strong> — letting the model think longer via chain-of-thought — took us from GPT-4 to o1/o3 and DeepSeek R1. The open-source ecosystem has ensured that both axes are accessible: LLaMA established that the GPT recipe requires no secret ingredients, DeepSeek proved frontier models can be trained at a fraction of the expected cost, and DeepSeek R1 brought open reasoning to the community. The next chapter examines encoder-decoder models — the third major architecture family — and the tasks where they still hold an advantage.</p>
+    </section>
+
+  </article>
+
+  <footer class="chapter-footer">
+    <div class="footer-nav">
+      <a href="ch07.html">← Previous: Encoder-Only Models — BERT and Beyond</a>
+      <a href="ch09.html">Next: Encoder-Decoder Models →</a>
+    </div>
+  </footer>
+
+</body>
+</html>

@@ -1,0 +1,1083 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Chapter 02: Mathematical Prerequisites — Transformer Research Book</title>
+  <link rel="stylesheet" href="../assets/style.css">
+  <link rel="stylesheet" href="../assets/math.css">
+  <link rel="stylesheet" href="../assets/prism.css">
+  <!-- KaTeX for math rendering -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"
+    onload="renderMathInElement(document.body, {
+      delimiters: [
+        {left: '$$', right: '$$', display: true},
+        {left: '$', right: '$', display: false}
+      ]
+    })">
+  </script>
+  <!-- Prism for code blocks -->
+  <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/prism.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-python.min.js"></script>
+</head>
+<body>
+  <nav class="chapter-nav">
+    <a href="../index.html" class="nav-home">&larr; Table of Contents</a>
+    <span class="nav-chapter">Chapter 02</span>
+    <div style="display:flex; align-items:center; gap:1rem;">
+      <button class="theme-toggle" onclick="toggleTheme()" aria-label="Toggle dark mode">
+        <span class="icon-moon">&#9789;</span><span class="icon-sun">&#9788;</span>
+      </button>
+      <a href="ch03.html" class="nav-next">Next Chapter &rarr;</a>
+    </div>
+  </nav>
+  <script>
+    function toggleTheme() {
+      document.documentElement.classList.toggle('dark');
+      localStorage.setItem('theme', document.documentElement.classList.contains('dark') ? 'dark' : 'light');
+    }
+    if (localStorage.getItem('theme') === 'dark') document.documentElement.classList.add('dark');
+  </script>
+
+  <article class="chapter">
+
+    <header class="chapter-header">
+      <div class="chapter-number">Chapter 02</div>
+      <h1 class="chapter-title">Mathematical Prerequisites</h1>
+      <p class="chapter-lead">Every operation inside a Transformer — self-attention, feed-forward layers, normalization, output projection — reduces to a handful of mathematical building blocks: matrix multiplications, a particular normalization function called softmax, and a specific way of standardizing activations called layer norm. Misunderstanding any one of these blocks leads to confusion about everything built on top of them. By the end of this chapter, you will not only know the formulas but understand <em>why</em> each mathematical choice was made: why we scale dot products, why layer norm replaced batch norm, why the feed-forward network uses a 4× expansion, and why activation functions like SwiGLU outperform ReLU.</p>
+    </header>
+
+    <!-- ================================================================== -->
+    <!-- SECTION 1: LINEAR ALGEBRA REVIEW FOR ATTENTION                     -->
+    <!-- ================================================================== -->
+    <section class="chapter-section" id="linear-algebra-review">
+      <h2>Linear Algebra Review for Attention</h2>
+
+      <h3>Matrix Multiplication as the Core Operation</h3>
+
+      <p>A Transformer processes sequences of tokens, and each token is a vector of numbers — its embedding. When we stack all token embeddings from a sequence into a matrix, every Transformer operation becomes a matrix multiplication. The projection from tokens to queries is a matrix multiply. The attention score computation is a matrix multiply. The feed-forward layer is two matrix multiplies with a nonlinearity in between. Understanding Transformers means understanding what matrix multiplication does geometrically and computationally.</p>
+
+      <p>Consider a sequence of $n$ tokens, each represented as a $d$-dimensional vector. We stack them into a matrix $X \in \mathbb{R}^{n \times d}$, where each row is a token. Multiplying by a weight matrix $W \in \mathbb{R}^{d \times d'}$ produces $Y = XW$ (matrix multiply, $\mathbb{R}^{n \times d} \times \mathbb{R}^{d \times d'} \to \mathbb{R}^{n \times d'}$). Each row of $Y$ is a linear combination of the columns of $W$, weighted by the corresponding token's embedding values. The weight matrix $W$ defines a learned linear transformation that remaps every token into a new representational space.</p>
+
+      <h3>Vectors as Token Representations, Matrices as Transformations</h3>
+
+      <p>Think of each token embedding as a point in a high-dimensional space. The word "king" occupies one point, "queen" another, "apple" a third. A weight matrix $W$ rotates, stretches, and projects these points into a new coordinate system. When we compute $Q = XW_Q$, we are asking: "given these token embeddings, what does each token <em>want to find</em>?" The matrix $W_Q$ is a learned rotation that maps the raw embedding space into "query space" — a coordinate system optimized for searching.</p>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 340" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="ch02-arr" viewBox="0 0 10 10" refX="9" refY="5"
+              markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+              <path d="M1 1L9 5L1 9" fill="none" stroke="context-stroke"
+                stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </marker>
+          </defs>
+
+          <!-- Input matrix X -->
+          <rect x="40" y="60" width="140" height="200" rx="6" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1.5"/>
+          <!-- Row lines -->
+          <line x1="48" y1="100" x2="172" y2="100" stroke="#5DCAA5" stroke-width="0.5" opacity="0.5"/>
+          <line x1="48" y1="140" x2="172" y2="140" stroke="#5DCAA5" stroke-width="0.5" opacity="0.5"/>
+          <line x1="48" y1="180" x2="172" y2="180" stroke="#5DCAA5" stroke-width="0.5" opacity="0.5"/>
+          <line x1="48" y1="220" x2="172" y2="220" stroke="#5DCAA5" stroke-width="0.5" opacity="0.5"/>
+          <!-- Token labels -->
+          <text x="110" y="88" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#0F6E56">x₁ = "the"</text>
+          <text x="110" y="128" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#0F6E56">x₂ = "cat"</text>
+          <text x="110" y="168" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#0F6E56">x₃ = "sat"</text>
+          <text x="110" y="208" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#0F6E56">x₄ = "down"</text>
+          <text x="110" y="248" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#9C9A94">⋮</text>
+          <!-- Dimension labels -->
+          <text x="110" y="48" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">d_model</text>
+          <text x="28" y="160" text-anchor="end" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">n</text>
+          <text x="110" y="285" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="500" fill="#0F6E56">X</text>
+
+          <!-- Multiplication sign -->
+          <text x="210" y="165" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="20" font-weight="400" fill="#9C9A94">×</text>
+
+          <!-- Weight matrix W_Q -->
+          <rect x="240" y="80" width="120" height="160" rx="6" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <!-- Column lines -->
+          <line x1="280" y1="88" x2="280" y2="232" stroke="#AFA9EC" stroke-width="0.5" opacity="0.5"/>
+          <line x1="320" y1="88" x2="320" y2="232" stroke="#AFA9EC" stroke-width="0.5" opacity="0.5"/>
+          <text x="300" y="165" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="500" fill="#534AB7">W_Q</text>
+          <!-- Dimension labels -->
+          <text x="300" y="68" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">d_k</text>
+          <text x="228" y="165" text-anchor="end" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">d_model</text>
+          <text x="300" y="285" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="400" fill="#534AB7">Learned projection</text>
+
+          <!-- Equals sign -->
+          <text x="395" y="165" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="20" font-weight="400" fill="#9C9A94">=</text>
+
+          <!-- Output matrix Q -->
+          <rect x="430" y="60" width="120" height="200" rx="6" fill="#534AB7" stroke="#534AB7" stroke-width="1.5"/>
+          <!-- Row lines -->
+          <line x1="438" y1="100" x2="542" y2="100" stroke="#AFA9EC" stroke-width="0.5" opacity="0.4"/>
+          <line x1="438" y1="140" x2="542" y2="140" stroke="#AFA9EC" stroke-width="0.5" opacity="0.4"/>
+          <line x1="438" y1="180" x2="542" y2="180" stroke="#AFA9EC" stroke-width="0.5" opacity="0.4"/>
+          <line x1="438" y1="220" x2="542" y2="220" stroke="#AFA9EC" stroke-width="0.5" opacity="0.4"/>
+          <!-- Token labels -->
+          <text x="490" y="88" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#FFFFFF">q₁</text>
+          <text x="490" y="128" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#FFFFFF">q₂</text>
+          <text x="490" y="168" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#FFFFFF">q₃</text>
+          <text x="490" y="208" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#FFFFFF">q₄</text>
+          <text x="490" y="248" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#AFA9EC">⋮</text>
+          <!-- Dimension labels -->
+          <text x="490" y="48" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">d_k</text>
+          <text x="418" y="160" text-anchor="end" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">n</text>
+          <text x="490" y="285" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="500" fill="#FFFFFF">Q</text>
+
+          <!-- Annotation arrow -->
+          <line x1="570" y1="88" x2="640" y2="88" stroke="#534AB7" stroke-width="1.5" marker-end="url(#ch02-arr)"/>
+          <text x="650" y="84" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#534AB7">Each row is a</text>
+          <text x="650" y="100" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#534AB7">query vector</text>
+
+          <!-- Title -->
+          <text x="400" y="320" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="500" fill="#1A1A18">Q = X W_Q : projecting token embeddings into query space</text>
+        </svg>
+        <figcaption>Figure 2.1 — Matrix multiplication as a projection. The input matrix $X$ (teal) contains one token embedding per row. Multiplying by the learned weight matrix $W_Q$ (purple, light) projects each token from $d_\text{model}$-dimensional embedding space into $d_k$-dimensional query space (purple, solid). The same operation produces keys and values via $W_K$ and $W_V$.</figcaption>
+      </figure>
+
+      <h3>The Role of Dimensionality</h3>
+
+      <p>Two dimensions govern the Transformer's capacity. The <strong>model dimension</strong> $d_\text{model}$ is the width of every token representation throughout the network — in GPT-3, this is 12,288. The <strong>head dimension</strong> $d_k$ is the width of queries and keys inside each attention head, typically $d_\text{model} / h$ where $h$ is the number of attention heads. A larger $d_\text{model}$ gives each token more expressive capacity, while a smaller $d_k$ per head forces each head to specialize on a lower-dimensional subspace.</p>
+
+      <p>Why not just use one giant attention head? Because splitting into multiple heads lets the model attend to different types of relationships simultaneously — one head might track syntactic dependencies while another tracks coreference. The split is free: the total parameter count is the same whether you use 1 head of dimension 768 or 12 heads of dimension 64.</p>
+
+      <h3>Outer Products, Dot Products, and Their Geometric Interpretation</h3>
+
+      <p>The <strong>dot product</strong> between two vectors $\mathbf{a}, \mathbf{b} \in \mathbb{R}^d$ is the scalar $\mathbf{a}^\top \mathbf{b} = \sum_{i=1}^d a_i b_i$ (dot product, yields a scalar). Geometrically, it equals $\|\mathbf{a}\| \|\mathbf{b}\| \cos\theta$, where $\theta$ is the angle between them. When vectors point in the same direction, the dot product is large and positive. When they are orthogonal, it is zero. This is exactly the property that attention exploits: the dot product between a query and a key measures how "aligned" they are — how much the query is looking for what the key represents.</p>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 280" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="ch02-arr2" viewBox="0 0 10 10" refX="9" refY="5"
+              markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+              <path d="M1 1L9 5L1 9" fill="none" stroke="context-stroke"
+                stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </marker>
+          </defs>
+
+          <!-- Panel 1: High similarity -->
+          <text x="140" y="28" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="600" fill="#0F6E56">High similarity</text>
+
+          <!-- Axes -->
+          <line x1="60" y1="210" x2="240" y2="210" stroke="#E5E3DC" stroke-width="1"/>
+          <line x1="60" y1="210" x2="60" y2="50" stroke="#E5E3DC" stroke-width="1"/>
+
+          <!-- Vectors -->
+          <line x1="60" y1="210" x2="210" y2="80" stroke="#534AB7" stroke-width="2.5" marker-end="url(#ch02-arr2)"/>
+          <text x="150" y="130" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#534AB7">q</text>
+          <line x1="60" y1="210" x2="220" y2="100" stroke="#0F6E56" stroke-width="2.5" marker-end="url(#ch02-arr2)"/>
+          <text x="155" y="155" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#0F6E56">k</text>
+
+          <!-- Angle arc -->
+          <path d="M 100 185 A 40 40 0 0 1 106 178" fill="none" stroke="#9C9A94" stroke-width="1"/>
+          <text x="115" y="186" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">θ ≈ 15°</text>
+
+          <text x="140" y="245" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#5C5B56">q · k = large positive</text>
+          <text x="140" y="262" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">→ high attention weight</text>
+
+          <!-- Panel 2: Orthogonal -->
+          <text x="400" y="28" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="600" fill="#854F0B">Orthogonal</text>
+
+          <line x1="320" y1="210" x2="500" y2="210" stroke="#E5E3DC" stroke-width="1"/>
+          <line x1="320" y1="210" x2="320" y2="50" stroke="#E5E3DC" stroke-width="1"/>
+
+          <line x1="320" y1="210" x2="460" y2="100" stroke="#534AB7" stroke-width="2.5" marker-end="url(#ch02-arr2)"/>
+          <text x="405" y="140" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#534AB7">q</text>
+          <line x1="320" y1="210" x2="460" y2="210" stroke="#0F6E56" stroke-width="2.5" marker-end="url(#ch02-arr2)"/>
+          <text x="400" y="226" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#0F6E56">k</text>
+
+          <!-- Right angle marker -->
+          <rect x="320" y="195" width="15" height="15" fill="none" stroke="#9C9A94" stroke-width="1"/>
+          <text x="350" y="188" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">θ = 90°</text>
+
+          <text x="400" y="245" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#5C5B56">q · k = 0</text>
+          <text x="400" y="262" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">→ zero attention weight</text>
+
+          <!-- Panel 3: Opposite -->
+          <text x="660" y="28" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="600" fill="#993C1D">Opposite direction</text>
+
+          <line x1="580" y1="210" x2="760" y2="210" stroke="#E5E3DC" stroke-width="1"/>
+          <line x1="660" y1="210" x2="660" y2="50" stroke="#E5E3DC" stroke-width="1"/>
+
+          <line x1="660" y1="210" x2="740" y2="90" stroke="#534AB7" stroke-width="2.5" marker-end="url(#ch02-arr2)"/>
+          <text x="715" y="135" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#534AB7">q</text>
+          <line x1="660" y1="210" x2="590" y2="110" stroke="#0F6E56" stroke-width="2.5" marker-end="url(#ch02-arr2)"/>
+          <text x="610" y="150" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#0F6E56">k</text>
+
+          <text x="660" y="245" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#5C5B56">q · k = large negative</text>
+          <text x="660" y="262" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">→ near-zero after softmax</text>
+        </svg>
+        <figcaption>Figure 2.2 — Geometric interpretation of the dot product in attention. The query vector $\mathbf{q}$ (purple) and key vector $\mathbf{k}$ (teal) are shown in three configurations. When aligned (left), the dot product is large and produces a high attention weight. When orthogonal (center), the dot product is zero. When opposed (right), the dot product is negative — which softmax maps to near-zero weight.</figcaption>
+      </figure>
+
+      <p>The <strong>outer product</strong> $\mathbf{a}\mathbf{b}^\top$ produces a $d \times d$ matrix where entry $(i,j) = a_i b_j$. This appears less obviously in the Transformer, but it plays a key role in understanding how attention aggregates information. The attention-weighted sum $\sum_j \alpha_j \mathbf{v}_j$ can be rewritten as the attention matrix (which is built from outer-product-like operations between query and key vectors) multiplied by the value matrix. Keeping both products — inner and outer — in mind helps you read any Transformer equation fluently.</p>
+    </section>
+
+    <!-- ================================================================== -->
+    <!-- SECTION 2: THE SOFTMAX FUNCTION                                    -->
+    <!-- ================================================================== -->
+    <section class="chapter-section" id="softmax-function">
+      <h2>The Softmax Function</h2>
+
+      <h3>Definition and Properties</h3>
+
+      <p>The softmax function takes a vector of raw scores (logits) and converts them into a probability distribution — non-negative values that sum to one. Every attention head uses softmax to convert raw query-key dot products into attention weights. Every language model uses softmax in its final layer to produce a distribution over the vocabulary. It is the single most important nonlinearity in the Transformer.</p>
+
+      <p>Given a vector $\mathbf{z} \in \mathbb{R}^n$, softmax maps each element as:</p>
+
+      <div class="math-block">
+        $$\text{softmax}(z_i) = \frac{e^{z_i}}{\sum_{j=1}^n e^{z_j}}$$
+      </div>
+
+      <p>The numerator $e^{z_i}$ ensures every output is positive. The denominator normalizes so all outputs sum to one. The function is differentiable everywhere, which is essential for gradient-based training. It is also monotonic: if $z_i > z_j$, then $\text{softmax}(z_i) > \text{softmax}(z_j)$. The relative ordering of inputs is always preserved.</p>
+
+      <h3>Numerical Stability</h3>
+
+      <p>A naive implementation is dangerous. If any $z_i$ is large (say 1000), computing $e^{1000}$ overflows to infinity in floating-point arithmetic. The standard fix is to subtract the maximum value before exponentiating:</p>
+
+      <div class="math-block">
+        $$\text{softmax}(z_i) = \frac{e^{z_i - \max(\mathbf{z})}}{\sum_{j=1}^n e^{z_j - \max(\mathbf{z})}}$$
+      </div>
+
+      <p>This is mathematically identical — the $e^{-\max(\mathbf{z})}$ factor cancels between numerator and denominator — but now the largest exponent is $e^0 = 1$, which never overflows. Every production implementation of softmax uses this trick, and forgetting it causes silent NaN errors in training.</p>
+
+      <pre><code class="language-python">
+import numpy as np
+
+def softmax_naive(z):
+    """Numerically unstable — will produce inf for large inputs."""
+    exp_z = np.exp(z)
+    return exp_z / exp_z.sum()
+
+def softmax_stable(z):
+    """Numerically stable — subtracts max before exponentiating."""
+    z_shifted = z - np.max(z)
+    exp_z = np.exp(z_shifted)
+    return exp_z / exp_z.sum()
+
+# Demonstration
+logits = np.array([1000.0, 1001.0, 1002.0])
+print(softmax_naive(logits))   # [nan, nan, nan]
+print(softmax_stable(logits))  # [0.0900, 0.2447, 0.6652]
+</code></pre>
+
+      <h3>Temperature Scaling</h3>
+
+      <p>Temperature controls how "peaked" the output distribution is. Instead of computing $\text{softmax}(\mathbf{z})$ directly, we compute $\text{softmax}(\mathbf{z}/\tau)$ where $\tau > 0$ is the temperature. Low temperature ($\tau \to 0$) drives the distribution toward a hard argmax — one element gets nearly all the probability mass. High temperature ($\tau \to \infty$) flattens the distribution toward uniform. In attention, the $1/\sqrt{d_k}$ scaling factor acts exactly like a temperature: it prevents the dot products from growing so large that softmax saturates.</p>
+
+      <p>Here is temperature-scaled softmax in PyTorch, showing how the same logits produce sharply different distributions:</p>
+
+<pre><code class="language-python">
+import torch
+import torch.nn.functional as F
+
+logits = torch.tensor([2.0, 5.0, 1.0, 3.0, 4.0])  # (5,)
+
+for tau in [0.1, 0.5, 1.0, 2.0, 5.0]:
+    probs = F.softmax(logits / tau, dim=0)           # (5,) — same shape, different sharpness
+    top_prob = probs.max().item()
+    entropy = -(probs * probs.log()).sum().item()
+    print(f"τ={tau:<4}  probs={probs.numpy().round(3)}  max={top_prob:.3f}  H={entropy:.2f}")
+
+# τ=0.1   probs=[0.    1.    0.    0.    0.   ]  max=1.000  H=0.00  ← near-argmax
+# τ=0.5   probs=[0.002 0.953 0.    0.018 0.027]  max=0.953  H=0.24
+# τ=1.0   probs=[0.047 0.643 0.018 0.117 0.175]  max=0.643  H=1.16
+# τ=2.0   probs=[0.104 0.373 0.073 0.174 0.276]  max=0.373  H=1.46
+# τ=5.0   probs=[0.150 0.247 0.130 0.192 0.281]  max=0.281  H=1.57  ← near-uniform
+</code></pre>
+
+      <figure class="diagram-figure diagram-interactive">
+        <div class="widget-container" id="widget-ch02-softmax-temp">
+          <style>
+            #widget-ch02-softmax-temp .controls {
+              display: flex; gap: 1.5rem; padding: 0.8rem 0 0.5rem;
+              font-family: system-ui, -apple-system, sans-serif; font-size: 13px; color: #5C5B56;
+              flex-wrap: wrap; align-items: center;
+            }
+            #widget-ch02-softmax-temp .controls label {
+              display: flex; align-items: center; gap: 8px;
+            }
+            #widget-ch02-softmax-temp .bar-label {
+              font-family: system-ui, -apple-system, sans-serif; font-size: 12px;
+            }
+          </style>
+
+          <div class="controls">
+            <label>
+              Temperature τ = <span id="ch02-temp-display" style="font-weight:600; color:#534AB7; min-width:32px;">1.0</span>
+              <input type="range" min="0.1" max="5" step="0.1" value="1.0"
+                style="width:180px; accent-color:#534AB7;"
+                oninput="updateCh02Softmax(this.value)">
+            </label>
+            <span style="font-size:12px; color:#9C9A94;">← low = peaky &nbsp; | &nbsp; high = flat →</span>
+          </div>
+
+          <svg id="ch02-softmax-svg" width="100%" viewBox="0 0 800 200" xmlns="http://www.w3.org/2000/svg">
+            <!-- Static: logit labels and axes -->
+            <text x="50" y="190" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">Logits:</text>
+            <text x="160" y="190" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#5C5B56">2.0</text>
+            <text x="290" y="190" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#5C5B56">5.0</text>
+            <text x="420" y="190" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#5C5B56">1.0</text>
+            <text x="550" y="190" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#5C5B56">3.0</text>
+            <text x="680" y="190" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#5C5B56">4.0</text>
+
+            <!-- Baseline -->
+            <line x1="100" y1="170" x2="740" y2="170" stroke="#E5E3DC" stroke-width="1"/>
+
+            <!-- Bars (updated by JS) -->
+            <rect id="ch02-bar-0" x="130" y="70" width="60" height="100" rx="4" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1"/>
+            <rect id="ch02-bar-1" x="260" y="20" width="60" height="150" rx="4" fill="#534AB7" stroke="#534AB7" stroke-width="1"/>
+            <rect id="ch02-bar-2" x="390" y="100" width="60" height="70" rx="4" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1"/>
+            <rect id="ch02-bar-3" x="520" y="55" width="60" height="115" rx="4" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1"/>
+            <rect id="ch02-bar-4" x="650" y="35" width="60" height="135" rx="4" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1"/>
+
+            <!-- Probability labels (updated by JS) -->
+            <text id="ch02-prob-0" x="160" y="62" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#534AB7">0.05</text>
+            <text id="ch02-prob-1" x="290" y="12" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#FFFFFF">0.64</text>
+            <text id="ch02-prob-2" x="420" y="92" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#534AB7">0.02</text>
+            <text id="ch02-prob-3" x="550" y="47" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#534AB7">0.12</text>
+            <text id="ch02-prob-4" x="680" y="27" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#534AB7">0.17</text>
+          </svg>
+
+          <p style="font-family:system-ui, -apple-system, sans-serif; font-size:13px; color:#9C9A94; font-style:italic;
+                    padding:0.5rem 0 0.5rem;" id="ch02-softmax-observation">
+            At τ = 1.0, the largest logit (5.0) receives 64% of the probability mass.
+          </p>
+        </div>
+
+        <script>
+          function updateCh02Softmax(temp) {
+            temp = parseFloat(temp);
+            document.getElementById('ch02-temp-display').textContent = temp.toFixed(1);
+            var logits = [2.0, 5.0, 1.0, 3.0, 4.0];
+            var scaled = logits.map(function(z) { return z / temp; });
+            var maxVal = Math.max.apply(null, scaled);
+            var exps = scaled.map(function(s) { return Math.exp(s - maxVal); });
+            var sumExp = exps.reduce(function(a, b) { return a + b; }, 0);
+            var probs = exps.map(function(e) { return e / sumExp; });
+
+            var maxBar = 150;
+            var baseline = 170;
+            var barIds = ['ch02-bar-0','ch02-bar-1','ch02-bar-2','ch02-bar-3','ch02-bar-4'];
+            var probIds = ['ch02-prob-0','ch02-prob-1','ch02-prob-2','ch02-prob-3','ch02-prob-4'];
+            var maxProb = Math.max.apply(null, probs);
+
+            for (var i = 0; i < 5; i++) {
+              var h = probs[i] / maxProb * maxBar;
+              if (h < 4) h = 4;
+              var bar = document.getElementById(barIds[i]);
+              bar.setAttribute('height', h);
+              bar.setAttribute('y', baseline - h);
+
+              if (i === probs.indexOf(maxProb)) {
+                bar.setAttribute('fill', '#534AB7');
+                bar.setAttribute('stroke', '#534AB7');
+                document.getElementById(probIds[i]).setAttribute('fill', '#FFFFFF');
+              } else {
+                bar.setAttribute('fill', '#EEEDFE');
+                bar.setAttribute('stroke', '#AFA9EC');
+                document.getElementById(probIds[i]).setAttribute('fill', '#534AB7');
+              }
+
+              var probText = document.getElementById(probIds[i]);
+              probText.textContent = probs[i].toFixed(2);
+              probText.setAttribute('y', baseline - h - 8);
+            }
+
+            var maxP = Math.max.apply(null, probs);
+            var obs = document.getElementById('ch02-softmax-observation');
+            if (temp < 0.3) {
+              obs.textContent = 'At very low temperature (τ = ' + temp.toFixed(1) + '), softmax approaches a hard argmax — nearly all mass on the largest logit.';
+            } else if (temp < 1.0) {
+              obs.textContent = 'At τ = ' + temp.toFixed(1) + ', the distribution is sharper than default. The largest logit (5.0) receives ' + (maxP * 100).toFixed(0) + '% of the mass.';
+            } else if (temp < 2.0) {
+              obs.textContent = 'At τ = ' + temp.toFixed(1) + ', the largest logit (5.0) receives ' + (maxP * 100).toFixed(0) + '% of the probability mass.';
+            } else {
+              obs.textContent = 'At high temperature (τ = ' + temp.toFixed(1) + '), the distribution is nearly uniform. Differences between logits are washed out.';
+            }
+          }
+          updateCh02Softmax(1.0);
+        </script>
+
+        <figcaption>Figure 2.3 — Interactive: softmax output as a function of temperature. Five logits [2.0, 5.0, 1.0, 3.0, 4.0] are passed through $\text{softmax}(\mathbf{z}/\tau)$. Drag the slider to see how low temperature sharpens the distribution toward argmax while high temperature flattens it toward uniform. The tallest bar (highest logit) is highlighted in solid purple.</figcaption>
+      </figure>
+
+      <h3>Softmax Saturation and Gradient Vanishing</h3>
+
+      <p>When logits become very large in magnitude, the softmax output approaches a one-hot vector — one element near 1.0, the rest near 0.0. In this <strong>saturated</strong> regime, gradients vanish. The winning element has gradient near zero (its output barely changes with small logit changes), and the losing elements have exponentially small gradients. Training stalls.</p>
+
+      <p>This is precisely why the $1/\sqrt{d_k}$ scaling factor in attention exists. Without it, dot products between $d_k$-dimensional vectors have variance proportional to $d_k$ (because each of the $d_k$ terms in the sum contributes variance). For $d_k = 64$, unscaled dot products would have standard deviation roughly 8, putting most attention distributions deep in the saturated regime. Dividing by $\sqrt{d_k}$ restores unit variance, keeping the softmax in the regime where gradients flow.</p>
+    </section>
+
+    <!-- ================================================================== -->
+    <!-- SECTION 3: LAYER NORMALIZATION                                     -->
+    <!-- ================================================================== -->
+    <section class="chapter-section" id="layer-normalization">
+      <h2>Layer Normalization</h2>
+
+      <h3>Batch Norm vs Layer Norm</h3>
+
+      <p>Before Transformers, batch normalization was the dominant technique for stabilizing deep network training. Batch norm computes the mean and variance <em>across the batch dimension</em> — for each feature, it averages over all examples in the mini-batch. This works beautifully for fixed-size inputs like images. For sequences, it breaks down.</p>
+
+      <p>The problem is twofold. First, sequences in a batch have different lengths, so averaging "the value at position 47" across a batch mixes real tokens with padding tokens, polluting the statistics. Second, at inference time, batch norm requires running-average statistics accumulated during training, but these statistics are meaningless when the test sequence length differs from training lengths. Layer normalization avoids both problems by normalizing across the feature dimension within a single example, making it completely independent of batch composition and sequence length.</p>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 360" xmlns="http://www.w3.org/2000/svg">
+          <!-- Panel headers -->
+          <rect x="30" y="16" width="340" height="34" rx="5" fill="#FAECE7" stroke="#F0997B" stroke-width="1"/>
+          <text x="200" y="38" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="600" fill="#993C1D">Batch Normalization</text>
+
+          <rect x="430" y="16" width="340" height="34" rx="5" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="600" y="38" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="600" fill="#0F6E56">Layer Normalization</text>
+
+          <!-- Vertical divider -->
+          <line x1="400" y1="10" x2="400" y2="350" stroke="#E5E3DC" stroke-width="1" stroke-dasharray="5 4"/>
+
+          <!-- LEFT PANEL: Batch Norm -->
+          <!-- Grid: 4 rows (batch items) x 5 cols (features) -->
+          <!-- Grid starts at x=60, y=75. Cell: 52x42, gap=4 -->
+          <text x="38" y="103" text-anchor="end" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">ex 1</text>
+          <text x="38" y="149" text-anchor="end" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">ex 2</text>
+          <text x="38" y="195" text-anchor="end" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">ex 3</text>
+          <text x="38" y="241" text-anchor="end" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">ex 4</text>
+
+          <text x="86" y="68" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">f₁</text>
+          <text x="142" y="68" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">f₂</text>
+          <text x="198" y="68" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">f₃</text>
+          <text x="254" y="68" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">f₄</text>
+          <text x="310" y="68" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">f₅</text>
+
+          <!-- Highlight column 1 for batch norm -->
+          <rect x="60" y="79" width="52" height="186" rx="3" fill="none" stroke="#993C1D" stroke-width="2.5" stroke-dasharray="5 3"/>
+
+          <!-- Row 1 -->
+          <rect x="60"  y="82" width="52" height="38" rx="3" fill="#FAECE7" stroke="#F0997B" stroke-width="1"/>
+          <rect x="116" y="82" width="52" height="38" rx="3" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="1"/>
+          <rect x="172" y="82" width="52" height="38" rx="3" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="1"/>
+          <rect x="228" y="82" width="52" height="38" rx="3" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="1"/>
+          <rect x="284" y="82" width="52" height="38" rx="3" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="1"/>
+          <!-- Row 2 -->
+          <rect x="60"  y="128" width="52" height="38" rx="3" fill="#FAECE7" stroke="#F0997B" stroke-width="1"/>
+          <rect x="116" y="128" width="52" height="38" rx="3" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="1"/>
+          <rect x="172" y="128" width="52" height="38" rx="3" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="1"/>
+          <rect x="228" y="128" width="52" height="38" rx="3" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="1"/>
+          <rect x="284" y="128" width="52" height="38" rx="3" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="1"/>
+          <!-- Row 3 -->
+          <rect x="60"  y="174" width="52" height="38" rx="3" fill="#FAECE7" stroke="#F0997B" stroke-width="1"/>
+          <rect x="116" y="174" width="52" height="38" rx="3" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="1"/>
+          <rect x="172" y="174" width="52" height="38" rx="3" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="1"/>
+          <rect x="228" y="174" width="52" height="38" rx="3" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="1"/>
+          <rect x="284" y="174" width="52" height="38" rx="3" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="1"/>
+          <!-- Row 4 -->
+          <rect x="60"  y="220" width="52" height="38" rx="3" fill="#FAECE7" stroke="#F0997B" stroke-width="1"/>
+          <rect x="116" y="220" width="52" height="38" rx="3" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="1"/>
+          <rect x="172" y="220" width="52" height="38" rx="3" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="1"/>
+          <rect x="228" y="220" width="52" height="38" rx="3" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="1"/>
+          <rect x="284" y="220" width="52" height="38" rx="3" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="1"/>
+
+          <!-- Arrow and label -->
+          <text x="86" y="288" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#993C1D">↑ normalize</text>
+          <text x="86" y="304" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#993C1D">across batch</text>
+          <text x="200" y="330" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">Mixes different sequences together</text>
+          <text x="200" y="346" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#993C1D">✗ Fails with variable-length sequences</text>
+
+          <!-- RIGHT PANEL: Layer Norm -->
+          <text x="438" y="103" text-anchor="end" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">ex 1</text>
+          <text x="438" y="149" text-anchor="end" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">ex 2</text>
+          <text x="438" y="195" text-anchor="end" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">ex 3</text>
+          <text x="438" y="241" text-anchor="end" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">ex 4</text>
+
+          <text x="486" y="68" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">f₁</text>
+          <text x="542" y="68" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">f₂</text>
+          <text x="598" y="68" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">f₃</text>
+          <text x="654" y="68" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">f₄</text>
+          <text x="710" y="68" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">f₅</text>
+
+          <!-- Highlight row 1 for layer norm -->
+          <rect x="456" y="79" width="276" height="44" rx="3" fill="none" stroke="#0F6E56" stroke-width="2.5" stroke-dasharray="5 3"/>
+
+          <!-- Row 1 -->
+          <rect x="460" y="82" width="52" height="38" rx="3" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <rect x="516" y="82" width="52" height="38" rx="3" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <rect x="572" y="82" width="52" height="38" rx="3" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <rect x="628" y="82" width="52" height="38" rx="3" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <rect x="684" y="82" width="52" height="38" rx="3" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <!-- Row 2 -->
+          <rect x="460" y="128" width="52" height="38" rx="3" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="1"/>
+          <rect x="516" y="128" width="52" height="38" rx="3" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="1"/>
+          <rect x="572" y="128" width="52" height="38" rx="3" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="1"/>
+          <rect x="628" y="128" width="52" height="38" rx="3" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="1"/>
+          <rect x="684" y="128" width="52" height="38" rx="3" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="1"/>
+          <!-- Row 3 -->
+          <rect x="460" y="174" width="52" height="38" rx="3" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="1"/>
+          <rect x="516" y="174" width="52" height="38" rx="3" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="1"/>
+          <rect x="572" y="174" width="52" height="38" rx="3" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="1"/>
+          <rect x="628" y="174" width="52" height="38" rx="3" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="1"/>
+          <rect x="684" y="174" width="52" height="38" rx="3" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="1"/>
+          <!-- Row 4 -->
+          <rect x="460" y="220" width="52" height="38" rx="3" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="1"/>
+          <rect x="516" y="220" width="52" height="38" rx="3" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="1"/>
+          <rect x="572" y="220" width="52" height="38" rx="3" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="1"/>
+          <rect x="628" y="220" width="52" height="38" rx="3" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="1"/>
+          <rect x="684" y="220" width="52" height="38" rx="3" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="1"/>
+
+          <text x="598" y="288" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#0F6E56">→ normalize across features ←</text>
+          <text x="598" y="330" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">Each example normalized independently</text>
+          <text x="598" y="346" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#0F6E56">✓ Works with any sequence length</text>
+        </svg>
+        <figcaption>Figure 2.4 — Batch normalization vs layer normalization. Batch norm (left) normalizes each feature across the batch — the dashed coral column shows feature $f_1$ being averaged over all four examples. Layer norm (right) normalizes each example across its features — the dashed teal row shows example 1 being normalized over all five features. Layer norm never mixes information between examples, making it agnostic to batch size and sequence length.</figcaption>
+      </figure>
+
+      <h3>Layer Norm Formula</h3>
+
+      <p>Given a single vector $\mathbf{x} \in \mathbb{R}^d$ (one token's representation), layer norm computes:</p>
+
+      <div class="math-block">
+        $$\text{LayerNorm}(\mathbf{x}) = \gamma \odot \frac{\mathbf{x} - \mu}{\sqrt{\sigma^2 + \epsilon}} + \beta$$
+      </div>
+
+      <p>where $\mu = \frac{1}{d}\sum_{i=1}^d x_i$ is the mean across features, $\sigma^2 = \frac{1}{d}\sum_{i=1}^d (x_i - \mu)^2$ is the variance, $\epsilon \approx 10^{-5}$ prevents division by zero, and $\gamma, \beta \in \mathbb{R}^d$ are learned scale and shift parameters. The $\odot$ denotes element-wise multiplication (Hadamard product, both $\in \mathbb{R}^{d}$). The normalization centers and standardizes the activations, then $\gamma$ and $\beta$ allow the network to undo the normalization for any dimensions where it hurts — giving the model the option of ignoring the norm if that is optimal.</p>
+
+      <h3>RMS Norm</h3>
+
+      <p><strong>RMS Norm</strong> (Root Mean Square Normalization) simplifies layer norm by removing the mean-centering step. Instead of computing both mean and variance, it normalizes by the root mean square alone:</p>
+
+      <div class="math-block">
+        $$\text{RMSNorm}(\mathbf{x}) = \gamma \odot \frac{\mathbf{x}}{\sqrt{\frac{1}{d}\sum_{i=1}^d x_i^2 + \epsilon}}$$
+      </div>
+
+      <p>The bias $\beta$ is also dropped. This saves a small amount of computation (one fewer reduction across the feature dimension) and empirically works just as well. LLaMA, Gemma, and most modern large language models use RMS Norm exclusively. The intuition is that re-centering activations to have zero mean provides negligible benefit once the model is large enough — what matters is controlling the overall scale.</p>
+
+      <pre><code class="language-python">
+import torch
+import torch.nn as nn
+
+class RMSNorm(nn.Module):
+    def __init__(self, d_model: int, eps: float = 1e-6):
+        super().__init__()
+        self.weight = nn.Parameter(torch.ones(d_model))  # learnable scale γ
+        self.eps = eps
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # x shape: (batch, seq_len, d_model)
+        rms = torch.sqrt(x.pow(2).mean(dim=-1, keepdim=True) + self.eps)
+        return self.weight * (x / rms)
+</code></pre>
+
+      <h3>Pre-Norm vs Post-Norm</h3>
+
+      <p>The original Transformer applied layer norm <em>after</em> the residual addition: $\text{LayerNorm}(x + \text{Sublayer}(x))$. This is called <strong>post-norm</strong>. It works, but training deep post-norm Transformers (40+ layers) without careful learning rate warmup often diverges. The reason: the residual connection adds the sublayer output to $x$ before normalization, so the scale of the combined signal can grow without bound during early training.</p>
+
+      <p><strong>Pre-norm</strong> applies normalization before the sublayer: $x + \text{Sublayer}(\text{LayerNorm}(x))$. The sublayer always receives a well-conditioned input, regardless of what the residual stream looks like. This dramatically improves training stability and is now the default in nearly all large Transformers (GPT-2 onward, LLaMA, PaLM, Gemini). The tradeoff is subtle: some work suggests pre-norm produces slightly worse final loss for the same parameter count, because the unnormalized residual stream can accumulate information more freely. In practice, the stability benefit dominates.</p>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 400" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="ch02-arr3" viewBox="0 0 10 10" refX="9" refY="5"
+              markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+              <path d="M1 1L9 5L1 9" fill="none" stroke="context-stroke"
+                stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </marker>
+          </defs>
+
+          <!-- Panel headers -->
+          <rect x="40" y="16" width="320" height="34" rx="5" fill="#FAECE7" stroke="#F0997B" stroke-width="1"/>
+          <text x="200" y="38" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="600" fill="#993C1D">Post-Norm (Original, 2017)</text>
+
+          <rect x="440" y="16" width="320" height="34" rx="5" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="600" y="38" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="600" fill="#0F6E56">Pre-Norm (Modern Default)</text>
+
+          <!-- Divider -->
+          <line x1="400" y1="10" x2="400" y2="390" stroke="#E5E3DC" stroke-width="1" stroke-dasharray="5 4"/>
+
+          <!-- POST-NORM (left) -->
+          <!-- Input -->
+          <rect x="120" y="70" width="160" height="36" rx="6" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="1"/>
+          <text x="200" y="93" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="400" fill="#5C5B56">x</text>
+
+          <!-- Split -->
+          <line x1="200" y1="106" x2="200" y2="125" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch02-arr3)"/>
+
+          <!-- Sublayer -->
+          <rect x="120" y="128" width="160" height="36" rx="6" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <text x="200" y="151" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="500" fill="#534AB7">Sublayer</text>
+
+          <!-- Residual bypass -->
+          <line x1="120" y1="88" x2="65" y2="88" stroke="#C8C6BE" stroke-width="1.5"/>
+          <line x1="65" y1="88" x2="65" y2="205" stroke="#C8C6BE" stroke-width="1.5"/>
+          <line x1="65" y1="205" x2="120" y2="205" stroke="#C8C6BE" stroke-width="1.5" marker-end="url(#ch02-arr3)"/>
+          <text x="58" y="150" text-anchor="end" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">residual</text>
+
+          <!-- Add -->
+          <line x1="200" y1="164" x2="200" y2="185" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch02-arr3)"/>
+          <circle cx="200" cy="205" r="14" fill="#FFFFFF" stroke="#C8C6BE" stroke-width="1.5"/>
+          <text x="200" y="210" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="16" font-weight="500" fill="#5C5B56">+</text>
+
+          <!-- LayerNorm AFTER add -->
+          <line x1="200" y1="219" x2="200" y2="240" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch02-arr3)"/>
+          <rect x="120" y="244" width="160" height="36" rx="6" fill="#FAEEDA" stroke="#EF9F27" stroke-width="1.5"/>
+          <text x="200" y="267" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="500" fill="#854F0B">LayerNorm</text>
+
+          <line x1="200" y1="280" x2="200" y2="300" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch02-arr3)"/>
+          <rect x="120" y="304" width="160" height="36" rx="6" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="1"/>
+          <text x="200" y="327" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="400" fill="#5C5B56">output</text>
+
+          <text x="200" y="368" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#993C1D">LN(x + Sublayer(x))</text>
+          <text x="200" y="385" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">Unstable for deep models</text>
+
+          <!-- PRE-NORM (right) -->
+          <!-- Input -->
+          <rect x="520" y="70" width="160" height="36" rx="6" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="1"/>
+          <text x="600" y="93" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="400" fill="#5C5B56">x</text>
+
+          <!-- LayerNorm BEFORE sublayer -->
+          <line x1="600" y1="106" x2="600" y2="125" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch02-arr3)"/>
+          <rect x="520" y="128" width="160" height="36" rx="6" fill="#FAEEDA" stroke="#EF9F27" stroke-width="1.5"/>
+          <text x="600" y="151" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="500" fill="#854F0B">LayerNorm</text>
+
+          <!-- Sublayer -->
+          <line x1="600" y1="164" x2="600" y2="185" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch02-arr3)"/>
+          <rect x="520" y="188" width="160" height="36" rx="6" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <text x="600" y="211" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="500" fill="#534AB7">Sublayer</text>
+
+          <!-- Residual bypass -->
+          <line x1="520" y1="88" x2="465" y2="88" stroke="#C8C6BE" stroke-width="1.5"/>
+          <line x1="465" y1="88" x2="465" y2="260" stroke="#C8C6BE" stroke-width="1.5"/>
+          <line x1="465" y1="260" x2="520" y2="260" stroke="#C8C6BE" stroke-width="1.5" marker-end="url(#ch02-arr3)"/>
+          <text x="458" y="178" text-anchor="end" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">residual</text>
+
+          <!-- Add -->
+          <line x1="600" y1="224" x2="600" y2="243" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch02-arr3)"/>
+          <circle cx="600" cy="260" r="14" fill="#FFFFFF" stroke="#C8C6BE" stroke-width="1.5"/>
+          <text x="600" y="265" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="16" font-weight="500" fill="#5C5B56">+</text>
+
+          <line x1="600" y1="274" x2="600" y2="300" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch02-arr3)"/>
+          <rect x="520" y="304" width="160" height="36" rx="6" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="1"/>
+          <text x="600" y="327" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="400" fill="#5C5B56">output</text>
+
+          <text x="600" y="368" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#0F6E56">x + Sublayer(LN(x))</text>
+          <text x="600" y="385" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">Stable for very deep models</text>
+        </svg>
+        <figcaption>Figure 2.5 — Post-norm vs pre-norm placement. In post-norm (left), the residual is added first, then normalized. In pre-norm (right), the input is normalized before entering the sublayer, then the raw residual is added. Pre-norm ensures the sublayer always receives well-conditioned input, enabling stable training of very deep models (100+ layers).</figcaption>
+      </figure>
+    </section>
+
+    <!-- ================================================================== -->
+    <!-- SECTION 4: SCALED DOT-PRODUCT ATTENTION DERIVATION                 -->
+    <!-- ================================================================== -->
+    <section class="chapter-section" id="scaled-dot-product-attention">
+      <h2>Scaled Dot-Product Attention Derivation</h2>
+
+      <h3>Why Scale by $\sqrt{d_k}$</h3>
+
+      <p>Imagine two random vectors $\mathbf{q}, \mathbf{k} \in \mathbb{R}^{d_k}$ where each component is drawn independently from a distribution with mean 0 and variance 1. Their dot product is $\sum_{i=1}^{d_k} q_i k_i$ — a sum of $d_k$ independent terms, each with mean 0 and variance 1. By the properties of sums of independent random variables, the dot product has mean 0 and variance $d_k$, giving a standard deviation of $\sqrt{d_k}$.</p>
+
+      <p>For $d_k = 64$, the standard deviation is 8. Dot products will routinely land at values like $\pm 16$ or beyond. Fed into softmax, these produce distributions that are nearly one-hot — one key gets weight 0.9999, the rest share 0.0001. The gradients are effectively zero, and the model cannot learn which tokens to attend to. Dividing by $\sqrt{d_k}$ rescales the dot products to have unit variance, keeping softmax in its sensitive regime where gradients are informative.</p>
+
+      <h3>The Full Attention Formula</h3>
+
+      <p>Now let us write down exactly what we described. Given queries $Q \in \mathbb{R}^{n \times d_k}$, keys $K \in \mathbb{R}^{n \times d_k}$, and values $V \in \mathbb{R}^{n \times d_v}$:</p>
+
+      <div class="math-block">
+        $$\text{Attention}(Q, K, V) = \text{softmax}\!\left(\frac{QK^\top}{\sqrt{d_k}}\right) V$$
+      </div>
+
+      <p>The $QK^\top$ term computes an $n \times n$ matrix of pairwise similarity scores between every query and every key — entry $(i,j)$ is how much token $i$'s query aligns with token $j$'s key. Dividing by $\sqrt{d_k}$ prevents the scores from saturating softmax. The softmax (applied row-wise) converts each row into a probability distribution over positions. Multiplying by $V$ produces a weighted average of value vectors, where the weights are the attention probabilities. Each output row is a "summary" of the sequence, weighted by relevance to that query.</p>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 410" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="ch02-arr4" viewBox="0 0 10 10" refX="9" refY="5"
+              markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+              <path d="M1 1L9 5L1 9" fill="none" stroke="context-stroke"
+                stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </marker>
+          </defs>
+
+          <!-- Q matrix -->
+          <rect x="30" y="80" width="80" height="130" rx="4" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <line x1="36" y1="110" x2="104" y2="110" stroke="#AFA9EC" stroke-width="0.5" opacity="0.5"/>
+          <line x1="36" y1="140" x2="104" y2="140" stroke="#AFA9EC" stroke-width="0.5" opacity="0.5"/>
+          <line x1="36" y1="170" x2="104" y2="170" stroke="#AFA9EC" stroke-width="0.5" opacity="0.5"/>
+          <text x="70" y="155" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="500" fill="#534AB7">Q</text>
+          <text x="70" y="68" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">d_k</text>
+          <text x="22" y="148" text-anchor="end" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">n</text>
+
+          <!-- × -->
+          <text x="126" y="150" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="16" font-weight="400" fill="#9C9A94">×</text>
+
+          <!-- K^T matrix -->
+          <rect x="142" y="80" width="130" height="80" rx="4" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <line x1="175" y1="86" x2="175" y2="154" stroke="#AFA9EC" stroke-width="0.5" opacity="0.5"/>
+          <line x1="208" y1="86" x2="208" y2="154" stroke="#AFA9EC" stroke-width="0.5" opacity="0.5"/>
+          <line x1="241" y1="86" x2="241" y2="154" stroke="#AFA9EC" stroke-width="0.5" opacity="0.5"/>
+          <text x="207" y="126" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="500" fill="#534AB7">K⊤</text>
+          <text x="207" y="68" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">n</text>
+          <text x="134" y="124" text-anchor="end" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">d_k</text>
+
+          <!-- / sqrt(d_k) -->
+          <text x="207" y="185" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#854F0B">÷ √d_k</text>
+
+          <!-- = -->
+          <text x="290" y="130" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="16" font-weight="400" fill="#9C9A94">=</text>
+
+          <!-- Score matrix (before softmax) -->
+          <rect x="306" y="80" width="130" height="130" rx="4" fill="#FAEEDA" stroke="#EF9F27" stroke-width="1.5"/>
+          <!-- Gradient fill to show magnitude -->
+          <rect x="312" y="86" width="27" height="27" rx="2" fill="#EF9F27" opacity="0.2"/>
+          <rect x="343" y="86" width="27" height="27" rx="2" fill="#EF9F27" opacity="0.7"/>
+          <rect x="374" y="86" width="27" height="27" rx="2" fill="#EF9F27" opacity="0.1"/>
+          <rect x="405" y="86" width="27" height="27" rx="2" fill="#EF9F27" opacity="0.4"/>
+          <rect x="312" y="117" width="27" height="27" rx="2" fill="#EF9F27" opacity="0.5"/>
+          <rect x="343" y="117" width="27" height="27" rx="2" fill="#EF9F27" opacity="0.3"/>
+          <rect x="374" y="117" width="27" height="27" rx="2" fill="#EF9F27" opacity="0.8"/>
+          <rect x="405" y="117" width="27" height="27" rx="2" fill="#EF9F27" opacity="0.15"/>
+          <rect x="312" y="148" width="27" height="27" rx="2" fill="#EF9F27" opacity="0.1"/>
+          <rect x="343" y="148" width="27" height="27" rx="2" fill="#EF9F27" opacity="0.6"/>
+          <rect x="374" y="148" width="27" height="27" rx="2" fill="#EF9F27" opacity="0.3"/>
+          <rect x="405" y="148" width="27" height="27" rx="2" fill="#EF9F27" opacity="0.9"/>
+          <rect x="312" y="179" width="27" height="27" rx="2" fill="#EF9F27" opacity="0.4"/>
+          <rect x="343" y="179" width="27" height="27" rx="2" fill="#EF9F27" opacity="0.15"/>
+          <rect x="374" y="179" width="27" height="27" rx="2" fill="#EF9F27" opacity="0.5"/>
+          <rect x="405" y="179" width="27" height="27" rx="2" fill="#EF9F27" opacity="0.2"/>
+          <text x="371" y="232" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#854F0B">scores (n × n)</text>
+
+          <!-- softmax arrow -->
+          <line x1="450" y1="145" x2="478" y2="145" stroke="#534AB7" stroke-width="2" marker-end="url(#ch02-arr4)"/>
+          <text x="464" y="135" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#534AB7">softmax</text>
+          <text x="464" y="165" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">(row-wise)</text>
+
+          <!-- Attention weight matrix -->
+          <rect x="490" y="80" width="130" height="130" rx="4" fill="#534AB7" stroke="#534AB7" stroke-width="1.5"/>
+          <!-- Probability cells -->
+          <rect x="496" y="86" width="27" height="27" rx="2" fill="#FFFFFF" opacity="0.15"/>
+          <rect x="527" y="86" width="27" height="27" rx="2" fill="#FFFFFF" opacity="0.6"/>
+          <rect x="558" y="86" width="27" height="27" rx="2" fill="#FFFFFF" opacity="0.05"/>
+          <rect x="589" y="86" width="27" height="27" rx="2" fill="#FFFFFF" opacity="0.3"/>
+          <rect x="496" y="117" width="27" height="27" rx="2" fill="#FFFFFF" opacity="0.4"/>
+          <rect x="527" y="117" width="27" height="27" rx="2" fill="#FFFFFF" opacity="0.2"/>
+          <rect x="558" y="117" width="27" height="27" rx="2" fill="#FFFFFF" opacity="0.7"/>
+          <rect x="589" y="117" width="27" height="27" rx="2" fill="#FFFFFF" opacity="0.1"/>
+          <rect x="496" y="148" width="27" height="27" rx="2" fill="#FFFFFF" opacity="0.05"/>
+          <rect x="527" y="148" width="27" height="27" rx="2" fill="#FFFFFF" opacity="0.5"/>
+          <rect x="558" y="148" width="27" height="27" rx="2" fill="#FFFFFF" opacity="0.2"/>
+          <rect x="589" y="148" width="27" height="27" rx="2" fill="#FFFFFF" opacity="0.8"/>
+          <rect x="496" y="179" width="27" height="27" rx="2" fill="#FFFFFF" opacity="0.3"/>
+          <rect x="527" y="179" width="27" height="27" rx="2" fill="#FFFFFF" opacity="0.1"/>
+          <rect x="558" y="179" width="27" height="27" rx="2" fill="#FFFFFF" opacity="0.4"/>
+          <rect x="589" y="179" width="27" height="27" rx="2" fill="#FFFFFF" opacity="0.15"/>
+          <text x="555" y="232" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#AFA9EC">weights (n × n)</text>
+          <text x="555" y="248" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">each row sums to 1</text>
+
+          <!-- × -->
+          <text x="636" y="130" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="16" font-weight="400" fill="#9C9A94">×</text>
+
+          <!-- V matrix -->
+          <rect x="652" y="80" width="80" height="130" rx="4" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1.5"/>
+          <line x1="658" y1="110" x2="726" y2="110" stroke="#5DCAA5" stroke-width="0.5" opacity="0.5"/>
+          <line x1="658" y1="140" x2="726" y2="140" stroke="#5DCAA5" stroke-width="0.5" opacity="0.5"/>
+          <line x1="658" y1="170" x2="726" y2="170" stroke="#5DCAA5" stroke-width="0.5" opacity="0.5"/>
+          <text x="692" y="155" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="500" fill="#0F6E56">V</text>
+          <text x="692" y="68" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">d_v</text>
+          <text x="644" y="148" text-anchor="end" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">n</text>
+
+          <!-- Result arrow -->
+          <line x1="400" y1="270" x2="400" y2="300" stroke="#534AB7" stroke-width="2" marker-end="url(#ch02-arr4)"/>
+
+          <!-- Output -->
+          <rect x="330" y="310" width="140" height="44" rx="6" fill="#FAECE7" stroke="#F0997B" stroke-width="1.5"/>
+          <text x="400" y="337" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="500" fill="#993C1D">Output (n × d_v)</text>
+
+          <text x="400" y="374" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#5C5B56">Each row = weighted average of value vectors</text>
+        </svg>
+        <figcaption>Figure 2.6 — The scaled dot-product attention computation as a sequence of matrix operations. $Q$ and $K^\top$ are multiplied to form a score matrix, scaled by $1/\sqrt{d_k}$, passed through row-wise softmax to produce attention weights (darker = higher weight), then multiplied by $V$ to produce the output. Opacity in the score and weight matrices indicates magnitude.</figcaption>
+      </figure>
+
+      <h3>Complexity Analysis</h3>
+
+      <p>The $QK^\top$ multiplication is the bottleneck: multiplying an $(n \times d_k)$ matrix by a $(d_k \times n)$ matrix costs $O(n^2 d_k)$ time and produces an $(n \times n)$ attention matrix that requires $O(n^2)$ memory. For a sequence of 4,096 tokens with $d_k = 64$, the attention matrix alone contains 16.7 million entries per head. With 32 heads, that is 537 million entries per layer. This quadratic scaling in sequence length is the fundamental computational bottleneck of the Transformer — and the motivation behind FlashAttention, sparse attention, and all the efficiency innovations we cover in Part VI.</p>
+
+      <h3>Gradient Flow Through the Softmax</h3>
+
+      <p>The Jacobian of softmax with respect to its input has a specific structure: $\frac{\partial \text{softmax}(z_i)}{\partial z_j} = \text{softmax}(z_i)(\delta_{ij} - \text{softmax}(z_j))$, where $\delta_{ij}$ is the Kronecker delta. When the distribution is uniform, the Jacobian entries are all roughly $1/n$ in magnitude — gradients flow evenly to all logits. When the distribution is peaked (one entry dominates), the diagonal term is near zero for the winner (since $\text{softmax}(z_i)(1 - \text{softmax}(z_i)) \approx 0$ when $\text{softmax}(z_i) \approx 1$), and off-diagonal terms are also near zero. This is the precise mechanism of gradient vanishing under saturation.</p>
+
+      <p>This gradient structure explains why initialization matters. If the query and key projection weights are initialized with too-large variance, early dot products will be large, softmax will saturate, and the attention layers will be effectively frozen during the first phase of training. Standard practice initializes $W_Q$ and $W_K$ with variance $1/d_\text{model}$, keeping early dot products small.</p>
+
+      <div class="callout callout-math">
+        <div class="callout-title">Key Insight</div>
+        <p>The $1/\sqrt{d_k}$ scaling and the initialization variance of $W_Q, W_K$ serve the same goal from different angles: keeping the softmax in its linear regime where gradients flow. Scaling fixes the issue at every forward pass; initialization fixes it at the start of training. Both are necessary because training dynamics can push dot products back toward saturation.</p>
+      </div>
+    </section>
+
+    <!-- ================================================================== -->
+    <!-- SECTION 5: FEED-FORWARD NETWORK MATHEMATICS                        -->
+    <!-- ================================================================== -->
+    <section class="chapter-section" id="feed-forward-network">
+      <h2>Feed-Forward Network Mathematics</h2>
+
+      <h3>Two-Layer MLP Structure</h3>
+
+      <p>After attention aggregates information across the sequence, each token passes independently through a position-wise feed-forward network (FFN). "Position-wise" means the same network is applied to every token separately — no inter-token communication happens here. The FFN is a simple two-layer MLP:</p>
+
+      <div class="math-block">
+        $$\text{FFN}(\mathbf{x}) = W_2 \, \sigma(W_1 \mathbf{x} + \mathbf{b}_1) + \mathbf{b}_2$$
+      </div>
+
+      <p>where $W_1 \in \mathbb{R}^{d_\text{ff} \times d_\text{model}}$ projects up to a wider hidden dimension, $\sigma$ is a nonlinear activation function, and $W_2 \in \mathbb{R}^{d_\text{model} \times d_\text{ff}}$ projects back down to the model dimension. The input $\mathbf{x} \in \mathbb{R}^{d_\text{model}}$ enters and exits at the same dimensionality, but passes through a higher-dimensional intermediate representation.</p>
+
+      <h3>The Expansion Ratio</h3>
+
+      <p>The standard expansion ratio is $d_\text{ff} = 4 \times d_\text{model}$. For a model with $d_\text{model} = 768$, the FFN hidden dimension is 3,072. Why 4×? The original paper chose it empirically, but there is an intuitive justification: the FFN needs enough capacity to store and retrieve factual knowledge. Work by Geva et al. (2021) showed that FFN layers act as key-value memories — the first layer's rows are "keys" that match input patterns, and the second layer's columns are "values" that produce the corresponding output. A 4× expansion means four times as many memory slots as the model dimension, providing a substantial factual knowledge capacity.</p>
+
+      <p>Modern models sometimes use different ratios. LLaMA uses $d_\text{ff} = \frac{8}{3} d_\text{model}$ (rounded to the nearest multiple of 256) when using SwiGLU, because the gating mechanism adds a third weight matrix, and the reduced ratio keeps total parameter count comparable to the standard 4× with ReLU.</p>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 360" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="ch02-arr5" viewBox="0 0 10 10" refX="9" refY="5"
+              markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+              <path d="M1 1L9 5L1 9" fill="none" stroke="context-stroke"
+                stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </marker>
+          </defs>
+
+          <!-- Input -->
+          <rect x="310" y="20" width="180" height="40" rx="6" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1.5"/>
+          <text x="400" y="45" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="500" fill="#0F6E56">x ∈ ℝ^d_model</text>
+
+          <line x1="400" y1="60" x2="400" y2="82" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch02-arr5)"/>
+
+          <!-- W1 projection (expand) -->
+          <rect x="220" y="86" width="360" height="44" rx="6" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <text x="400" y="108" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="500" fill="#534AB7">W₁x + b₁</text>
+          <text x="400" y="124" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">Project: d_model → d_ff (4× expansion)</text>
+
+          <!-- Width annotation -->
+          <line x1="220" y1="140" x2="220" y2="150" stroke="#C8C6BE" stroke-width="1"/>
+          <line x1="580" y1="140" x2="580" y2="150" stroke="#C8C6BE" stroke-width="1"/>
+          <line x1="220" y1="148" x2="580" y2="148" stroke="#C8C6BE" stroke-width="1"/>
+          <text x="400" y="162" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">d_ff = 4 × d_model</text>
+
+          <line x1="400" y1="148" x2="400" y2="175" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch02-arr5)"/>
+
+          <!-- Activation -->
+          <rect x="290" y="178" width="220" height="40" rx="6" fill="#FAEEDA" stroke="#EF9F27" stroke-width="1.5"/>
+          <text x="400" y="203" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="500" fill="#854F0B">σ (activation)</text>
+
+          <line x1="400" y1="218" x2="400" y2="240" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch02-arr5)"/>
+
+          <!-- W2 projection (compress) -->
+          <rect x="310" y="244" width="180" height="44" rx="6" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <text x="400" y="266" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="500" fill="#534AB7">W₂(·) + b₂</text>
+          <text x="400" y="282" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">Project: d_ff → d_model</text>
+
+          <line x1="400" y1="288" x2="400" y2="308" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch02-arr5)"/>
+
+          <!-- Output -->
+          <rect x="310" y="310" width="180" height="16" rx="3" fill="#FAECE7" stroke="#F0997B" stroke-width="1"/>
+
+          <!-- Side annotation -->
+          <text x="610" y="108" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#534AB7">Parameters: d_model × d_ff</text>
+          <text x="610" y="204" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#854F0B">ReLU, GELU, or SwiGLU</text>
+          <text x="610" y="268" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#534AB7">Parameters: d_ff × d_model</text>
+        </svg>
+        <figcaption>Figure 2.7 — The position-wise feed-forward network. Input $\mathbf{x}$ is projected up to $d_\text{ff}$ dimensions (typically $4 \times d_\text{model}$) by $W_1$, passed through a nonlinear activation $\sigma$, then projected back down to $d_\text{model}$ dimensions by $W_2$. The wider intermediate layer provides capacity for storing factual knowledge.</figcaption>
+      </figure>
+
+      <h3>Activation Functions: ReLU, GELU, SwiGLU, GLU Variants</h3>
+
+      <p>The original Transformer used <strong>ReLU</strong>: $\text{ReLU}(x) = \max(0, x)$. Simple and efficient, but it creates "dead neurons" — any unit with a negative pre-activation contributes exactly zero gradient and may never recover.</p>
+
+      <p><strong>GELU</strong> (Gaussian Error Linear Unit) replaced ReLU in BERT and GPT-2: $\text{GELU}(x) = x \cdot \Phi(x)$, where $\Phi$ is the standard Gaussian CDF. Unlike ReLU, GELU is smooth everywhere and gives small negative inputs a small nonzero output, avoiding dead neurons. It can be approximated as $\text{GELU}(x) \approx 0.5x(1 + \tanh[\sqrt{2/\pi}(x + 0.044715x^3)])$.</p>
+
+      <p><strong>SwiGLU</strong> is the current state-of-the-art, used in LLaMA, PaLM, and Gemini. It modifies the FFN structure itself by introducing a gating mechanism:</p>
+
+      <div class="math-block">
+        $$\text{SwiGLU}(\mathbf{x}) = (\text{Swish}(W_1 \mathbf{x}) \odot W_3 \mathbf{x}) W_2$$
+      </div>
+
+      <p>where $\text{Swish}(x) = x \cdot \sigma(x)$ with $\sigma$ being the sigmoid function, $\odot$ is element-wise multiplication, and $W_3$ is a third weight matrix of the same shape as $W_1$. The gate $\text{Swish}(W_1 \mathbf{x})$ decides how much of each dimension to keep, while $W_3 \mathbf{x}$ provides the actual content. This gating costs 50% more parameters than standard FFN (three matrices instead of two), which is why models using SwiGLU reduce $d_\text{ff}$ to $\frac{8}{3} d_\text{model}$ to stay parameter-equivalent.</p>
+
+      <p>SwiGLU belongs to the broader <strong>Gated Linear Unit (GLU)</strong> family introduced by Dauphin et al. (2017). The general form is:</p>
+
+      <div class="math-block">
+        $$\text{GLU}(\mathbf{x}) = \sigma_g(W_1 \mathbf{x}) \odot W_3 \mathbf{x}$$
+      </div>
+
+      <p>where $\sigma_g$ is a gate activation function. The choice of $\sigma_g$ defines each variant: sigmoid gives the original GLU, ReLU gives <strong>ReGLU</strong>, GELU gives <strong>GeGLU</strong>, and Swish gives SwiGLU. Shazeer (2020) systematically benchmarked all variants and found SwiGLU and GeGLU consistently outperformed the alternatives on language modeling tasks, with SwiGLU holding a slight edge. The gating mechanism allows the network to learn *which* dimensions of the intermediate representation to suppress, providing a richer inductive bias than a pointwise activation alone.</p>
+
+      <figure class="diagram-figure diagram-interactive">
+        <div class="widget-container" id="widget-ch02-activations">
+          <style>
+            #widget-ch02-activations .act-controls {
+              display: flex; gap: 1rem; padding: 0.5rem 0 0.5rem;
+              font-family: system-ui, -apple-system, sans-serif; font-size: 13px;
+            }
+            #widget-ch02-activations .act-btn {
+              padding: 5px 14px; border-radius: 5px; border: 1px solid #E5E3DC;
+              background: #FFFFFF; color: #5C5B56; cursor: pointer;
+              font-family: system-ui, -apple-system, sans-serif; font-size: 12px; font-weight: 500;
+            }
+            #widget-ch02-activations .act-btn.active {
+              background: #534AB7; color: #FFFFFF; border-color: #534AB7;
+            }
+          </style>
+
+          <div class="act-controls">
+            <button class="act-btn active" onclick="showCh02Activation('relu')" id="ch02-btn-relu">ReLU</button>
+            <button class="act-btn" onclick="showCh02Activation('gelu')" id="ch02-btn-gelu">GELU</button>
+            <button class="act-btn" onclick="showCh02Activation('swish')" id="ch02-btn-swish">Swish</button>
+            <button class="act-btn" onclick="showCh02Activation('all')" id="ch02-btn-all">All three</button>
+          </div>
+
+          <svg id="ch02-act-svg" width="100%" viewBox="0 0 800 350" xmlns="http://www.w3.org/2000/svg">
+            <!-- Axes -->
+            <line x1="80" y1="160" x2="720" y2="160" stroke="#C8C6BE" stroke-width="1"/>
+            <line x1="400" y1="30" x2="400" y2="290" stroke="#C8C6BE" stroke-width="1"/>
+
+            <!-- Axis labels -->
+            <text x="730" y="164" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#9C9A94">x</text>
+            <text x="404" y="24" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#9C9A94">f(x)</text>
+
+            <!-- Grid lines -->
+            <line x1="240" y1="35" x2="240" y2="285" stroke="#F1EFE8" stroke-width="1"/>
+            <line x1="560" y1="35" x2="560" y2="285" stroke="#F1EFE8" stroke-width="1"/>
+            <line x1="85" y1="80" x2="715" y2="80" stroke="#F1EFE8" stroke-width="1"/>
+            <line x1="85" y1="240" x2="715" y2="240" stroke="#F1EFE8" stroke-width="1"/>
+
+            <!-- Tick labels -->
+            <text x="240" y="300" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">-2</text>
+            <text x="400" y="300" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">0</text>
+            <text x="560" y="300" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">2</text>
+            <text x="72" y="164" text-anchor="end" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">0</text>
+            <text x="72" y="84" text-anchor="end" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">2</text>
+            <text x="72" y="244" text-anchor="end" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">-2</text>
+
+            <!-- ReLU path: y=0 for x<0, y=x for x>=0 -->
+            <!-- x range: -4 to 4 maps to px 80 to 720. Scale: 80px per unit -->
+            <!-- y: 0 maps to 160, 1 maps to 80. Scale: -80px per unit -->
+            <polyline id="ch02-relu-line" points="80,160 240,160 400,160 480,80 560,0" fill="none" stroke="#993C1D" stroke-width="2.5" stroke-linecap="round"/>
+
+            <!-- GELU path (approximated) -->
+            <polyline id="ch02-gelu-line" points="80,163 120,163 160,162 200,162 240,161 280,161 320,162 340,163 360,163 380,162 400,160 420,154 440,146 460,134 480,119 500,102 520,83 540,63 560,42" fill="none" stroke="#0F6E56" stroke-width="2.5" stroke-linecap="round" style="display:none;"/>
+
+            <!-- Swish path -->
+            <polyline id="ch02-swish-line" points="80,173 120,177 160,179 200,179 240,177 280,174 320,172 340,171 360,169 380,166 400,160 420,152 440,142 460,129 480,114 500,97 520,78 540,58 560,37" fill="none" stroke="#534AB7" stroke-width="2.5" stroke-linecap="round" style="display:none;"/>
+
+            <!-- Legend -->
+            <line id="ch02-leg-relu" x1="100" y1="310" x2="130" y2="310" stroke="#993C1D" stroke-width="2.5"/>
+            <text id="ch02-leg-relu-t" x="138" y="314" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#993C1D">ReLU</text>
+
+            <line id="ch02-leg-gelu" x1="250" y1="310" x2="280" y2="310" stroke="#0F6E56" stroke-width="2.5" style="display:none;"/>
+            <text id="ch02-leg-gelu-t" x="288" y="314" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#0F6E56" style="display:none;">GELU</text>
+
+            <line id="ch02-leg-swish" x1="400" y1="310" x2="430" y2="310" stroke="#534AB7" stroke-width="2.5" style="display:none;"/>
+            <text id="ch02-leg-swish-t" x="438" y="314" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#534AB7" style="display:none;">Swish</text>
+          </svg>
+
+          <p style="font-family:system-ui, -apple-system, sans-serif; font-size:13px; color:#9C9A94; font-style:italic;
+                    padding:0.3rem 0 0.5rem;" id="ch02-act-observation">
+            ReLU outputs exactly zero for negative inputs ("dead zone"), creating dead neurons that never recover.
+          </p>
+        </div>
+
+        <script>
+          function showCh02Activation(which) {
+            var lines = {
+              relu: document.getElementById('ch02-relu-line'),
+              gelu: document.getElementById('ch02-gelu-line'),
+              swish: document.getElementById('ch02-swish-line')
+            };
+            var legs = {
+              relu: [document.getElementById('ch02-leg-relu'), document.getElementById('ch02-leg-relu-t')],
+              gelu: [document.getElementById('ch02-leg-gelu'), document.getElementById('ch02-leg-gelu-t')],
+              swish: [document.getElementById('ch02-leg-swish'), document.getElementById('ch02-leg-swish-t')]
+            };
+            var btns = {
+              relu: document.getElementById('ch02-btn-relu'),
+              gelu: document.getElementById('ch02-btn-gelu'),
+              swish: document.getElementById('ch02-btn-swish'),
+              all: document.getElementById('ch02-btn-all')
+            };
+            var obs = document.getElementById('ch02-act-observation');
+
+            // Reset all
+            for (var k in lines) { lines[k].style.display = 'none'; }
+            for (var k in legs) { legs[k][0].style.display = 'none'; legs[k][1].style.display = 'none'; }
+            for (var k in btns) { btns[k].className = 'act-btn'; }
+
+            if (which === 'all') {
+              for (var k in lines) { lines[k].style.display = ''; }
+              for (var k in legs) { legs[k][0].style.display = ''; legs[k][1].style.display = ''; }
+              btns.all.className = 'act-btn active';
+              obs.textContent = 'All three activations compared. GELU and Swish are smooth everywhere; ReLU has a hard kink at x = 0. Note how GELU and Swish allow small negative outputs near x = 0.';
+            } else {
+              lines[which].style.display = '';
+              legs[which][0].style.display = '';
+              legs[which][1].style.display = '';
+              btns[which].className = 'act-btn active';
+
+              if (which === 'relu') {
+                obs.textContent = 'ReLU outputs exactly zero for negative inputs ("dead zone"), creating dead neurons that never recover.';
+              } else if (which === 'gelu') {
+                obs.textContent = 'GELU is smooth and allows small negative outputs near zero. Used in BERT, GPT-2, and many later models.';
+              } else {
+                obs.textContent = 'Swish (x · sigmoid(x)) is smooth like GELU but with a slightly different shape. Used as the gate in SwiGLU.';
+              }
+            }
+          }
+        </script>
+
+        <figcaption>Figure 2.8 — Interactive: activation function comparison. Click the buttons to toggle between ReLU (coral), GELU (teal), and Swish (purple), or show all three. Notice how GELU and Swish are smooth everywhere and allow small negative outputs near zero, while ReLU has a hard discontinuity and a dead zone for $x < 0$.</figcaption>
+      </figure>
+
+      <h3>Universal Approximation: FFN as a Key-Value Memory Store</h3>
+
+      <p>Geva et al. (2021) provided a compelling reinterpretation of what FFN layers actually do. Consider $W_1$ as a matrix whose rows are "key patterns" and $W_2$ as a matrix whose columns are "value vectors." The first multiplication $W_1 \mathbf{x}$ computes a dot product between the input and each row of $W_1$, producing an activation score for each row — high when the input matches that key pattern, low otherwise. After the nonlinearity zeroes out the non-matching keys, the second multiplication $W_2$ reads out the value vectors corresponding to the surviving keys.</p>
+
+      <p>This view explains why FFN layers store factual knowledge. When a token embedding activates the row of $W_1$ corresponding to "capital of France," the corresponding column in $W_2$ contributes the output direction associated with "Paris." The FFN is literally a differentiable lookup table with $d_\text{ff}$ slots, and training fills those slots with useful associations. This also explains why larger $d_\text{ff}$ (more slots) improves factual recall, and why pruning FFN neurons can selectively delete specific facts from a model.</p>
+
+      <div class="callout callout-insight">
+        <div class="callout-title">Key Insight</div>
+        <p>The Transformer's two main components serve complementary roles. Attention moves information between token positions — it is a communication mechanism. The FFN processes information at each position independently — it is a computation and memory mechanism. Attention is "where to look"; FFN is "what to do with what you found."</p>
+      </div>
+
+      <pre><code class="language-python">
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+class SwiGLU_FFN(nn.Module):
+    """Feed-forward network with SwiGLU activation (LLaMA-style)."""
+    def __init__(self, d_model: int, d_ff: int):
+        super().__init__()
+        self.w1 = nn.Linear(d_model, d_ff, bias=False)  # gate projection
+        self.w3 = nn.Linear(d_model, d_ff, bias=False)  # up projection
+        self.w2 = nn.Linear(d_ff, d_model, bias=False)   # down projection
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # SwiGLU: (Swish(W1 x) ⊙ W3 x) W2
+        return self.w2(F.silu(self.w1(x)) * self.w3(x))
+
+# Example: LLaMA-7B uses d_model=4096, d_ff=11008 (≈ 8/3 × 4096)
+ffn = SwiGLU_FFN(d_model=4096, d_ff=11008)
+x = torch.randn(1, 128, 4096)  # (batch=1, seq_len=128, d_model=4096)
+out = ffn(x)  # (1, 128, 4096) — same shape in, same shape out
+</code></pre>
+    </section>
+
+  </article>
+
+  <footer class="chapter-footer">
+    <div class="footer-nav">
+      <a href="ch01.html">&larr; Previous: Why Transformers? A Historical Arc</a>
+      <a href="ch03.html">Next: Attention Is All You Need — The Original Paper &rarr;</a>
+    </div>
+  </footer>
+
+</body>
+</html>

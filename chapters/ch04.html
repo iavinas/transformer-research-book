@@ -1,0 +1,1092 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Chapter 04: Inside the Transformer Block — Transformer Research Book</title>
+  <link rel="stylesheet" href="../assets/style.css">
+  <link rel="stylesheet" href="../assets/math.css">
+  <link rel="stylesheet" href="../assets/prism.css">
+  <!-- KaTeX for math rendering -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"
+    onload="renderMathInElement(document.body, {
+      delimiters: [
+        {left: '$$', right: '$$', display: true},
+        {left: '$', right: '$', display: false}
+      ]
+    })">
+  </script>
+  <!-- Prism for code blocks -->
+  <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/prism.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-python.min.js"></script>
+</head>
+<body>
+  <nav class="chapter-nav">
+    <a href="../index.html" class="nav-home">&larr; Table of Contents</a>
+    <span class="nav-chapter">Chapter 04</span>
+    <div style="display:flex; align-items:center; gap:1rem;">
+      <button class="theme-toggle" onclick="toggleTheme()" aria-label="Toggle dark mode">
+        <span class="icon-moon">&#9789;</span><span class="icon-sun">&#9788;</span>
+      </button>
+      <a href="ch05.html" class="nav-next">Next Chapter &rarr;</a>
+    </div>
+  </nav>
+  <script>
+    function toggleTheme() {
+      document.documentElement.classList.toggle('dark');
+      localStorage.setItem('theme', document.documentElement.classList.contains('dark') ? 'dark' : 'light');
+    }
+    if (localStorage.getItem('theme') === 'dark') document.documentElement.classList.add('dark');
+  </script>
+
+  <article class="chapter">
+
+    <header class="chapter-header">
+      <div class="chapter-number">Chapter 04</div>
+      <h1 class="chapter-title">Inside the Transformer Block</h1>
+      <p class="chapter-lead">Chapter 3 gave you the blueprint of the original Transformer. Now we open the hood. Every modern Transformer — GPT-4, LLaMA, Gemini, PaLM — is built from a single repeating unit: the Transformer block. The specific ingredients inside that block have evolved significantly since 2017. Pre-norm replaced post-norm, SwiGLU replaced ReLU, RMS Norm replaced Layer Norm, and the "residual stream" interpretation reframed how we think about information flow. This chapter dissects every component of the modern Transformer block, explains why each design choice was made, and shows exactly how they fit together.</p>
+    </header>
+
+    <!-- ================================================================== -->
+    <!-- SECTION 1: COMPLETE BLOCK ANATOMY                                  -->
+    <!-- ================================================================== -->
+    <section class="chapter-section" id="complete-block-anatomy">
+      <h2>The Complete Block Anatomy</h2>
+
+      <p>A Transformer block has a deceptively simple structure: two sublayers — attention and feed-forward — separated by normalization and connected by residuals. The magic is in how these pieces compose. Each sublayer does one job: attention lets tokens talk to each other, and the FFN lets each token think by itself. The normalization keeps signals well-behaved, and the residual connections ensure information can flow unimpeded from the first layer to the last.</p>
+
+      <h3>Pre-Norm Transformer Block (Modern Standard)</h3>
+
+      <p>The modern Transformer block applies layer normalization <em>before</em> each sublayer, not after. The computation for one block is:</p>
+
+      <div class="math-block">
+        $$\begin{aligned}
+        \mathbf{h} &= \mathbf{x} + \text{Attention}(\text{Norm}(\mathbf{x})) \\
+        \mathbf{y} &= \mathbf{h} + \text{FFN}(\text{Norm}(\mathbf{h}))
+        \end{aligned}$$
+      </div>
+
+      <p>The residual connections add the sublayer outputs directly to the input, creating an unimpeded "highway" through the network. The normalization ensures each sublayer receives well-conditioned input regardless of what the residual stream carries. This ordering — normalize, compute, add — is used in GPT-2, GPT-3, LLaMA, PaLM, Gemini, and nearly all models trained after 2019.</p>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 480" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="ch04-arr" viewBox="0 0 10 10" refX="9" refY="5"
+              markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+              <path d="M1 1L9 5L1 9" fill="none" stroke="context-stroke"
+                stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </marker>
+          </defs>
+
+          <text x="400" y="24" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="600" fill="#1A1A18">Modern Pre-Norm Transformer Block</text>
+
+          <!-- Residual stream (vertical line through center) -->
+          <line x1="400" y1="50" x2="400" y2="460" stroke="#C8C6BE" stroke-width="3" opacity="0.3"/>
+          <text x="400" y="46" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#9C9A94">residual stream</text>
+
+          <!-- Input -->
+          <rect x="330" y="55" width="140" height="32" rx="6" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="1"/>
+          <text x="400" y="76" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#5C5B56">x</text>
+
+          <!-- Fork 1: to norm -->
+          <circle cx="400" cy="105" r="3" fill="#C8C6BE"/>
+          <line x1="400" y1="87" x2="400" y2="105" stroke="#C8C6BE" stroke-width="1.5"/>
+          <line x1="400" y1="105" x2="240" y2="105" stroke="#9C9A94" stroke-width="1.5"/>
+          <line x1="240" y1="105" x2="240" y2="120" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch04-arr)"/>
+
+          <!-- RMS Norm 1 -->
+          <rect x="180" y="124" width="120" height="32" rx="6" fill="#FAEEDA" stroke="#EF9F27" stroke-width="1.5"/>
+          <text x="240" y="145" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#854F0B">RMS Norm</text>
+
+          <line x1="240" y1="156" x2="240" y2="176" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch04-arr)"/>
+
+          <!-- Multi-Head Attention -->
+          <rect x="150" y="180" width="180" height="50" rx="6" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <text x="240" y="203" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#534AB7">Multi-Head Attention</text>
+          <text x="240" y="220" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">h heads, d_k per head</text>
+
+          <!-- Return to residual -->
+          <line x1="240" y1="230" x2="240" y2="250" stroke="#9C9A94" stroke-width="1.5"/>
+          <line x1="240" y1="250" x2="385" y2="250" stroke="#9C9A94" stroke-width="1.5"/>
+
+          <!-- Add circle 1 -->
+          <circle cx="400" cy="250" r="14" fill="#FFFFFF" stroke="#534AB7" stroke-width="1.5"/>
+          <text x="400" y="255" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="600" fill="#534AB7">+</text>
+
+          <!-- Continue residual -->
+          <line x1="400" y1="264" x2="400" y2="295" stroke="#C8C6BE" stroke-width="1.5"/>
+
+          <!-- Fork 2: to norm -->
+          <circle cx="400" cy="295" r="3" fill="#C8C6BE"/>
+          <line x1="400" y1="295" x2="560" y2="295" stroke="#9C9A94" stroke-width="1.5"/>
+          <line x1="560" y1="295" x2="560" y2="310" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch04-arr)"/>
+
+          <!-- RMS Norm 2 -->
+          <rect x="500" y="314" width="120" height="32" rx="6" fill="#FAEEDA" stroke="#EF9F27" stroke-width="1.5"/>
+          <text x="560" y="335" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#854F0B">RMS Norm</text>
+
+          <line x1="560" y1="346" x2="560" y2="366" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch04-arr)"/>
+
+          <!-- FFN / SwiGLU -->
+          <rect x="470" y="370" width="180" height="50" rx="6" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1.5"/>
+          <text x="560" y="393" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#0F6E56">Feed-Forward (SwiGLU)</text>
+          <text x="560" y="410" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">d_ff ≈ 8/3 × d_model</text>
+
+          <!-- Return to residual -->
+          <line x1="560" y1="420" x2="560" y2="440" stroke="#9C9A94" stroke-width="1.5"/>
+          <line x1="560" y1="440" x2="415" y2="440" stroke="#9C9A94" stroke-width="1.5"/>
+
+          <!-- Add circle 2 -->
+          <circle cx="400" cy="440" r="14" fill="#FFFFFF" stroke="#0F6E56" stroke-width="1.5"/>
+          <text x="400" y="445" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="600" fill="#0F6E56">+</text>
+
+          <!-- Output -->
+          <line x1="400" y1="454" x2="400" y2="465" stroke="#C8C6BE" stroke-width="1.5" marker-end="url(#ch04-arr)"/>
+
+          <!-- Annotations on right side -->
+          <text x="680" y="200" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#534AB7">Communication:</text>
+          <text x="680" y="216" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">tokens share information</text>
+
+          <text x="680" y="390" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#0F6E56">Computation:</text>
+          <text x="680" y="406" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">per-token processing</text>
+        </svg>
+        <figcaption>Figure 4.1 — Anatomy of a modern pre-norm Transformer block. The residual stream (gray vertical line) flows unimpeded through the block. At each sublayer, the stream is forked, normalized, processed (attention or FFN), then added back. Attention (purple) enables cross-token communication; FFN (teal) performs per-token computation. RMS Norm (amber) stabilizes inputs to each sublayer.</figcaption>
+      </figure>
+
+      <p>The full pre-norm Transformer block in PyTorch ties together attention, FFN, residual connections, and normalization into a single reusable unit.</p>
+
+      <pre><code class="language-python">
+import torch
+import torch.nn as nn
+
+class TransformerBlock(nn.Module):
+    """Pre-norm Transformer block: the fundamental repeating unit."""
+    def __init__(self, d_model, n_heads, d_ff, dropout=0.0):
+        super().__init__()
+        self.norm1 = RMSNorm(d_model)
+        self.attn = MultiHeadAttention(d_model, n_heads)
+        self.norm2 = RMSNorm(d_model)
+        self.ffn = SwiGLU(d_model, d_ff)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x, mask=None):
+        # Pre-norm: normalize BEFORE each sublayer
+        # Residual connection: add input back AFTER each sublayer
+
+        # Sublayer 1: Self-Attention
+        residual = x
+        x = self.norm1(x)                          # (batch, seq_len, d_model)
+        x = self.attn(x, mask=mask)                 # (batch, seq_len, d_model)
+        x = self.dropout(x) + residual              # residual connection
+
+        # Sublayer 2: Feed-Forward Network
+        residual = x
+        x = self.norm2(x)                           # (batch, seq_len, d_model)
+        x = self.ffn(x)                             # (batch, seq_len, d_model)
+        x = self.dropout(x) + residual              # residual connection
+
+        return x
+
+# LLaMA-7B config: 32 blocks stacked
+blocks = nn.ModuleList([
+    TransformerBlock(d_model=4096, n_heads=32, d_ff=11008)
+    for _ in range(32)
+])
+</code></pre>
+
+      <h3>Post-Norm vs Pre-Norm</h3>
+
+      <p>The original 2017 paper used <strong>post-norm</strong>: $\text{Norm}(\mathbf{x} + \text{Sublayer}(\mathbf{x}))$. This normalizes the <em>combined</em> signal, which can be unstable because the sublayer output may have arbitrary scale before normalization sees it. Training deep post-norm Transformers (40+ layers) without extensive learning rate warmup often diverges.</p>
+
+      <p><strong>Pre-norm</strong> — $\mathbf{x} + \text{Sublayer}(\text{Norm}(\mathbf{x}))$ — fixes this by ensuring the sublayer always receives standardized input. The tradeoff: the residual stream itself is never normalized, so its scale grows with depth. Empirically, this doesn't hurt; the final layer norm before the output head handles the accumulated scale.</p>
+
+      <h3>The DeepNorm Variant</h3>
+
+      <p><strong>DeepNorm</strong> (Wang et al., 2022) enables training Transformers with 1,000+ layers by scaling residuals: $\mathbf{x} \cdot \alpha + \text{Sublayer}(\text{Norm}(\mathbf{x}))$, where $\alpha = (2N)^{1/4}$ for $N$ layers. The sublayer weights are initialized with reduced variance $\beta = (8N)^{-1/4}$. This prevents the residual stream from being dominated by sublayer outputs in very deep networks, maintaining a stable signal-to-noise ratio across arbitrary depth.</p>
+
+      <h3>Why Pre-Norm Is Now Dominant</h3>
+
+      <p>Pre-norm Transformers train stably without learning rate warmup (though warmup still helps) and converge reliably even at 100+ layers. The gradient flows cleanly through the residual connection at initialization — the sublayer weights are small, so the block approximates the identity function, and gradients pass through unimpeded. For any practical model size, the slight performance gap that post-norm might offer is not worth the engineering complexity of stabilizing it. Every major LLM since GPT-2 uses pre-norm or a variant of it.</p>
+    </section>
+
+    <!-- ================================================================== -->
+    <!-- SECTION 2: SELF-ATTENTION IN DEPTH                                 -->
+    <!-- ================================================================== -->
+    <section class="chapter-section" id="self-attention-in-depth">
+      <h2>Self-Attention in Depth</h2>
+
+      <p>Chapter 3 presented the attention formula. Here we go deeper: why are there three separate projections? What do attention heads actually learn? And how does the causal mask work at the implementation level?</p>
+
+      <h3>Why Separate Q, K, V Projections?</h3>
+
+      <p>A natural question: why not use the same representation for queries and keys? The answer is that different roles require different features. When a pronoun like "it" searches for its antecedent, the query encoding asks "what noun am I referring to?" while the key encoding of each candidate noun says "I am a subject-position noun with these semantic features." These are fundamentally different questions — the pronoun's search criteria and the noun's advertisement are asymmetric. Sharing a single projection would force these two roles into the same feature space, which limits the model's ability to learn flexible retrieval patterns.</p>
+
+      <p>The value projection serves a third role entirely: it determines what information gets sent <em>after</em> a match is found. The query-key interaction decides "who to attend to," while the value determines "what to extract." Separating values from keys lets the model attend to one feature (say, syntactic role) while extracting different information (say, semantic content).</p>
+
+      <h3>QKV Projections: The Mechanics</h3>
+
+      <p>Each attention sublayer contains four weight matrices: $W_Q, W_K, W_V \in \mathbb{R}^{d_\text{model} \times d_\text{model}}$ for computing queries, keys, and values, and $W_O \in \mathbb{R}^{d_\text{model} \times d_\text{model}}$ for the output projection. Together, these account for $4 \cdot d_\text{model}^2$ parameters per layer. For LLaMA-7B ($d_\text{model} = 4096$), that is about 67 million parameters per attention sublayer.</p>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 340" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="ch04-arr2" viewBox="0 0 10 10" refX="9" refY="5"
+              markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+              <path d="M1 1L9 5L1 9" fill="none" stroke="context-stroke"
+                stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </marker>
+          </defs>
+
+          <text x="400" y="24" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="600" fill="#1A1A18">QKV Projection and Multi-Head Split</text>
+
+          <!-- Input X -->
+          <rect x="40" y="55" width="100" height="120" rx="6" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1.5"/>
+          <!-- Row hints -->
+          <line x1="48" y1="80" x2="132" y2="80" stroke="#5DCAA5" stroke-width="0.5" opacity="0.4"/>
+          <line x1="48" y1="100" x2="132" y2="100" stroke="#5DCAA5" stroke-width="0.5" opacity="0.4"/>
+          <line x1="48" y1="120" x2="132" y2="120" stroke="#5DCAA5" stroke-width="0.5" opacity="0.4"/>
+          <line x1="48" y1="140" x2="132" y2="140" stroke="#5DCAA5" stroke-width="0.5" opacity="0.4"/>
+          <text x="90" y="165" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="500" fill="#0F6E56">X</text>
+          <!-- Dimension labels -->
+          <text x="90" y="48" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">d_model</text>
+          <text x="28" y="118" text-anchor="end" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">n</text>
+
+          <!-- Arrow to projections -->
+          <line x1="140" y1="115" x2="170" y2="80" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch04-arr2)"/>
+          <line x1="140" y1="115" x2="170" y2="140" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch04-arr2)"/>
+          <line x1="140" y1="115" x2="170" y2="200" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch04-arr2)"/>
+
+          <!-- W_Q -->
+          <rect x="175" y="55" width="80" height="50" rx="4" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <text x="215" y="83" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#534AB7">W_Q</text>
+
+          <!-- W_K -->
+          <rect x="175" y="115" width="80" height="50" rx="4" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <text x="215" y="143" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#534AB7">W_K</text>
+
+          <!-- W_V -->
+          <rect x="175" y="175" width="80" height="50" rx="4" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <text x="215" y="203" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#534AB7">W_V</text>
+
+          <!-- Arrows to QKV results -->
+          <line x1="255" y1="80" x2="290" y2="80" stroke="#534AB7" stroke-width="1.5" marker-end="url(#ch04-arr2)"/>
+          <line x1="255" y1="140" x2="290" y2="140" stroke="#534AB7" stroke-width="1.5" marker-end="url(#ch04-arr2)"/>
+          <line x1="255" y1="200" x2="290" y2="200" stroke="#534AB7" stroke-width="1.5" marker-end="url(#ch04-arr2)"/>
+
+          <!-- Q result -->
+          <rect x="295" y="55" width="100" height="50" rx="4" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1"/>
+          <text x="345" y="83" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#534AB7">Q</text>
+          <text x="345" y="48" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">n × d_model</text>
+
+          <!-- K result -->
+          <rect x="295" y="115" width="100" height="50" rx="4" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1"/>
+          <text x="345" y="143" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#534AB7">K</text>
+
+          <!-- V result -->
+          <rect x="295" y="175" width="100" height="50" rx="4" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1"/>
+          <text x="345" y="203" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#534AB7">V</text>
+
+          <!-- Reshape arrows -->
+          <line x1="395" y1="80" x2="430" y2="80" stroke="#534AB7" stroke-width="1" stroke-dasharray="4 3"/>
+          <line x1="395" y1="140" x2="430" y2="140" stroke="#534AB7" stroke-width="1" stroke-dasharray="4 3"/>
+          <line x1="395" y1="200" x2="430" y2="200" stroke="#534AB7" stroke-width="1" stroke-dasharray="4 3"/>
+          <text x="412" y="230" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">reshape</text>
+
+          <!-- Multi-head split: show h heads -->
+          <!-- Head 1 -->
+          <rect x="435" y="44" width="60" height="30" rx="3" fill="#534AB7" stroke="#534AB7" stroke-width="1"/>
+          <text x="465" y="63" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#FFFFFF">Head 1</text>
+          <rect x="435" y="76" width="60" height="30" rx="3" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1"/>
+          <text x="465" y="95" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#534AB7">Head 2</text>
+          <rect x="435" y="108" width="60" height="12" rx="2" fill="#FAFAF9" stroke="#E5E3DC" stroke-width="0.5"/>
+          <text x="465" y="117" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="8" font-weight="400" fill="#9C9A94">⋮</text>
+          <rect x="435" y="122" width="60" height="30" rx="3" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1"/>
+          <text x="465" y="141" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#534AB7">Head h</text>
+
+          <!-- Per-head dimension label -->
+          <text x="510" y="60" text-anchor="start" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">n × d_k</text>
+          <text x="510" y="140" text-anchor="start" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">n × d_k</text>
+
+          <!-- Each head does attention independently -->
+          <line x1="495" y1="85" x2="580" y2="85" stroke="#534AB7" stroke-width="1.5" marker-end="url(#ch04-arr2)"/>
+
+          <!-- Scaled dot-product attention box -->
+          <rect x="585" y="55" width="140" height="60" rx="6" fill="#534AB7" stroke="#534AB7" stroke-width="1"/>
+          <text x="655" y="79" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#FFFFFF">Scaled Dot-Product</text>
+          <text x="655" y="95" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#FFFFFF">Attention</text>
+          <text x="655" y="108" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#AFA9EC">per head in parallel</text>
+
+          <!-- Concatenate -->
+          <line x1="655" y1="115" x2="655" y2="145" stroke="#534AB7" stroke-width="1.5" marker-end="url(#ch04-arr2)"/>
+
+          <rect x="590" y="150" width="130" height="36" rx="6" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <text x="655" y="173" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#534AB7">Concat + W_O</text>
+
+          <!-- Final output -->
+          <line x1="655" y1="186" x2="655" y2="210" stroke="#534AB7" stroke-width="1.5" marker-end="url(#ch04-arr2)"/>
+          <rect x="595" y="215" width="120" height="36" rx="6" fill="#FAECE7" stroke="#F0997B" stroke-width="1.5"/>
+          <text x="655" y="237" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#993C1D">Output</text>
+          <text x="655" y="265" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">n × d_model</text>
+
+          <!-- V heads (simplified) -->
+          <rect x="435" y="168" width="60" height="60" rx="3" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1" opacity="0.6"/>
+          <text x="465" y="200" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#534AB7">V heads</text>
+          <line x1="495" y1="198" x2="580" y2="128" stroke="#534AB7" stroke-width="1" stroke-dasharray="4 3"/>
+
+          <!-- Summary annotation -->
+          <text x="400" y="310" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#5C5B56">d_k = d_model / h   →   each head operates on a low-dimensional subspace</text>
+          <text x="400" y="328" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">h heads in parallel has the same cost as one full-dimensional attention</text>
+        </svg>
+        <figcaption>Figure 4.2 — QKV projection and multi-head split. Input X is projected through three weight matrices to produce Q, K, V, each of shape n × d_model. These are reshaped into h heads, each operating on a d_k = d_model / h dimensional subspace. All heads compute attention in parallel, then their outputs are concatenated and projected through W_O.</figcaption>
+      </figure>
+
+      <h3>Attention as Content-Addressable Memory</h3>
+
+      <p>Think of a librarian (query) searching a card catalog (keys) to pull the right books (values). The query encodes "what am I looking for," the key encodes "what does this token contain," and the value encodes "what information should be sent if this token is selected." The dot product $q_i^\top k_j$ (dot product, yields a scalar) measures the match between what position $i$ wants and what position $j$ offers. The softmax converts these match scores into a retrieval distribution, and the weighted sum over values produces the retrieved content.</p>
+
+      <p>This is exactly a differentiable dictionary lookup. A traditional dictionary maps exact keys to values. Attention maps <em>soft</em> keys to values — every key participates in the output, weighted by its similarity to the query. This softness is what makes attention trainable: gradients flow through all query-key-value pathways, letting the model learn which matches are useful.</p>
+
+      <h3>Attention Patterns in Trained Models</h3>
+
+      <p>Visualization of trained attention heads reveals distinct pattern types that emerge without explicit supervision. Understanding these patterns helps build intuition about what the model is doing at each layer.</p>
+
+      <ul>
+        <li><strong>Local patterns:</strong> attending primarily to the token itself and its immediate neighbors — common in early layers that build local context.</li>
+        <li><strong>Global patterns:</strong> attending broadly across the sequence — common in middle layers performing long-range reasoning.</li>
+        <li><strong>Diagonal patterns:</strong> attending to the same relative position across all query positions — encoding fixed positional relationships like "attend to the previous token."</li>
+        <li><strong>Vertical stripes:</strong> all positions attending strongly to a few "sentinel" tokens (often punctuation, [CLS], or high-frequency words) — these tokens serve as global information hubs.</li>
+      </ul>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 230" xmlns="http://www.w3.org/2000/svg">
+          <!-- Four 5x5 attention pattern grids -->
+          <!-- Grid layout: center 4 grids with equal spacing -->
+          <!-- Each grid: 5 cells × 28px = 140px wide. Gap between grids: 30px -->
+          <!-- Total: 4×140 + 3×30 = 650. Left margin = (800-650)/2 = 75 -->
+
+          <!-- Pattern 1: Local -->
+          <text x="145" y="22" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#534AB7">Local</text>
+          <rect x="75" y="32" width="28" height="28" rx="2" fill="#534AB7" opacity="0.9"/><rect x="103" y="32" width="28" height="28" rx="2" fill="#534AB7" opacity="0.15"/><rect x="131" y="32" width="28" height="28" rx="2" fill="#534AB7" opacity="0.02"/><rect x="159" y="32" width="28" height="28" rx="2" fill="#534AB7" opacity="0.01"/><rect x="187" y="32" width="28" height="28" rx="2" fill="#534AB7" opacity="0.01"/>
+          <rect x="75" y="60" width="28" height="28" rx="2" fill="#534AB7" opacity="0.2"/><rect x="103" y="60" width="28" height="28" rx="2" fill="#534AB7" opacity="0.85"/><rect x="131" y="60" width="28" height="28" rx="2" fill="#534AB7" opacity="0.2"/><rect x="159" y="60" width="28" height="28" rx="2" fill="#534AB7" opacity="0.02"/><rect x="187" y="60" width="28" height="28" rx="2" fill="#534AB7" opacity="0.01"/>
+          <rect x="75" y="88" width="28" height="28" rx="2" fill="#534AB7" opacity="0.02"/><rect x="103" y="88" width="28" height="28" rx="2" fill="#534AB7" opacity="0.2"/><rect x="131" y="88" width="28" height="28" rx="2" fill="#534AB7" opacity="0.9"/><rect x="159" y="88" width="28" height="28" rx="2" fill="#534AB7" opacity="0.15"/><rect x="187" y="88" width="28" height="28" rx="2" fill="#534AB7" opacity="0.02"/>
+          <rect x="75" y="116" width="28" height="28" rx="2" fill="#534AB7" opacity="0.01"/><rect x="103" y="116" width="28" height="28" rx="2" fill="#534AB7" opacity="0.02"/><rect x="131" y="116" width="28" height="28" rx="2" fill="#534AB7" opacity="0.2"/><rect x="159" y="116" width="28" height="28" rx="2" fill="#534AB7" opacity="0.85"/><rect x="187" y="116" width="28" height="28" rx="2" fill="#534AB7" opacity="0.2"/>
+          <rect x="75" y="144" width="28" height="28" rx="2" fill="#534AB7" opacity="0.01"/><rect x="103" y="144" width="28" height="28" rx="2" fill="#534AB7" opacity="0.01"/><rect x="131" y="144" width="28" height="28" rx="2" fill="#534AB7" opacity="0.02"/><rect x="159" y="144" width="28" height="28" rx="2" fill="#534AB7" opacity="0.2"/><rect x="187" y="144" width="28" height="28" rx="2" fill="#534AB7" opacity="0.9"/>
+          <text x="145" y="192" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">Layer 1, Head 3</text>
+
+          <!-- Pattern 2: Global -->
+          <text x="315" y="22" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#534AB7">Global</text>
+          <rect x="245" y="32" width="28" height="28" rx="2" fill="#534AB7" opacity="0.25"/><rect x="273" y="32" width="28" height="28" rx="2" fill="#534AB7" opacity="0.2"/><rect x="301" y="32" width="28" height="28" rx="2" fill="#534AB7" opacity="0.3"/><rect x="329" y="32" width="28" height="28" rx="2" fill="#534AB7" opacity="0.15"/><rect x="357" y="32" width="28" height="28" rx="2" fill="#534AB7" opacity="0.25"/>
+          <rect x="245" y="60" width="28" height="28" rx="2" fill="#534AB7" opacity="0.2"/><rect x="273" y="60" width="28" height="28" rx="2" fill="#534AB7" opacity="0.25"/><rect x="301" y="60" width="28" height="28" rx="2" fill="#534AB7" opacity="0.2"/><rect x="329" y="60" width="28" height="28" rx="2" fill="#534AB7" opacity="0.3"/><rect x="357" y="60" width="28" height="28" rx="2" fill="#534AB7" opacity="0.2"/>
+          <rect x="245" y="88" width="28" height="28" rx="2" fill="#534AB7" opacity="0.3"/><rect x="273" y="88" width="28" height="28" rx="2" fill="#534AB7" opacity="0.15"/><rect x="301" y="88" width="28" height="28" rx="2" fill="#534AB7" opacity="0.25"/><rect x="329" y="88" width="28" height="28" rx="2" fill="#534AB7" opacity="0.2"/><rect x="357" y="88" width="28" height="28" rx="2" fill="#534AB7" opacity="0.25"/>
+          <rect x="245" y="116" width="28" height="28" rx="2" fill="#534AB7" opacity="0.2"/><rect x="273" y="116" width="28" height="28" rx="2" fill="#534AB7" opacity="0.3"/><rect x="301" y="116" width="28" height="28" rx="2" fill="#534AB7" opacity="0.15"/><rect x="329" y="116" width="28" height="28" rx="2" fill="#534AB7" opacity="0.25"/><rect x="357" y="116" width="28" height="28" rx="2" fill="#534AB7" opacity="0.2"/>
+          <rect x="245" y="144" width="28" height="28" rx="2" fill="#534AB7" opacity="0.25"/><rect x="273" y="144" width="28" height="28" rx="2" fill="#534AB7" opacity="0.2"/><rect x="301" y="144" width="28" height="28" rx="2" fill="#534AB7" opacity="0.2"/><rect x="329" y="144" width="28" height="28" rx="2" fill="#534AB7" opacity="0.2"/><rect x="357" y="144" width="28" height="28" rx="2" fill="#534AB7" opacity="0.3"/>
+          <text x="315" y="192" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">Layer 4, Head 7</text>
+
+          <!-- Pattern 3: Previous Token -->
+          <text x="485" y="22" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#534AB7">Previous Token</text>
+          <rect x="415" y="32" width="28" height="28" rx="2" fill="#534AB7" opacity="0.9"/><rect x="443" y="32" width="28" height="28" rx="2" fill="#534AB7" opacity="0.02"/><rect x="471" y="32" width="28" height="28" rx="2" fill="#534AB7" opacity="0.02"/><rect x="499" y="32" width="28" height="28" rx="2" fill="#534AB7" opacity="0.02"/><rect x="527" y="32" width="28" height="28" rx="2" fill="#534AB7" opacity="0.02"/>
+          <rect x="415" y="60" width="28" height="28" rx="2" fill="#534AB7" opacity="0.9"/><rect x="443" y="60" width="28" height="28" rx="2" fill="#534AB7" opacity="0.08"/><rect x="471" y="60" width="28" height="28" rx="2" fill="#534AB7" opacity="0.02"/><rect x="499" y="60" width="28" height="28" rx="2" fill="#534AB7" opacity="0.02"/><rect x="527" y="60" width="28" height="28" rx="2" fill="#534AB7" opacity="0.02"/>
+          <rect x="415" y="88" width="28" height="28" rx="2" fill="#534AB7" opacity="0.05"/><rect x="443" y="88" width="28" height="28" rx="2" fill="#534AB7" opacity="0.9"/><rect x="471" y="88" width="28" height="28" rx="2" fill="#534AB7" opacity="0.05"/><rect x="499" y="88" width="28" height="28" rx="2" fill="#534AB7" opacity="0.02"/><rect x="527" y="88" width="28" height="28" rx="2" fill="#534AB7" opacity="0.02"/>
+          <rect x="415" y="116" width="28" height="28" rx="2" fill="#534AB7" opacity="0.02"/><rect x="443" y="116" width="28" height="28" rx="2" fill="#534AB7" opacity="0.05"/><rect x="471" y="116" width="28" height="28" rx="2" fill="#534AB7" opacity="0.9"/><rect x="499" y="116" width="28" height="28" rx="2" fill="#534AB7" opacity="0.05"/><rect x="527" y="116" width="28" height="28" rx="2" fill="#534AB7" opacity="0.02"/>
+          <rect x="415" y="144" width="28" height="28" rx="2" fill="#534AB7" opacity="0.02"/><rect x="443" y="144" width="28" height="28" rx="2" fill="#534AB7" opacity="0.02"/><rect x="471" y="144" width="28" height="28" rx="2" fill="#534AB7" opacity="0.05"/><rect x="499" y="144" width="28" height="28" rx="2" fill="#534AB7" opacity="0.9"/><rect x="527" y="144" width="28" height="28" rx="2" fill="#534AB7" opacity="0.05"/>
+          <text x="485" y="192" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">Layer 2, Head 1</text>
+
+          <!-- Pattern 4: Vertical Stripe -->
+          <text x="655" y="22" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#534AB7">Vertical Stripe</text>
+          <rect x="585" y="32" width="28" height="28" rx="2" fill="#534AB7" opacity="0.8"/><rect x="613" y="32" width="28" height="28" rx="2" fill="#534AB7" opacity="0.05"/><rect x="641" y="32" width="28" height="28" rx="2" fill="#534AB7" opacity="0.05"/><rect x="669" y="32" width="28" height="28" rx="2" fill="#534AB7" opacity="0.05"/><rect x="697" y="32" width="28" height="28" rx="2" fill="#534AB7" opacity="0.05"/>
+          <rect x="585" y="60" width="28" height="28" rx="2" fill="#534AB7" opacity="0.85"/><rect x="613" y="60" width="28" height="28" rx="2" fill="#534AB7" opacity="0.05"/><rect x="641" y="60" width="28" height="28" rx="2" fill="#534AB7" opacity="0.05"/><rect x="669" y="60" width="28" height="28" rx="2" fill="#534AB7" opacity="0.05"/><rect x="697" y="60" width="28" height="28" rx="2" fill="#534AB7" opacity="0.05"/>
+          <rect x="585" y="88" width="28" height="28" rx="2" fill="#534AB7" opacity="0.75"/><rect x="613" y="88" width="28" height="28" rx="2" fill="#534AB7" opacity="0.05"/><rect x="641" y="88" width="28" height="28" rx="2" fill="#534AB7" opacity="0.1"/><rect x="669" y="88" width="28" height="28" rx="2" fill="#534AB7" opacity="0.05"/><rect x="697" y="88" width="28" height="28" rx="2" fill="#534AB7" opacity="0.05"/>
+          <rect x="585" y="116" width="28" height="28" rx="2" fill="#534AB7" opacity="0.9"/><rect x="613" y="116" width="28" height="28" rx="2" fill="#534AB7" opacity="0.02"/><rect x="641" y="116" width="28" height="28" rx="2" fill="#534AB7" opacity="0.02"/><rect x="669" y="116" width="28" height="28" rx="2" fill="#534AB7" opacity="0.05"/><rect x="697" y="116" width="28" height="28" rx="2" fill="#534AB7" opacity="0.02"/>
+          <rect x="585" y="144" width="28" height="28" rx="2" fill="#534AB7" opacity="0.8"/><rect x="613" y="144" width="28" height="28" rx="2" fill="#534AB7" opacity="0.05"/><rect x="641" y="144" width="28" height="28" rx="2" fill="#534AB7" opacity="0.05"/><rect x="669" y="144" width="28" height="28" rx="2" fill="#534AB7" opacity="0.02"/><rect x="697" y="144" width="28" height="28" rx="2" fill="#534AB7" opacity="0.1"/>
+          <text x="655" y="192" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">Layer 3, Head 5</text>
+
+          <!-- Legend -->
+          <rect x="280" y="210" width="16" height="10" rx="2" fill="#534AB7" opacity="0.1"/>
+          <text x="302" y="219" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">low</text>
+          <rect x="340" y="210" width="16" height="10" rx="2" fill="#534AB7" opacity="0.5"/>
+          <text x="362" y="219" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">medium</text>
+          <rect x="410" y="210" width="16" height="10" rx="2" fill="#534AB7" opacity="0.9"/>
+          <text x="432" y="219" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">high attention</text>
+        </svg>
+        <figcaption>Figure 4.3 — Four common attention patterns found in trained Transformers. Local: strong diagonal band, focusing on nearby tokens. Global: diffuse attention across the sequence. Previous token: off-diagonal stripe attending to the immediately preceding position. Vertical stripe: all positions attend to one "sentinel" token. Darker purple indicates higher attention weight.</figcaption>
+      </figure>
+
+      <h3>Causal Masking Implementation</h3>
+
+      <p>For decoder-only models (GPT, LLaMA), each token must only attend to tokens at its position or earlier — never to the future. Without this constraint, the model would trivially learn to "copy the answer" from future tokens instead of predicting it. The implementation creates a lower-triangular boolean mask and adds $-\infty$ (in practice, a large negative number like $-10^9$) to the masked positions before softmax. After softmax, $e^{-\infty} = 0$, so future positions contribute zero weight.</p>
+
+      <pre><code class="language-python">
+import torch
+
+def causal_mask(seq_len: int) -> torch.Tensor:
+    """Create a causal (lower-triangular) attention mask."""
+    # True = allowed to attend, False = masked
+    mask = torch.tril(torch.ones(seq_len, seq_len, dtype=torch.bool))
+    return mask
+
+# Usage in attention:
+# scores shape: (batch, heads, seq_len, seq_len)
+mask = causal_mask(seq_len).to(scores.device)
+scores = scores.masked_fill(~mask, float('-inf'))
+attn_weights = torch.softmax(scores, dim=-1)
+</code></pre>
+
+      <h3>Multi-Head Attention with Einsum</h3>
+
+      <p>The most efficient implementation uses fused QKV projections and <code>torch.nn.functional.scaled_dot_product_attention</code>, which dispatches to FlashAttention when available. The manual version using einsum is more readable and pedagogically useful:</p>
+
+      <pre><code class="language-python">
+import torch
+from einops import rearrange
+
+def multi_head_attention(x, W_qkv, W_o, n_heads, mask=None):
+    """Multi-head attention using einops for clarity."""
+    B, N, D = x.shape
+    d_k = D // n_heads
+
+    # Fused QKV projection: single matmul is faster than three
+    qkv = x @ W_qkv  # (B, N, 3*D)
+    q, k, v = rearrange(qkv, 'b n (three h d) -> three b h n d',
+                         three=3, h=n_heads)
+
+    # Scaled dot-product attention
+    scores = torch.einsum('bhid,bhjd->bhij', q, k) / (d_k ** 0.5)
+    if mask is not None:
+        scores = scores.masked_fill(~mask, float('-inf'))
+    attn = scores.softmax(dim=-1)
+    out = torch.einsum('bhij,bhjd->bhid', attn, v)
+
+    # Concatenate heads and project
+    out = rearrange(out, 'b h n d -> b n (h d)')
+    return out @ W_o
+</code></pre>
+
+      <p>The two einsum operations are the core of attention. The first — <code>'bhid,bhjd->bhij'</code> — computes pairwise dot products between all query-key pairs within each head. The second — <code>'bhij,bhjd->bhid'</code> — weighted-sums the values according to the attention distribution. Together with the $1/\sqrt{d_k}$ scaling and the softmax, these two operations implement the complete attention formula.</p>
+    </section>
+
+    <!-- ================================================================== -->
+    <!-- SECTION 3: FEED-FORWARD SUBLAYER                                   -->
+    <!-- ================================================================== -->
+    <section class="chapter-section" id="feed-forward-sublayer">
+      <h2>Feed-Forward Sublayer in Depth</h2>
+
+      <p>The attention sublayer lets tokens communicate. The FFN sublayer lets each token <em>compute</em>. While attention is the Transformer's defining innovation, the FFN accounts for the majority of parameters and is where factual knowledge gets stored. Understanding its structure — and the evolution from ReLU to SwiGLU — is essential for understanding modern model design.</p>
+
+      <h3>The Two-Layer MLP</h3>
+
+      <p>The feed-forward sublayer applies the same two-layer MLP independently to every token position. With ReLU activation, the computation is:</p>
+
+      <div class="math-block">
+        $$\text{FFN}(\mathbf{x}) = \text{ReLU}(\mathbf{x}W_1 + \mathbf{b}_1)W_2 + \mathbf{b}_2$$
+      </div>
+
+      <p>The up-projection $\mathbf{x}W_1$ (matrix multiply, $\mathbb{R}^{n \times d_\text{model}} \times \mathbb{R}^{d_\text{model} \times d_\text{ff}} \to \mathbb{R}^{n \times d_\text{ff}}$) expands from $d_\text{model}$ to $d_\text{ff}$ (typically $4 \times d_\text{model}$), and the down-projection $W_2 \in \mathbb{R}^{d_\text{ff} \times d_\text{model}}$ compresses back. The expansion creates a high-dimensional "workspace" where the network can represent more complex functions before projecting back to the residual dimension.</p>
+
+      <h3>SwiGLU: The Modern Default</h3>
+
+      <p>SwiGLU replaces the simple up-projection + activation with a gated mechanism. Instead of one up-projection, there are two: one computes a gate, the other computes the content. The gate controls how much of each hidden dimension passes through:</p>
+
+      <div class="math-block">
+        $$\text{SwiGLU}(\mathbf{x}) = (\text{SiLU}(\mathbf{x}W_\text{gate}) \odot \mathbf{x}W_\text{up}) \, W_\text{down}$$
+      </div>
+
+      <p>where $\text{SiLU}(x) = x \cdot \sigma(x)$ is the Swish/SiLU activation and $\odot$ denotes element-wise multiplication. The gate projection $W_\text{gate}$ and the up projection $W_\text{up}$ both map from $d_\text{model}$ to $d_\text{ff}$, and $W_\text{down}$ maps back. Three matrices instead of two means 50% more parameters at the same $d_\text{ff}$, which is why SwiGLU models use $d_\text{ff} \approx \frac{8}{3} d_\text{model}$ to stay parameter-equivalent.</p>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 300" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="ch04-arr3" viewBox="0 0 10 10" refX="9" refY="5"
+              markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+              <path d="M1 1L9 5L1 9" fill="none" stroke="context-stroke"
+                stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </marker>
+          </defs>
+
+          <!-- Panel headers -->
+          <rect x="30" y="16" width="340" height="30" rx="5" fill="#FAECE7" stroke="#F0997B" stroke-width="1"/>
+          <text x="200" y="36" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#993C1D">ReLU FFN (Original)</text>
+
+          <rect x="430" y="16" width="340" height="30" rx="5" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="600" y="36" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#0F6E56">SwiGLU FFN (Modern)</text>
+
+          <!-- Vertical divider -->
+          <line x1="400" y1="10" x2="400" y2="285" stroke="#E5E3DC" stroke-width="1" stroke-dasharray="5 4"/>
+
+          <!-- LEFT: ReLU FFN -->
+          <!-- Input -->
+          <rect x="140" y="64" width="120" height="32" rx="6" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="200" y="84" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#0F6E56">x</text>
+          <text x="200" y="58" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">d_model</text>
+
+          <line x1="200" y1="96" x2="200" y2="116" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch04-arr3)"/>
+
+          <!-- W1 up-projection -->
+          <rect x="130" y="120" width="140" height="32" rx="6" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <text x="200" y="140" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#534AB7">W₁ (up-proj)</text>
+          <text x="290" y="140" text-anchor="start" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">→ 4d</text>
+
+          <line x1="200" y1="152" x2="200" y2="172" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch04-arr3)"/>
+
+          <!-- ReLU -->
+          <rect x="150" y="176" width="100" height="28" rx="6" fill="#FAECE7" stroke="#F0997B" stroke-width="1.5"/>
+          <text x="200" y="194" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#993C1D">ReLU</text>
+
+          <line x1="200" y1="204" x2="200" y2="224" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch04-arr3)"/>
+
+          <!-- W2 down-projection -->
+          <rect x="130" y="228" width="140" height="32" rx="6" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <text x="200" y="248" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#534AB7">W₂ (down-proj)</text>
+          <text x="290" y="248" text-anchor="start" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">→ d</text>
+
+          <!-- Param count -->
+          <text x="200" y="280" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">2 matrices · 8d² params</text>
+
+          <!-- RIGHT: SwiGLU FFN -->
+          <!-- Input -->
+          <rect x="540" y="64" width="120" height="32" rx="6" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="600" y="84" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#0F6E56">x</text>
+          <text x="600" y="58" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">d_model</text>
+
+          <!-- Fork into gate and up -->
+          <line x1="580" y1="96" x2="520" y2="120" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch04-arr3)"/>
+          <line x1="620" y1="96" x2="680" y2="120" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch04-arr3)"/>
+
+          <!-- W_gate -->
+          <rect x="460" y="124" width="120" height="32" rx="6" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <text x="520" y="144" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#534AB7">W_gate</text>
+          <text x="460" y="167" text-anchor="start" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">→ 8d/3</text>
+
+          <!-- W_up -->
+          <rect x="620" y="124" width="120" height="32" rx="6" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <text x="680" y="144" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#534AB7">W_up</text>
+
+          <!-- SiLU on gate -->
+          <line x1="520" y1="156" x2="520" y2="176" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch04-arr3)"/>
+          <rect x="480" y="180" width="80" height="24" rx="4" fill="#FAEEDA" stroke="#EF9F27" stroke-width="1"/>
+          <text x="520" y="196" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#854F0B">SiLU</text>
+
+          <!-- Element-wise multiply -->
+          <line x1="520" y1="204" x2="600" y2="224" stroke="#9C9A94" stroke-width="1"/>
+          <line x1="680" y1="156" x2="600" y2="224" stroke="#9C9A94" stroke-width="1"/>
+          <circle cx="600" cy="228" r="12" fill="#FFFFFF" stroke="#534AB7" stroke-width="1.5"/>
+          <text x="600" y="232" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#534AB7">⊙</text>
+
+          <!-- W_down -->
+          <line x1="600" y1="240" x2="600" y2="254" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch04-arr3)"/>
+          <rect x="530" y="258" width="140" height="28" rx="6" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <text x="600" y="276" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#534AB7">W_down → d</text>
+
+          <!-- Param count -->
+          <text x="600" y="298" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">3 matrices · 8d² params (≈ same total)</text>
+        </svg>
+        <figcaption>Figure 4.4 — Comparison of ReLU FFN (left) and SwiGLU FFN (right). The ReLU version has two projections with a 4× expansion. SwiGLU uses three projections — gate, up, down — with a smaller 8/3× expansion to match the parameter count. The gate (passed through SiLU) element-wise multiplies with the up-projection, giving the network input-dependent feature selection.</figcaption>
+      </figure>
+
+      <p>Here is SwiGLU in PyTorch, matching the architecture used in LLaMA and PaLM:</p>
+
+      <pre><code class="language-python">
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+class SwiGLU(nn.Module):
+    """SwiGLU feed-forward network as used in LLaMA."""
+    def __init__(self, d_model: int, d_ff: int):
+        super().__init__()
+        # Three projections: gate, up, and down
+        self.w_gate = nn.Linear(d_model, d_ff, bias=False)
+        self.w_up   = nn.Linear(d_model, d_ff, bias=False)
+        self.w_down = nn.Linear(d_ff, d_model, bias=False)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # Gate: SiLU activation on one projection
+        gate = F.silu(self.w_gate(x))
+        # Up: linear projection (no activation)
+        up = self.w_up(x)
+        # Element-wise product, then project back
+        return self.w_down(gate * up)
+
+# LLaMA-7B: d_model=4096, d_ff=11008 ≈ 8/3 × 4096
+ffn = SwiGLU(d_model=4096, d_ff=11008)
+</code></pre>
+
+      <h3>Why SwiGLU Works</h3>
+
+      <p>The gating mechanism allows the network to learn input-dependent feature selection. Rather than applying a fixed nonlinearity to every dimension, the gate dynamically decides which dimensions to activate for each input. Think of it as two parallel pathways: one computes "what features are present" (the up-projection) while the other computes "which features matter right now" (the gate). The element-wise product combines them: only features that are both present and deemed relevant survive.</p>
+
+      <p>This is smoother and more expressive than ReLU's binary on/off behavior. Shazeer (2020) showed that SwiGLU consistently outperforms ReLU, GELU, and other activations across model sizes, with the improvement becoming more pronounced at larger scale.</p>
+
+      <h3>FFN as Key-Value Memory</h3>
+
+      <p>Geva et al. (2021) demonstrated that FFN layers function as key-value memories. Each row of $W_1$ (or $W_\text{gate}$) acts as a "key" that detects a specific input pattern. When activated, the corresponding column of $W_2$ (or $W_\text{down}$) provides the "value" — an update vector that gets added to the residual stream. This interpretation explains why FFN layers store factual knowledge: the key-value pairs encode associations like "if the input matches the pattern [Eiffel Tower located in], then write [Paris] into the residual stream."</p>
+
+      <p>This view has practical implications. Editing specific FFN weights can surgically modify a model's beliefs — changing a single key-value pair can update a factual association without affecting unrelated knowledge. Techniques like ROME (Rank-One Model Editing) exploit exactly this structure.</p>
+
+      <h3>FFN vs Attention Parameter Count</h3>
+
+      <p>At typical ratios, the FFN sublayer contains more parameters than the attention sublayer. For standard attention with $d_\text{model} = 4096$:</p>
+
+      <table>
+        <thead>
+          <tr>
+            <th>Component</th>
+            <th>Matrices</th>
+            <th>Parameters</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Attention (QKV + O)</td>
+            <td>$4 \times d_\text{model}^2$</td>
+            <td>67M</td>
+          </tr>
+          <tr>
+            <td>FFN with ReLU ($4\times$)</td>
+            <td>$2 \times d_\text{model} \times 4 d_\text{model}$</td>
+            <td>134M</td>
+          </tr>
+          <tr>
+            <td>FFN with SwiGLU ($\frac{8}{3}\times$)</td>
+            <td>$3 \times d_\text{model} \times \frac{8}{3} d_\text{model}$</td>
+            <td>134M</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <p>The FFN accounts for roughly two-thirds of each block's parameters. This is why techniques like Mixture of Experts (MoE) target the FFN specifically — it is the largest parameter bottleneck and the most natural place to add conditional computation.</p>
+    </section>
+
+    <!-- ================================================================== -->
+    <!-- SECTION 4: RESIDUAL CONNECTIONS                                    -->
+    <!-- ================================================================== -->
+    <section class="chapter-section" id="residual-connections">
+      <h2>Residual Connections</h2>
+
+      <p>Residual connections are the simplest component in the Transformer block — just addition — yet they are arguably the most important for enabling depth. Without them, Transformers beyond a handful of layers would be untrainable.</p>
+
+      <h3>Original Motivation</h3>
+
+      <p>He et al. (2016) introduced residual connections for deep CNNs, solving the degradation problem: adding more layers to a network made it <em>worse</em>, not better. The residual connection $\mathbf{y} = \mathbf{x} + F(\mathbf{x})$ provides a shortcut: if the sublayer $F$ should ideally compute the identity (do nothing), it only needs to learn $F(\mathbf{x}) = 0$, which is easy. Without the shortcut, learning the identity through a nonlinear $F$ is surprisingly hard.</p>
+
+      <h3>Identity Initialization and Gradient Flow</h3>
+
+      <p>At initialization, all sublayer weights are small (drawn from a distribution with small variance), so $F(\mathbf{x}) \approx 0$. This means the entire Transformer starts as an approximate identity function: each block passes its input straight through. This property is critical for training stability — it means that at the start of training, gradients flow cleanly through the entire network via the residual connections, before the sublayers have learned anything useful.</p>
+
+      <p>During backpropagation, the gradient of the loss with respect to an early layer's input includes a direct term (through the residual connection) plus terms through each sublayer. Even if the sublayer gradients vanish or explode, the direct term ensures some gradient signal always reaches early layers. Formally, the Jacobian of the residual block is $\frac{\partial \mathbf{y}}{\partial \mathbf{x}} = I + \frac{\partial F(\mathbf{x})}{\partial \mathbf{x}}$, where the identity matrix $I$ guarantees a gradient magnitude of at least 1 in every direction. This is why Transformers can be trained at depths (100+ layers) that are difficult for other architectures.</p>
+
+      <h3>The Residual Stream Interpretation</h3>
+
+      <p>The mechanistic interpretability community has reframed how we think about residual connections. Instead of viewing each layer as a transformation, view the residual connections as a <strong>residual stream</strong> — a running vector that each sublayer reads from and writes to. The stream starts as the token embedding plus positional encoding. Each attention sublayer reads the stream, computes something, and adds its result back. Each FFN sublayer does the same. After $L$ layers, the stream contains the original embedding plus the sum of all sublayer outputs:</p>
+
+      <div class="math-block">
+        $$\mathbf{x}_L = \mathbf{x}_0 + \sum_{\ell=1}^{L} \text{Attn}_\ell(\cdot) + \sum_{\ell=1}^{L} \text{FFN}_\ell(\cdot)$$
+      </div>
+
+      <p>This view is powerful because it implies that each sublayer's contribution is <em>additive</em>. You can study each sublayer's output independently and understand what it adds to the stream. Ablating a single sublayer (setting its output to zero) removes exactly one term from this sum, making it straightforward to measure that sublayer's contribution to any particular behavior.</p>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 280" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="ch04-arr4" viewBox="0 0 10 10" refX="9" refY="5"
+              markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+              <path d="M1 1L9 5L1 9" fill="none" stroke="context-stroke"
+                stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </marker>
+          </defs>
+
+          <text x="400" y="22" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="600" fill="#1A1A18">The Residual Stream</text>
+
+          <!-- Main horizontal stream line -->
+          <line x1="40" y1="140" x2="760" y2="140" stroke="#C8C6BE" stroke-width="4" opacity="0.4"/>
+          <text x="400" y="165" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#9C9A94">residual stream (additive)</text>
+
+          <!-- x_0 input -->
+          <rect x="40" y="124" width="60" height="32" rx="6" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1.5"/>
+          <text x="70" y="144" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#0F6E56">x₀</text>
+          <text x="70" y="114" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">embed + pos</text>
+
+          <!-- Attn 1 writes -->
+          <rect x="140" y="46" width="80" height="32" rx="5" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <text x="180" y="66" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#534AB7">Attn₁</text>
+          <line x1="180" y1="78" x2="180" y2="126" stroke="#534AB7" stroke-width="1.5" marker-end="url(#ch04-arr4)"/>
+          <!-- + circle -->
+          <circle cx="180" cy="140" r="10" fill="#FFFFFF" stroke="#534AB7" stroke-width="1.5"/>
+          <text x="180" y="144" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#534AB7">+</text>
+
+          <!-- FFN 1 writes -->
+          <rect x="240" y="186" width="80" height="32" rx="5" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1.5"/>
+          <text x="280" y="206" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#0F6E56">FFN₁</text>
+          <line x1="280" y1="186" x2="280" y2="154" stroke="#0F6E56" stroke-width="1.5" marker-end="url(#ch04-arr4)"/>
+          <circle cx="280" cy="140" r="10" fill="#FFFFFF" stroke="#0F6E56" stroke-width="1.5"/>
+          <text x="280" y="144" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#0F6E56">+</text>
+
+          <!-- Attn 2 writes -->
+          <rect x="360" y="46" width="80" height="32" rx="5" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <text x="400" y="66" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#534AB7">Attn₂</text>
+          <line x1="400" y1="78" x2="400" y2="126" stroke="#534AB7" stroke-width="1.5" marker-end="url(#ch04-arr4)"/>
+          <circle cx="400" cy="140" r="10" fill="#FFFFFF" stroke="#534AB7" stroke-width="1.5"/>
+          <text x="400" y="144" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#534AB7">+</text>
+
+          <!-- FFN 2 writes -->
+          <rect x="460" y="186" width="80" height="32" rx="5" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1.5"/>
+          <text x="500" y="206" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#0F6E56">FFN₂</text>
+          <line x1="500" y1="186" x2="500" y2="154" stroke="#0F6E56" stroke-width="1.5" marker-end="url(#ch04-arr4)"/>
+          <circle cx="500" cy="140" r="10" fill="#FFFFFF" stroke="#0F6E56" stroke-width="1.5"/>
+          <text x="500" y="144" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#0F6E56">+</text>
+
+          <!-- Dots for more layers -->
+          <text x="570" y="144" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="16" font-weight="400" fill="#C8C6BE">···</text>
+
+          <!-- Attn L -->
+          <rect x="610" y="46" width="80" height="32" rx="5" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <text x="650" y="66" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#534AB7">Attn_L</text>
+          <line x1="650" y1="78" x2="650" y2="126" stroke="#534AB7" stroke-width="1.5" marker-end="url(#ch04-arr4)"/>
+          <circle cx="650" cy="140" r="10" fill="#FFFFFF" stroke="#534AB7" stroke-width="1.5"/>
+          <text x="650" y="144" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#534AB7">+</text>
+
+          <!-- Final output -->
+          <line x1="660" y1="140" x2="740" y2="140" stroke="#C8C6BE" stroke-width="1.5" marker-end="url(#ch04-arr4)"/>
+          <rect x="700" y="124" width="60" height="32" rx="6" fill="#FAECE7" stroke="#F0997B" stroke-width="1.5"/>
+          <text x="730" y="144" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#993C1D">x_L</text>
+
+          <!-- Equation at bottom -->
+          <text x="400" y="252" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#5C5B56">x_L = x₀ + Σ Attn_ℓ(·) + Σ FFN_ℓ(·)</text>
+          <text x="400" y="272" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">Each sublayer reads from the stream and writes an additive update</text>
+        </svg>
+        <figcaption>Figure 4.5 — The residual stream interpretation. The stream (gray line) flows left to right. Each sublayer — attention (purple, above) and FFN (teal, below) — reads from the stream and writes an additive update back. The final representation x_L is the original embedding x₀ plus the sum of all sublayer contributions.</figcaption>
+      </figure>
+
+      <h3>Residual Stream as Superposition</h3>
+
+      <p>The residual stream at dimension $d_\text{model}$ carries far more features than it has dimensions. Anthropic's work on superposition (Elhage et al., 2022) showed that models encode many nearly-orthogonal features into the same $d_\text{model}$-dimensional space. The residual stream is not a clean set of dedicated feature slots — it is a compressed representation where features interfere with each other, but the interference is kept small enough that downstream layers can still read the features they need. This insight — that the stream holds a superposition of many more features than its dimensionality suggests — has profound implications for interpretability and helps explain why scaling $d_\text{model}$ steadily improves performance.</p>
+
+      <p>Putting everything together, here is a complete decoder-only language model that stacks embeddings, N Transformer blocks, and an output projection into an end-to-end architecture.</p>
+
+      <pre><code class="language-python">
+class DecoderLM(nn.Module):
+    """Complete decoder-only language model: embeddings → N blocks → output logits."""
+    def __init__(self, vocab_size, d_model, n_heads, d_ff, n_layers, max_len=2048):
+        super().__init__()
+        self.token_emb = nn.Embedding(vocab_size, d_model)
+        self.pos_emb = nn.Embedding(max_len, d_model)
+        self.blocks = nn.ModuleList([
+            TransformerBlock(d_model, n_heads, d_ff)
+            for _ in range(n_layers)
+        ])
+        self.final_norm = RMSNorm(d_model)
+        # Tie output projection with token embeddings
+        self.output = nn.Linear(d_model, vocab_size, bias=False)
+        self.output.weight = self.token_emb.weight   # weight tying
+
+    def forward(self, input_ids, mask=None):
+        B, S = input_ids.shape
+        positions = torch.arange(S, device=input_ids.device)
+
+        # Embed tokens + positions
+        x = self.token_emb(input_ids) + self.pos_emb(positions)  # (B, S, d_model)
+
+        # Pass through N transformer blocks
+        for block in self.blocks:
+            x = block(x, mask=mask)                  # (B, S, d_model)
+
+        # Final norm + project to vocabulary
+        x = self.final_norm(x)                       # (B, S, d_model)
+        logits = self.output(x)                      # (B, S, vocab_size)
+        return logits
+
+# GPT-2 Small equivalent: 12 layers, 768 dim, 12 heads
+model = DecoderLM(vocab_size=50257, d_model=768, n_heads=12, d_ff=3072, n_layers=12)
+print(f"Parameters: {sum(p.numel() for p in model.parameters()):,}")  # ~124M
+</code></pre>
+    </section>
+
+    <!-- ================================================================== -->
+    <!-- SECTION 5: NORMALIZATION VARIANTS                                  -->
+    <!-- ================================================================== -->
+    <section class="chapter-section" id="normalization-variants">
+      <h2>Normalization Variants</h2>
+
+      <p>Normalization is the unsung hero of deep Transformer training. Without it, the activations in deep networks drift to extreme values, gradients explode or vanish, and training diverges. The question is not whether to normalize, but <em>how</em> and <em>where</em>.</p>
+
+      <h3>Layer Norm: The Foundation</h3>
+
+      <p>Standard Layer Norm (Ba et al., 2016) computes mean and variance across the feature dimension for each token independently, then applies a learned affine transformation:</p>
+
+      <div class="math-block">
+        $$\text{LayerNorm}(\mathbf{x}) = \gamma \odot \frac{\mathbf{x} - \mu}{\sqrt{\sigma^2 + \epsilon}} + \beta$$
+      </div>
+
+      <p>where $\mu = \frac{1}{d}\sum_{i=1}^d x_i$ is the mean, $\sigma^2 = \frac{1}{d}\sum_{i=1}^d (x_i - \mu)^2$ is the variance, and $\gamma, \beta \in \mathbb{R}^d$ are learned scale and shift parameters. The small constant $\epsilon$ (typically $10^{-5}$) prevents division by zero. Layer Norm has $2 \times d_\text{model}$ learnable parameters. The normalization ensures that each sublayer receives inputs with consistent scale, regardless of what the residual stream has accumulated.</p>
+
+      <p>Why Layer Norm and not Batch Norm? Batch Norm computes statistics <em>across the batch</em>, which fails for variable-length sequences (different positions would have different batch statistics) and breaks at inference time with batch size 1. Layer Norm computes statistics <em>within each token</em>, making it independent of batch size and sequence length.</p>
+
+      <h3>RMS Norm: Simpler and Faster</h3>
+
+      <p>RMS Norm (Zhang and Sennrich, 2019) drops the mean centering, normalizing only by the root mean square:</p>
+
+      <div class="math-block">
+        $$\text{RMSNorm}(\mathbf{x}) = \gamma \odot \frac{\mathbf{x}}{\text{RMS}(\mathbf{x})} \quad\text{where}\quad \text{RMS}(\mathbf{x}) = \sqrt{\frac{1}{d}\sum_{i=1}^d x_i^2}$$
+      </div>
+
+      <p>It has only $d_\text{model}$ parameters (just $\gamma$, no $\beta$ shift). This is both faster (one fewer reduction operation — no mean computation, no subtraction) and empirically equivalent. The insight is that re-centering activations to zero mean provides marginal benefit, while re-scaling to unit variance does the heavy lifting. LLaMA, PaLM, Gemini, and Mistral all use RMS Norm.</p>
+
+      <p>Here is a clean PyTorch implementation of RMSNorm, matching the version used in LLaMA and Gemma.</p>
+
+      <pre><code class="language-python">
+import torch
+import torch.nn as nn
+
+class RMSNorm(nn.Module):
+    """Root Mean Square Layer Normalization (used in LLaMA, Gemma)."""
+    def __init__(self, d_model, eps=1e-6):
+        super().__init__()
+        self.weight = nn.Parameter(torch.ones(d_model))  # learnable scale γ
+        self.eps = eps
+
+    def forward(self, x):
+        # x: (batch, seq_len, d_model)
+        rms = torch.sqrt(x.pow(2).mean(dim=-1, keepdim=True) + self.eps)
+        x_normed = x / rms                     # normalize by RMS
+        return self.weight * x_normed           # element-wise scale (broadcast)
+</code></pre>
+
+      <h3>Pre-Norm: Training Stability Without Warmup</h3>
+
+      <p>The placement of normalization matters as much as the type. Pre-norm (normalize before each sublayer) ensures that the sublayer always sees inputs with bounded scale. At initialization, where sublayer weights are small, the block output is approximately $\mathbf{x} + \epsilon \cdot \text{Sublayer}(\text{Norm}(\mathbf{x}))$, which is close to the identity. This means:</p>
+
+      <ul>
+        <li>The network behaves like the identity at init, so gradients flow cleanly from the start.</li>
+        <li>No warmup phase is needed to stabilize training (though warmup still helps for final quality).</li>
+        <li>Very deep models (100+ layers) train without divergence.</li>
+      </ul>
+
+      <p>The cost is that the residual stream accumulates unnormalized updates, so its scale grows with depth. A final layer norm before the output projection compensates for this.</p>
+
+      <h3>Deep Norm: Scaling to 1,000+ Layers</h3>
+
+      <p>For extremely deep Transformers (1,000+ layers), even pre-norm can struggle. Deep Norm (Wang et al., 2022) uses a scaled residual: $\alpha \mathbf{x} + \text{Sublayer}(\text{Norm}(\mathbf{x}))$ with $\alpha = (2N)^{1/4}$ for $N$ layers, combined with reduced initialization variance $\beta = (8N)^{-1/4}$ for the sublayer weights. This keeps the residual stream's scale stable across arbitrary depth, enabling 1,000-layer Transformers to train without instability.</p>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 200" xmlns="http://www.w3.org/2000/svg">
+          <!-- Three columns comparing norms -->
+
+          <!-- Layer Norm -->
+          <rect x="30" y="20" width="220" height="150" rx="8" fill="#FFFFFF" stroke="#E5E3DC" stroke-width="1"/>
+          <text x="140" y="46" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="600" fill="#534AB7">Layer Norm</text>
+          <text x="140" y="68" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#5C5B56">γ · (x - μ) / √(σ² + ε) + β</text>
+          <text x="140" y="92" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">Params: 2 × d_model</text>
+          <text x="140" y="112" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">Ops: mean + variance + affine</text>
+          <text x="140" y="140" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#5C5B56">Used in: BERT, GPT-2</text>
+          <text x="140" y="158" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">Original Transformer</text>
+
+          <!-- RMS Norm -->
+          <rect x="290" y="20" width="220" height="150" rx="8" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <text x="400" y="46" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="600" fill="#534AB7">RMS Norm</text>
+          <text x="400" y="68" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#5C5B56">γ · x / RMS(x)</text>
+          <text x="400" y="92" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">Params: 1 × d_model</text>
+          <text x="400" y="112" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">Ops: RMS + scale</text>
+          <text x="400" y="140" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#534AB7">Used in: LLaMA, PaLM,</text>
+          <text x="400" y="158" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#534AB7">Gemini, Mistral ★</text>
+
+          <!-- Deep Norm -->
+          <rect x="550" y="20" width="220" height="150" rx="8" fill="#FFFFFF" stroke="#E5E3DC" stroke-width="1"/>
+          <text x="660" y="46" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="600" fill="#534AB7">Deep Norm</text>
+          <text x="660" y="68" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#5C5B56">α·x + Sub(Norm(x)), β init</text>
+          <text x="660" y="92" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">α = (2N)^(1/4)</text>
+          <text x="660" y="112" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">Enables 1000+ layers</text>
+          <text x="660" y="140" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#5C5B56">Used in: very deep</text>
+          <text x="660" y="158" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">research models</text>
+        </svg>
+        <figcaption>Figure 4.6 — Comparison of normalization variants. RMS Norm (center, highlighted) is the current standard for large language models — simpler than Layer Norm, empirically equivalent, and faster due to fewer operations.</figcaption>
+      </figure>
+    </section>
+
+    <!-- ================================================================== -->
+    <!-- SECTION 6: ACTIVATION FUNCTIONS SURVEY                             -->
+    <!-- ================================================================== -->
+    <section class="chapter-section" id="activation-functions">
+      <h2>Activation Functions Survey</h2>
+
+      <p>The activation function in the FFN sublayer has a larger impact on model quality than you might expect. Each generation of Transformer models has adopted a better activation, and the progression tells a clear story about what properties matter.</p>
+
+      <h3>ReLU: Sparse but Brittle</h3>
+
+      <p><strong>ReLU</strong> ($\max(0, x)$) produces sparse activations — typically 50% of neurons are zero at any given input. Sparsity can be a feature (interpretability, efficiency), but the dead neuron problem is a liability. Once a neuron's pre-activation becomes permanently negative (due to a large negative bias learned during training), it produces zero output and zero gradient forever. In large Transformers, up to 10% of ReLU neurons can become permanently dead.</p>
+
+      <h3>GELU: Smooth Approximation</h3>
+
+      <p><strong>GELU</strong> approximates ReLU but with a smooth curve: $\text{GELU}(x) = x \cdot \Phi(x)$ where $\Phi$ is the Gaussian CDF. Small negative inputs get a small negative output instead of exactly zero, so gradients always flow. BERT and GPT-2 adopted GELU, and it became the default for several years.</p>
+
+      <h3>SiLU/Swish: Self-Gated</h3>
+
+      <p><strong>SiLU</strong> (Sigmoid Linear Unit), also known as Swish, is $x \cdot \sigma(x)$ where $\sigma$ is the sigmoid function. Like GELU, it is smooth everywhere and allows small negative outputs. The self-gating property — where $\sigma(x)$ acts as a learnable gate on $x$ — foreshadows the explicit gating in SwiGLU. SiLU serves as the gating function inside SwiGLU.</p>
+
+      <h3>SwiGLU and GeGLU: Gated Linear Units</h3>
+
+      <p><strong>SwiGLU</strong> uses SiLU as the gate: $\text{SiLU}(xW_\text{gate}) \odot xW_\text{up}$. <strong>GeGLU</strong> uses GELU instead: $\text{GELU}(xW_\text{gate}) \odot xW_\text{up}$. Both outperform their ungated counterparts. SwiGLU is the current winner and is used in LLaMA, PaLM, Gemini, and Mistral. The gating mechanism provides input-dependent feature selection — a form of dynamic routing that is more powerful than static nonlinearities.</p>
+
+      <div class="callout callout-insight">
+        <div class="callout-title">Key Insight</div>
+        <p>The evolution from ReLU → GELU → SwiGLU follows a clear pattern: each successor is smoother, allows more gradient flow, and provides more adaptive nonlinearity. The consistent lesson is that hard thresholds (ReLU's zero cutoff) hurt optimization, and input-dependent gating (SwiGLU) helps the model allocate its FFN capacity more efficiently across different inputs.</p>
+      </div>
+
+      <!-- Interactive widget: activation function comparison -->
+      <figure class="diagram-figure diagram-interactive">
+        <div class="widget-container" id="widget-ch04-activations">
+          <style>
+            #widget-ch04-activations .controls { display: flex; gap: 1.5rem; padding: 0.8rem 1rem 0; flex-wrap: wrap; }
+            #widget-ch04-activations .controls label { font-family: system-ui, -apple-system, sans-serif; font-size: 13px; color: #5C5B56; display: flex; align-items: center; gap: 6px; cursor: pointer; }
+            #widget-ch04-activations .controls input[type="checkbox"] { accent-color: #534AB7; }
+          </style>
+
+          <div class="controls">
+            <label><input type="checkbox" checked onchange="ch04UpdateActivations();" id="ch04-show-relu"> <span style="color:#993C1D; font-weight:600;">ReLU</span></label>
+            <label><input type="checkbox" checked onchange="ch04UpdateActivations();" id="ch04-show-gelu"> <span style="color:#0F6E56; font-weight:600;">GELU</span></label>
+            <label><input type="checkbox" checked onchange="ch04UpdateActivations();" id="ch04-show-silu"> <span style="color:#534AB7; font-weight:600;">SiLU/Swish</span></label>
+          </div>
+
+          <svg id="ch04-act-svg" width="100%" viewBox="0 0 800 320">
+            <!-- Grid -->
+            <line x1="80" y1="160" x2="760" y2="160" stroke="#E5E3DC" stroke-width="1"/>
+            <line x1="400" y1="30" x2="400" y2="290" stroke="#E5E3DC" stroke-width="1"/>
+
+            <!-- Axis labels -->
+            <text x="770" y="164" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">x</text>
+            <text x="404" y="25" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">f(x)</text>
+
+            <!-- Grid lines -->
+            <line x1="80" y1="80" x2="760" y2="80" stroke="#F1EFE8" stroke-width="0.5"/>
+            <line x1="80" y1="240" x2="760" y2="240" stroke="#F1EFE8" stroke-width="0.5"/>
+            <line x1="240" y1="30" x2="240" y2="290" stroke="#F1EFE8" stroke-width="0.5"/>
+            <line x1="560" y1="30" x2="560" y2="290" stroke="#F1EFE8" stroke-width="0.5"/>
+
+            <!-- Tick labels -->
+            <text x="240" y="305" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">-2</text>
+            <text x="400" y="305" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">0</text>
+            <text x="560" y="305" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">2</text>
+            <text x="70" y="164" text-anchor="end" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">0</text>
+            <text x="70" y="84" text-anchor="end" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">2</text>
+            <text x="70" y="244" text-anchor="end" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">-2</text>
+
+            <!-- Activation curves (polylines computed for range [-4, 4]) -->
+            <polyline id="ch04-relu-line" fill="none" stroke="#993C1D" stroke-width="2.5" opacity="0.85"
+              points="80,160 160,160 240,160 320,160 400,160 480,80 560,0 640,-80 720,-160 760,-200"/>
+            <polyline id="ch04-gelu-line" fill="none" stroke="#0F6E56" stroke-width="2.5" opacity="0.85"
+              points=""/>
+            <polyline id="ch04-silu-line" fill="none" stroke="#534AB7" stroke-width="2.5" opacity="0.85"
+              points=""/>
+
+            <!-- Annotation: dead zone -->
+            <rect id="ch04-dead-zone" x="80" y="155" width="320" height="10" rx="3" fill="#993C1D" opacity="0.08"/>
+            <text id="ch04-dead-label" x="240" y="180" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#993C1D">← ReLU dead zone: zero gradient for x &lt; 0</text>
+          </svg>
+
+          <p style="font-family:system-ui,-apple-system,sans-serif; font-size:13px; color:#9C9A94; font-style:italic; padding:0.5rem 1rem 0.8rem;" id="ch04-act-observation">
+            Toggle activations to compare. Notice how GELU and SiLU allow small negative outputs — gradients flow even for negative inputs, unlike ReLU's flat zero region.
+          </p>
+        </div>
+
+        <script>
+          (function() {
+            // Precompute activation curves
+            function relu(x) { return Math.max(0, x); }
+            function gelu(x) {
+              // Approximate: x * 0.5 * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))
+              return x * 0.5 * (1 + Math.tanh(Math.sqrt(2/Math.PI) * (x + 0.044715 * x*x*x)));
+            }
+            function silu(x) { return x / (1 + Math.exp(-x)); }
+
+            function xToSvg(x) { return 400 + x * 80; } // 80px per unit
+            function yToSvg(y) { return 160 - y * 40; }  // 40px per unit, inverted
+
+            function makePoints(fn) {
+              var pts = [];
+              for (var x = -4; x <= 4.01; x += 0.1) {
+                var sx = xToSvg(x);
+                var sy = yToSvg(fn(x));
+                sy = Math.max(10, Math.min(300, sy)); // clamp
+                pts.push(sx.toFixed(1) + ',' + sy.toFixed(1));
+              }
+              return pts.join(' ');
+            }
+
+            // Set initial polyline points
+            document.getElementById('ch04-relu-line').setAttribute('points', makePoints(relu));
+            document.getElementById('ch04-gelu-line').setAttribute('points', makePoints(gelu));
+            document.getElementById('ch04-silu-line').setAttribute('points', makePoints(silu));
+
+            // Expose update function
+            window.ch04UpdateActivations = function() {
+              var showRelu = document.getElementById('ch04-show-relu').checked;
+              var showGelu = document.getElementById('ch04-show-gelu').checked;
+              var showSilu = document.getElementById('ch04-show-silu').checked;
+
+              document.getElementById('ch04-relu-line').style.display = showRelu ? '' : 'none';
+              document.getElementById('ch04-gelu-line').style.display = showGelu ? '' : 'none';
+              document.getElementById('ch04-silu-line').style.display = showSilu ? '' : 'none';
+              document.getElementById('ch04-dead-zone').style.display = showRelu ? '' : 'none';
+              document.getElementById('ch04-dead-label').style.display = showRelu ? '' : 'none';
+
+              var obs = document.getElementById('ch04-act-observation');
+              if (showRelu && !showGelu && !showSilu) {
+                obs.textContent = 'ReLU only: notice the completely flat region for x < 0. Any neuron stuck here gets zero gradient and never recovers.';
+              } else if (!showRelu && showGelu && !showSilu) {
+                obs.textContent = 'GELU only: the smooth curve allows small negative outputs near x = 0, keeping gradients alive.';
+              } else if (!showRelu && !showSilu && !showGelu) {
+                obs.textContent = 'Toggle at least one activation to see its curve.';
+              } else if (showRelu && showGelu && showSilu) {
+                obs.textContent = 'All three: GELU and SiLU are nearly identical for positive x but diverge for negative x, where both allow gradient flow unlike ReLU.';
+              } else {
+                obs.textContent = 'Compare the selected activations. Key difference: behavior for negative inputs determines gradient health during training.';
+              }
+            };
+          })();
+        </script>
+
+        <figcaption>Figure 4.7 — Interactive: toggle activation functions to compare ReLU (coral), GELU (teal), and SiLU/Swish (purple). The shaded region highlights ReLU's dead zone where gradients are exactly zero. GELU and SiLU both allow small negative outputs, preventing dead neurons.</figcaption>
+      </figure>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 120" xmlns="http://www.w3.org/2000/svg">
+          <!-- Timeline -->
+          <line x1="60" y1="60" x2="740" y2="60" stroke="#C8C6BE" stroke-width="2"/>
+
+          <!-- ReLU -->
+          <circle cx="120" cy="60" r="8" fill="#FAECE7" stroke="#993C1D" stroke-width="2"/>
+          <text x="120" y="40" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#993C1D">ReLU</text>
+          <text x="120" y="88" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">2017</text>
+          <text x="120" y="102" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">Original Transformer</text>
+
+          <!-- GELU -->
+          <circle cx="310" cy="60" r="8" fill="#E1F5EE" stroke="#0F6E56" stroke-width="2"/>
+          <text x="310" y="40" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#0F6E56">GELU</text>
+          <text x="310" y="88" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">2018–2019</text>
+          <text x="310" y="102" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">BERT, GPT-2</text>
+
+          <!-- SwiGLU -->
+          <circle cx="540" cy="60" r="10" fill="#534AB7" stroke="#534AB7" stroke-width="2"/>
+          <text x="540" y="37" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#534AB7">SwiGLU</text>
+          <text x="540" y="88" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">2020–present</text>
+          <text x="540" y="102" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">LLaMA, PaLM, Gemini</text>
+
+          <!-- Arrow indicating progression -->
+          <text x="680" y="56" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">→ smoother,</text>
+          <text x="680" y="72" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">   more adaptive</text>
+        </svg>
+        <figcaption>Figure 4.8 — Timeline of activation functions in Transformers. Each generation is smoother and more adaptive than the last. SwiGLU (2020+) with input-dependent gating is the current dominant choice.</figcaption>
+      </figure>
+    </section>
+
+  </article>
+
+  <footer class="chapter-footer">
+    <div class="footer-nav">
+      <a href="ch03.html">&larr; Previous: Attention Is All You Need — The Original Paper</a>
+      <a href="ch05.html">Next: Tokenization and Embeddings &rarr;</a>
+    </div>
+  </footer>
+
+</body>
+</html>

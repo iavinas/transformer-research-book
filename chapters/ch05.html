@@ -1,0 +1,756 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Chapter 05: Tokenization and Embeddings — Transformer Research Book</title>
+  <link rel="stylesheet" href="../assets/style.css">
+  <link rel="stylesheet" href="../assets/math.css">
+  <link rel="stylesheet" href="../assets/prism.css">
+  <!-- KaTeX for math rendering -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"
+    onload="renderMathInElement(document.body, {
+      delimiters: [
+        {left: '$$', right: '$$', display: true},
+        {left: '$', right: '$', display: false}
+      ]
+    })">
+  </script>
+  <!-- Prism for code blocks -->
+  <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/prism.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-python.min.js"></script>
+</head>
+<body>
+  <nav class="chapter-nav">
+    <a href="../index.html" class="nav-home">&larr; Table of Contents</a>
+    <span class="nav-chapter">Chapter 05</span>
+    <div style="display:flex; align-items:center; gap:1rem;">
+      <button class="theme-toggle" onclick="toggleTheme()" aria-label="Toggle dark mode">
+        <span class="icon-moon">&#9789;</span><span class="icon-sun">&#9788;</span>
+      </button>
+      <a href="ch06.html" class="nav-next">Next Chapter &rarr;</a>
+    </div>
+  </nav>
+  <script>
+    function toggleTheme() {
+      document.documentElement.classList.toggle('dark');
+      localStorage.setItem('theme', document.documentElement.classList.contains('dark') ? 'dark' : 'light');
+    }
+    if (localStorage.getItem('theme') === 'dark') document.documentElement.classList.add('dark');
+  </script>
+
+  <article class="chapter">
+
+    <header class="chapter-header">
+      <div class="chapter-number">Chapter 05</div>
+      <h1 class="chapter-title">Tokenization and Embeddings</h1>
+      <p class="chapter-lead">Before a Transformer sees a single word, that word must be broken into tokens and each token must be mapped to a vector. These two operations — tokenization and embedding — are the model's only interface with human language. A poor tokenizer fragments common words into meaningless pieces and burns context window on overhead; a poor embedding table wastes parameters on tokens the model rarely encounters. This chapter traces the evolution from word-level and character-level approaches to the subword methods that power every modern LLM, then explains how the embedding table converts discrete token IDs into the continuous vectors that Transformers actually process.</p>
+    </header>
+
+    <!-- ================================================================== -->
+    <!-- SECTION 1: THE TOKENIZATION PROBLEM                                -->
+    <!-- ================================================================== -->
+    <section class="chapter-section" id="tokenization-problem">
+      <h2>The Tokenization Problem</h2>
+
+      <p>Transformers operate on sequences of discrete tokens, not raw text. The choice of how to split text into tokens — the tokenization strategy — has downstream consequences on everything from model quality to inference cost to multilingual fairness. Getting this right is the first and most overlooked design decision.</p>
+
+      <h3>Why Character-Level Is Too Fine-Grained</h3>
+
+      <p>Treating each character as a token seems clean — no out-of-vocabulary problem, no arbitrary segmentation decisions. But the cost is prohibitive. The sentence "The Transformer architecture revolutionized NLP" is 47 characters but only 6 words. At character level, the model must process 8× more tokens to represent the same content, consuming quadratic attention memory. Worse, each character carries almost no semantic signal on its own — the model must learn, from scratch, that "T-r-a-n-s-f-o-r-m-e-r" spells a meaningful word. This requires many more layers and much more data to achieve the same quality as a model that starts with word-level or subword-level units.</p>
+
+      <p>Character-level models also struggle with long-range dependencies. If the context window is 4,096 tokens, a character-level model sees roughly 4,096 characters — about 2-3 paragraphs of English. A subword model fits 10-15 paragraphs in the same window. The effective information bandwidth per token is dramatically lower.</p>
+
+      <h3>Why Word-Level Is Too Coarse</h3>
+
+      <p>Word-level tokenization assigns one token per whitespace-separated word. This works for common English words but fails spectacularly at the edges. Any word not in the fixed vocabulary becomes an unknown token ([UNK]) — and with language's infinite productivity (new names, code identifiers, morphological variants), unknowns are frequent. A 50,000-word vocabulary still produces unknowns for "ChatGPT," "defragmentation," or any non-English word.</p>
+
+      <p>Code and mathematical expressions are particularly devastating for word-level tokenizers. A function name like <code>getMaxValue()</code> is a single "word" that no reasonable vocabulary would contain. The expression <code>x**2 + 3*x - 7</code> mixes operators and identifiers that don't align with natural-language word boundaries. Mathematical notation like $\nabla_\theta \mathcal{L}$ produces entirely out-of-vocabulary symbols. For any model that must handle code, math, or technical content — which includes every modern LLM — word-level tokenization is a non-starter.</p>
+
+      <p>Morphologically rich languages amplify the problem further. Finnish or Turkish can generate hundreds of thousands of surface forms from a single root through agglutination, making word-level vocabularies impossibly large. Even German compound nouns (Rindfleischetikettierungsüberwachungsaufgabenübertragungsgesetz) defeat fixed-vocabulary approaches.</p>
+
+      <h3>The Goldilocks Zone: Subword Tokenization</h3>
+
+      <p>Subword tokenization finds the sweet spot. Common words like "the" and "transformer" get their own tokens. Rare words are decomposed into frequent subpieces: "revolutionized" might become ["revolution", "ized"]. The vocabulary is finite (typically 32K–200K tokens), but any string can be represented — no unknowns. The key insight is that the right granularity is <em>learned from data</em>: frequently co-occurring character sequences become single tokens, while rare sequences stay decomposed.</p>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 280" xmlns="http://www.w3.org/2000/svg">
+          <!-- Three rows showing the same text tokenized differently -->
+
+          <!-- Character level -->
+          <rect x="30" y="20" width="130" height="28" rx="5" fill="#FAECE7" stroke="#F0997B" stroke-width="1"/>
+          <text x="95" y="39" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#993C1D">Character-level</text>
+
+          <rect x="175" y="20" width="24" height="28" rx="4" fill="#FFFFFF" stroke="#E5E3DC" stroke-width="1"/>
+          <text x="187" y="39" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#5C5B56">u</text>
+          <rect x="203" y="20" width="24" height="28" rx="4" fill="#FFFFFF" stroke="#E5E3DC" stroke-width="1"/>
+          <text x="215" y="39" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#5C5B56">n</text>
+          <rect x="231" y="20" width="24" height="28" rx="4" fill="#FFFFFF" stroke="#E5E3DC" stroke-width="1"/>
+          <text x="243" y="39" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#5C5B56">b</text>
+          <rect x="259" y="20" width="24" height="28" rx="4" fill="#FFFFFF" stroke="#E5E3DC" stroke-width="1"/>
+          <text x="271" y="39" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#5C5B56">e</text>
+          <rect x="287" y="20" width="24" height="28" rx="4" fill="#FFFFFF" stroke="#E5E3DC" stroke-width="1"/>
+          <text x="299" y="39" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#5C5B56">l</text>
+          <rect x="315" y="20" width="24" height="28" rx="4" fill="#FFFFFF" stroke="#E5E3DC" stroke-width="1"/>
+          <text x="327" y="39" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#5C5B56">i</text>
+          <rect x="343" y="20" width="24" height="28" rx="4" fill="#FFFFFF" stroke="#E5E3DC" stroke-width="1"/>
+          <text x="355" y="39" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#5C5B56">e</text>
+          <rect x="371" y="20" width="24" height="28" rx="4" fill="#FFFFFF" stroke="#E5E3DC" stroke-width="1"/>
+          <text x="383" y="39" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#5C5B56">v</text>
+          <rect x="399" y="20" width="24" height="28" rx="4" fill="#FFFFFF" stroke="#E5E3DC" stroke-width="1"/>
+          <text x="411" y="39" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#5C5B56">a</text>
+          <rect x="427" y="20" width="24" height="28" rx="4" fill="#FFFFFF" stroke="#E5E3DC" stroke-width="1"/>
+          <text x="439" y="39" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#5C5B56">b</text>
+          <rect x="455" y="20" width="24" height="28" rx="4" fill="#FFFFFF" stroke="#E5E3DC" stroke-width="1"/>
+          <text x="467" y="39" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#5C5B56">l</text>
+          <rect x="483" y="20" width="24" height="28" rx="4" fill="#FFFFFF" stroke="#E5E3DC" stroke-width="1"/>
+          <text x="495" y="39" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#5C5B56">e</text>
+          <text x="530" y="39" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#993C1D">12 tokens</text>
+
+          <!-- Word level -->
+          <rect x="30" y="75" width="130" height="28" rx="5" fill="#FAEEDA" stroke="#EF9F27" stroke-width="1"/>
+          <text x="95" y="94" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#854F0B">Word-level</text>
+
+          <rect x="175" y="75" width="110" height="28" rx="4" fill="#FAEEDA" stroke="#EF9F27" stroke-width="1.5"/>
+          <text x="230" y="94" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#854F0B">[UNK]</text>
+          <text x="530" y="94" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#854F0B">1 token (information lost!)</text>
+
+          <!-- Subword level -->
+          <rect x="30" y="130" width="130" height="28" rx="5" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="95" y="149" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#0F6E56">Subword (BPE)</text>
+
+          <rect x="175" y="130" width="44" height="28" rx="4" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1.5"/>
+          <text x="197" y="149" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#0F6E56">un</text>
+          <rect x="223" y="130" width="62" height="28" rx="4" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1.5"/>
+          <text x="254" y="149" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#0F6E56">believ</text>
+          <rect x="289" y="130" width="50" height="28" rx="4" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1.5"/>
+          <text x="314" y="149" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#0F6E56">able</text>
+          <text x="530" y="149" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#0F6E56">3 tokens (just right)</text>
+
+          <!-- The word being tokenized -->
+          <text x="400" y="200" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="16" font-weight="600" fill="#1A1A18">"unbelievable"</text>
+
+          <!-- Summary -->
+          <text x="175" y="240" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#993C1D">Too many tokens → slow, wastes context</text>
+          <text x="175" y="258" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#854F0B">Unknown token → information destroyed</text>
+          <text x="175" y="276" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#0F6E56">Subword → efficient, preserves morphology</text>
+        </svg>
+        <figcaption>Figure 5.1 — Three tokenization strategies applied to "unbelievable." Character-level (top) produces 12 tokens — wasteful. Word-level (middle) produces a single [UNK] if the word is not in vocabulary — catastrophic information loss. Subword BPE (bottom) splits into morphologically meaningful pieces: "un" + "believ" + "able" — efficient and lossless.</figcaption>
+      </figure>
+    </section>
+
+    <!-- ================================================================== -->
+    <!-- SECTION 2: BYTE PAIR ENCODING                                      -->
+    <!-- ================================================================== -->
+    <section class="chapter-section" id="byte-pair-encoding">
+      <h2>Byte Pair Encoding (BPE)</h2>
+
+      <p>BPE is the most widely used tokenization algorithm in modern language models. Originally a data compression technique (Gage, 1994), Sennrich et al. (2016) adapted it for NLP. The core idea is simple: start with individual characters, count which pairs of characters appear most frequently in the training corpus, merge the most frequent pair into a new symbol, and repeat.</p>
+
+      <h3>Algorithm: Building the Vocabulary Bottom-Up</h3>
+
+      <p>BPE builds a vocabulary bottom-up from individual characters. Start with a vocabulary of all characters in the training corpus. Count every adjacent pair of symbols in the corpus. Merge the most frequent pair into a new symbol. Repeat until the vocabulary reaches the desired size. The merge rules — an ordered list of which pairs to combine — are the learned artifact that defines the tokenizer.</p>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 360" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="ch05-arr2" viewBox="0 0 10 10" refX="9" refY="5"
+              markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+              <path d="M1 1L9 5L1 9" fill="none" stroke="context-stroke"
+                stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </marker>
+          </defs>
+
+          <text x="400" y="22" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="600" fill="#1A1A18">BPE Merge Process: "low" (×5), "lower" (×2), "newest" (×6)</text>
+
+          <!-- Step 0: Characters -->
+          <rect x="30" y="42" width="90" height="26" rx="4" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="1"/>
+          <text x="75" y="60" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#5C5B56">Step 0</text>
+          <text x="140" y="60" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#5C5B56">l o w · (×5)    l o w e r · (×2)    n e w e s t · (×6)</text>
+          <text x="690" y="60" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">vocab: {l, o, w, e, r, n, s, t, ·}</text>
+
+          <!-- Arrow -->
+          <line x1="400" y1="72" x2="400" y2="88" stroke="#534AB7" stroke-width="1.5" marker-end="url(#ch05-arr2)"/>
+          <text x="440" y="84" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#534AB7">most frequent pair: (e, s) → 6×</text>
+
+          <!-- Step 1 -->
+          <rect x="30" y="92" width="90" height="26" rx="4" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <text x="75" y="110" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#534AB7">Step 1</text>
+          <text x="140" y="110" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#5C5B56">l o w · (×5)    l o w e r · (×2)    n e w </text>
+          <text x="515" y="110" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#534AB7">es</text>
+          <text x="535" y="110" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#5C5B56"> t · (×6)</text>
+          <text x="690" y="110" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">vocab: + {es}</text>
+
+          <line x1="400" y1="122" x2="400" y2="138" stroke="#534AB7" stroke-width="1.5" marker-end="url(#ch05-arr2)"/>
+          <text x="440" y="134" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#534AB7">most frequent pair: (es, t) → 6×</text>
+
+          <!-- Step 2 -->
+          <rect x="30" y="142" width="90" height="26" rx="4" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <text x="75" y="160" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#534AB7">Step 2</text>
+          <text x="140" y="160" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#5C5B56">l o w · (×5)    l o w e r · (×2)    n e w </text>
+          <text x="515" y="160" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#534AB7">est</text>
+          <text x="540" y="160" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#5C5B56"> · (×6)</text>
+          <text x="690" y="160" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">vocab: + {est}</text>
+
+          <line x1="400" y1="172" x2="400" y2="188" stroke="#534AB7" stroke-width="1.5" marker-end="url(#ch05-arr2)"/>
+          <text x="440" y="184" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#534AB7">most frequent pair: (l, o) → 7×</text>
+
+          <!-- Step 3 -->
+          <rect x="30" y="192" width="90" height="26" rx="4" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <text x="75" y="210" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#534AB7">Step 3</text>
+          <text x="140" y="210" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#534AB7">lo</text>
+          <text x="160" y="210" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#5C5B56"> w · (×5)    </text>
+          <text x="260" y="210" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#534AB7">lo</text>
+          <text x="280" y="210" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#5C5B56"> w e r · (×2)    n e w est · (×6)</text>
+          <text x="690" y="210" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">vocab: + {lo}</text>
+
+          <line x1="400" y1="222" x2="400" y2="238" stroke="#534AB7" stroke-width="1.5" marker-end="url(#ch05-arr2)"/>
+          <text x="440" y="234" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#534AB7">most frequent pair: (lo, w) → 7×</text>
+
+          <!-- Step 4 -->
+          <rect x="30" y="242" width="90" height="26" rx="4" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1.5"/>
+          <text x="75" y="260" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#0F6E56">Step 4</text>
+          <text x="140" y="260" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#0F6E56">low</text>
+          <text x="170" y="260" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#5C5B56"> · (×5)    </text>
+          <text x="250" y="260" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#0F6E56">low</text>
+          <text x="278" y="260" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#5C5B56"> e r · (×2)    n e w est · (×6)</text>
+          <text x="690" y="260" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">vocab: + {low}</text>
+
+          <!-- Summary -->
+          <text x="400" y="300" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#5C5B56">After 4 merges: "low" is a single token, "newest" → "n e w est"</text>
+          <text x="400" y="318" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">Frequent substrings become tokens first. Rare combinations stay decomposed.</text>
+          <text x="400" y="348" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">Merge rules: (e,s)→es  (es,t)→est  (l,o)→lo  (lo,w)→low  …continued until vocab_size</text>
+        </svg>
+        <figcaption>Figure 5.2 — BPE merge process on a toy corpus. Each step finds the most frequent adjacent pair and merges it into a new vocabulary entry. After 4 merges, "low" has become a single token (teal). The ordered list of merge rules defines the tokenizer — applying them in sequence to new text produces its tokenization.</figcaption>
+      </figure>
+
+      <pre><code class="language-python">
+# Simplified BPE training
+def train_bpe(corpus: list[str], vocab_size: int) -> list[tuple]:
+    """Train BPE merge rules from a corpus of words."""
+    # Initialize: split each word into characters + end-of-word marker
+    word_freqs = {}  # {"l o w </w>": 5, "l o w e r </w>": 2, ...}
+    for word, freq in count_words(corpus):
+        word_freqs[" ".join(word) + " </w>"] = freq
+
+    merges = []
+    while len(get_vocab(word_freqs)) < vocab_size:
+        # Count all adjacent pairs
+        pairs = count_pairs(word_freqs)
+        if not pairs:
+            break
+        # Find and apply the most frequent pair
+        best_pair = max(pairs, key=pairs.get)
+        word_freqs = merge_pair(best_pair, word_freqs)
+        merges.append(best_pair)
+    return merges  # Ordered list of merge rules
+</code></pre>
+
+      <p>The merge rules are the learned artifact — they define how to tokenize new text at inference time. To tokenize a new word, start with characters, then apply the merge rules in the order they were learned. This greedy, deterministic process always produces the same tokenization for the same input.</p>
+
+      <p>Here is a complete BPE tokenizer that uses the trained merge rules to encode text into token IDs and decode them back.</p>
+
+      <pre><code class="language-python">
+class BPETokenizer:
+    """Minimal BPE tokenizer: trains on corpus, encodes and decodes text."""
+    def __init__(self, merges, vocab):
+        self.merges = merges                       # list of (str, str) merge pairs
+        self.vocab = vocab                         # token -> id mapping
+        self.id_to_token = {v: k for k, v in vocab.items()}
+
+    def encode(self, text):
+        """Tokenize text by applying learned merge rules in order."""
+        tokens = list(text)                        # start with characters
+        for pair in self.merges:
+            i = 0
+            new_tokens = []
+            while i < len(tokens):
+                # Look for the merge pair at current position
+                if i < len(tokens) - 1 and tokens[i] == pair[0] and tokens[i+1] == pair[1]:
+                    new_tokens.append(pair[0] + pair[1])  # merge
+                    i += 2
+                else:
+                    new_tokens.append(tokens[i])
+                    i += 1
+            tokens = new_tokens
+        return [self.vocab[t] for t in tokens]     # convert to token ids
+
+    def decode(self, ids):
+        """Convert token ids back to text."""
+        return "".join(self.id_to_token[i] for i in ids)
+
+# Example usage
+tokenizer = BPETokenizer(merges, vocab)
+ids = tokenizer.encode("lowest")    # e.g., [low_id, est_id]
+text = tokenizer.decode(ids)        # "lowest"
+</code></pre>
+
+      <h3>GPT-2 BPE: Byte-Level Foundation</h3>
+
+      <p>GPT-2 introduced <strong>byte-level BPE</strong> with a vocabulary of 50,257 tokens. Instead of starting from Unicode characters (which number in the hundreds of thousands), it starts from the 256 byte values. Every possible byte sequence can be represented, so there are never unknown tokens — even binary data or exotic scripts are tokenizable. The byte-level approach also avoids the need for language-specific preprocessing. GPT-2's tokenizer operates directly on UTF-8 encoded bytes.</p>
+
+      <h3>Tiktoken (GPT-3/4)</h3>
+
+      <p>OpenAI's tiktoken library implements BPE for GPT-3.5/4 using the <strong>cl100k_base</strong> vocabulary (100,256 tokens) and GPT-4o uses <strong>o200k_base</strong> (200,019 tokens). Larger vocabularies improve compression (fewer tokens per text), which means more content fits in the context window. The o200k_base vocabulary is particularly optimized for multilingual text and code, reducing the "token tax" that non-English languages pay with smaller vocabularies.</p>
+
+      <h3>Fertility: The Multilingual Cost</h3>
+
+      <p><strong>Fertility</strong> is the average number of tokens per word for a given language. English text typically has fertility around 1.3 with GPT-4's tokenizer — most words are one token, some common words need two. But languages with different scripts pay a heavy tax: Chinese might have fertility 2-3× higher (each character becomes multiple tokens), and low-resource languages can see 5-7× the token count for the same semantic content. This means non-English users burn through their context window faster and get slower responses, creating a practical inequality in model utility. Modern tokenizers (o200k_base, LLaMA-3's 128K vocab) reduce this gap by allocating more vocabulary entries to non-English scripts.</p>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 220" xmlns="http://www.w3.org/2000/svg">
+          <!-- Bar chart: fertility by language -->
+          <text x="400" y="22" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="600" fill="#1A1A18">Token Fertility by Language (GPT-4 cl100k_base)</text>
+
+          <!-- Baseline -->
+          <line x1="140" y1="190" x2="760" y2="190" stroke="#E5E3DC" stroke-width="1"/>
+
+          <!-- English -->
+          <rect x="160" y="130" width="70" height="60" rx="4" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1.5"/>
+          <text x="195" y="124" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#0F6E56">1.3</text>
+          <text x="195" y="208" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#5C5B56">English</text>
+
+          <!-- Spanish -->
+          <rect x="260" y="115" width="70" height="75" rx="4" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1.5"/>
+          <text x="295" y="109" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#0F6E56">1.7</text>
+          <text x="295" y="208" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#5C5B56">Spanish</text>
+
+          <!-- Chinese -->
+          <rect x="360" y="80" width="70" height="110" rx="4" fill="#FAEEDA" stroke="#EF9F27" stroke-width="1.5"/>
+          <text x="395" y="74" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#854F0B">2.5</text>
+          <text x="395" y="208" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#5C5B56">Chinese</text>
+
+          <!-- Hindi -->
+          <rect x="460" y="60" width="70" height="130" rx="4" fill="#FAEEDA" stroke="#EF9F27" stroke-width="1.5"/>
+          <text x="495" y="54" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#854F0B">3.2</text>
+          <text x="495" y="208" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#5C5B56">Hindi</text>
+
+          <!-- Myanmar -->
+          <rect x="560" y="38" width="70" height="152" rx="4" fill="#FAECE7" stroke="#F0997B" stroke-width="1.5"/>
+          <text x="595" y="32" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#993C1D">5.8</text>
+          <text x="595" y="208" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#5C5B56">Myanmar</text>
+
+          <!-- Khmer -->
+          <rect x="660" y="28" width="70" height="162" rx="4" fill="#FAECE7" stroke="#F0997B" stroke-width="1.5"/>
+          <text x="695" y="22" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#993C1D">7.1</text>
+          <text x="695" y="208" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#5C5B56">Khmer</text>
+
+          <!-- Reference line at 1.0 -->
+          <line x1="140" y1="175" x2="760" y2="175" stroke="#9C9A94" stroke-width="0.5" stroke-dasharray="4 3"/>
+          <text x="134" y="179" text-anchor="end" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">1.0</text>
+        </svg>
+        <figcaption>Figure 5.3 — Token fertility (average tokens per word) across languages with GPT-4's cl100k_base tokenizer. English is efficiently tokenized at ~1.3 tokens/word (teal). Languages with non-Latin scripts like Chinese and Hindi require 2-3× more tokens (amber). Low-resource scripts like Myanmar and Khmer suffer 5-7× inflation (coral), dramatically reducing effective context window size.</figcaption>
+      </figure>
+    </section>
+
+    <!-- ================================================================== -->
+    <!-- SECTION 3: WORDPIECE AND SENTENCEPIECE                             -->
+    <!-- ================================================================== -->
+    <section class="chapter-section" id="wordpiece-sentencepiece">
+      <h2>WordPiece and SentencePiece</h2>
+
+      <p>BPE is not the only subword algorithm. Two alternatives — WordPiece and SentencePiece — are used in major models and offer different trade-offs in how they construct vocabularies and handle diverse scripts.</p>
+
+      <h3>WordPiece</h3>
+
+      <p><strong>WordPiece</strong> (Schuster and Nakajima, 2012) is similar to BPE but selects merges to maximize the likelihood of the training data under a unigram language model, rather than simply picking the most frequent pair. Formally, it merges the pair $(a, b)$ that maximizes $\frac{\text{freq}(ab)}{\text{freq}(a) \cdot \text{freq}(b)}$ — a pointwise mutual information criterion. In practice, the resulting vocabularies are similar to BPE's, but WordPiece tends to prefer merges that reduce the most uncertainty. BERT uses WordPiece with a vocabulary of 30,522 tokens.</p>
+
+      <h3>The ## Prefix Convention</h3>
+
+      <p>BERT's tokenizer marks continuation subwords with "##". The word "playing" tokenizes as ["play", "##ing"]. The "##" prefix signals that this piece attaches to the preceding token rather than starting a new word. This convention lets the model distinguish between "##ing" as a suffix and a hypothetical word that starts with "ing." Without this marker, the model would have no way to know whether a token begins a new word or continues the previous one.</p>
+
+      <h3>SentencePiece</h3>
+
+      <p><strong>SentencePiece</strong> (Kudo and Richardson, 2018) takes a different approach: it operates directly on raw text, treating whitespace as a regular character (represented as "▁"). This is language-agnostic — no pre-tokenization rules are needed for any language. The sentence "I love NLP" becomes ["▁I", "▁love", "▁NL", "P"] — the "▁" encodes the whitespace, allowing perfect reconstruction of the original text including spaces. This design is critical for languages like Chinese and Japanese that don't use whitespace to separate words.</p>
+
+      <h3>Unigram Language Model Tokenizer</h3>
+
+      <p>SentencePiece supports both BPE and a <strong>unigram language model</strong> approach. Instead of building up from characters (bottom-up), the unigram method starts with a large initial vocabulary (often 1M+ candidates) and iteratively removes tokens whose removal least hurts the data likelihood. This top-down approach can produce slightly better compression than BPE for some languages, and it naturally supports multiple tokenizations of the same input — useful for training-time data augmentation. T5 uses the unigram tokenizer within SentencePiece.</p>
+
+      <h3>Modern Usage and Comparison</h3>
+
+      <p>LLaMA, LLaMA-2, and Gemma use SentencePiece with BPE. LLaMA-3 switched to tiktoken (byte-level BPE) with a 128K vocabulary. T5 uses SentencePiece with the unigram model. The choice between these is largely engineering preference — the quality differences are small compared to the impact of vocabulary size. What matters more is whether the vocabulary is large enough to cover the target languages efficiently.</p>
+    </section>
+
+    <!-- ================================================================== -->
+    <!-- SECTION 4: BYTE-LEVEL TOKENIZATION                                 -->
+    <!-- ================================================================== -->
+    <section class="chapter-section" id="byte-level-tokenization">
+      <h2>Byte-Level Tokenization</h2>
+
+      <p>The dream of tokenization is universality: a single tokenizer that handles any language, any script, any domain — including code, math, and binary data — without special cases. Byte-level approaches come closest to this ideal.</p>
+
+      <h3>Byte-Level BPE</h3>
+
+      <p>GPT-2 pioneered byte-level BPE: instead of starting from Unicode characters, BPE starts from the 256 raw byte values. Any UTF-8 encoded text is a sequence of bytes, so any string — English, Chinese, emoji, code, binary — can be tokenized without special handling. No unknown tokens, ever. The base vocabulary is just 256 entries, and BPE merges build up to the full vocabulary from there.</p>
+
+      <h3>Compression vs Vocabulary Size Trade-off</h3>
+
+      <p>A larger vocabulary means better compression (fewer tokens per text) but more embedding parameters (the embedding table is $V \times d_\text{model}$). The relationship is approximately logarithmic: doubling the vocabulary might improve compression by 10-15%, not 100%. At some point, the marginal compression gain from adding another token is smaller than the cost of the extra embedding parameters and the dilution of training signal for rare tokens.</p>
+
+      <table>
+        <thead>
+          <tr>
+            <th>Model</th>
+            <th>Vocabulary Size</th>
+            <th>Tokenizer Type</th>
+            <th>Approx. Compression</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>BERT</td>
+            <td>30,522</td>
+            <td>WordPiece</td>
+            <td>~3.5 chars/token</td>
+          </tr>
+          <tr>
+            <td>GPT-2</td>
+            <td>50,257</td>
+            <td>Byte-level BPE</td>
+            <td>~3.7 chars/token</td>
+          </tr>
+          <tr>
+            <td>LLaMA-2</td>
+            <td>32,000</td>
+            <td>SentencePiece BPE</td>
+            <td>~3.4 chars/token</td>
+          </tr>
+          <tr>
+            <td>GPT-4</td>
+            <td>100,256</td>
+            <td>Byte-level BPE (tiktoken)</td>
+            <td>~4.2 chars/token</td>
+          </tr>
+          <tr>
+            <td>LLaMA-3</td>
+            <td>128,256</td>
+            <td>Byte-level BPE (tiktoken)</td>
+            <td>~4.4 chars/token</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>Byte Fallback in SentencePiece</h3>
+
+      <p>SentencePiece supports a <strong>byte fallback</strong> mode: if a character cannot be encoded by any learned token, it is decomposed into its UTF-8 byte representation using special byte tokens (&lt;0x41&gt;, &lt;0x42&gt;, etc.). This gives SentencePiece the same "no unknowns" guarantee as byte-level BPE while keeping the primary vocabulary character-based for common scripts. LLaMA and LLaMA-2 use this approach — the vocabulary is mostly character-based for efficiency, but byte tokens serve as a universal fallback for anything unexpected.</p>
+    </section>
+
+    <!-- ================================================================== -->
+    <!-- SECTION 5: TOKEN EMBEDDINGS                                        -->
+    <!-- ================================================================== -->
+    <section class="chapter-section" id="token-embeddings">
+      <h2>Token Embeddings</h2>
+
+      <p>Tokenization produces a sequence of discrete integer IDs. The Transformer needs continuous vectors. The embedding table bridges this gap — it maps each token ID to a learned $d_\text{model}$-dimensional vector that encodes the token's meaning, usage patterns, and relationships to other tokens.</p>
+
+      <h3>The Embedding Table</h3>
+
+      <p>The embedding table is a matrix $E \in \mathbb{R}^{V \times d_\text{model}}$ where $V$ is the vocabulary size and $d_\text{model}$ is the model dimension. Looking up token $i$ retrieves row $i$ of this matrix — a $d_\text{model}$-dimensional vector. This is the token's representation before any Transformer processing. For LLaMA-7B ($V = 32000$, $d_\text{model} = 4096$), the embedding table has 131 million parameters — about 2% of the model's total.</p>
+
+      <p>Mathematically, the lookup is equivalent to multiplying a one-hot vector by the embedding matrix: if $\mathbf{e}_i$ is the one-hot vector with a 1 at position $i$, then $\mathbf{e}_i^\top E$ (matrix multiply, $\mathbb{R}^{1 \times V} \times \mathbb{R}^{V \times d_\text{model}} \to \mathbb{R}^{1 \times d_\text{model}}$) retrieves row $i$. In practice, this is implemented as an index operation, not a matrix multiplication — but the gradient flows as if it were a matmul, which is how the embedding rows are learned.</p>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 260" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="ch05-arr" viewBox="0 0 10 10" refX="9" refY="5"
+              markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+              <path d="M1 1L9 5L1 9" fill="none" stroke="context-stroke"
+                stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </marker>
+          </defs>
+
+          <!-- Token IDs -->
+          <text x="80" y="30" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#5C5B56">Token IDs:</text>
+          <rect x="140" y="14" width="50" height="30" rx="4" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="1"/>
+          <text x="165" y="34" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#5C5B56">1842</text>
+          <rect x="200" y="14" width="50" height="30" rx="4" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="1"/>
+          <text x="225" y="34" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#5C5B56">489</text>
+          <rect x="260" y="14" width="50" height="30" rx="4" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="1"/>
+          <text x="285" y="34" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#5C5B56">9157</text>
+
+          <!-- Arrows down to embedding table -->
+          <line x1="165" y1="44" x2="165" y2="75" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch05-arr)"/>
+          <line x1="225" y1="44" x2="225" y2="75" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch05-arr)"/>
+          <line x1="285" y1="44" x2="285" y2="75" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch05-arr)"/>
+
+          <!-- Embedding table -->
+          <rect x="370" y="80" width="320" height="160" rx="6" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <!-- Row highlights -->
+          <rect x="376" y="95" width="308" height="14" rx="2" fill="#534AB7" opacity="0.1"/>
+          <rect x="376" y="115" width="308" height="14" rx="2" fill="#534AB7" opacity="0.3"/>
+          <rect x="376" y="135" width="308" height="14" rx="2" fill="#534AB7" opacity="0.05"/>
+          <rect x="376" y="155" width="308" height="14" rx="2" fill="#534AB7" opacity="0.15"/>
+          <rect x="376" y="175" width="308" height="14" rx="2" fill="#534AB7" opacity="0.05"/>
+          <rect x="376" y="195" width="308" height="14" rx="2" fill="#534AB7" opacity="0.08"/>
+          <rect x="376" y="215" width="308" height="14" rx="2" fill="#534AB7" opacity="0.05"/>
+
+          <text x="530" y="165" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="500" fill="#534AB7">E ∈ ℝ^(V × d_model)</text>
+
+          <!-- Dimension labels -->
+          <text x="530" y="75" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">d_model columns</text>
+          <text x="362" y="165" text-anchor="end" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">V rows</text>
+
+          <!-- "lookup" label -->
+          <text x="225" y="70" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">lookup row</text>
+
+          <!-- Output vectors -->
+          <line x1="165" y1="95" x2="370" y2="95" stroke="#534AB7" stroke-width="1.5" stroke-dasharray="4 3"/>
+          <line x1="225" y1="115" x2="370" y2="115" stroke="#534AB7" stroke-width="1.5" stroke-dasharray="4 3"/>
+          <line x1="285" y1="155" x2="370" y2="155" stroke="#534AB7" stroke-width="1.5" stroke-dasharray="4 3"/>
+
+          <text x="165" y="95" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#534AB7">row 1842</text>
+          <text x="225" y="130" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#534AB7">row 489</text>
+          <text x="280" y="170" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#534AB7">row 9157</text>
+        </svg>
+        <figcaption>Figure 5.4 — The embedding table as a lookup operation. Each token ID selects a row from the embedding matrix $E$. The retrieved rows (highlighted with varying purple opacity) are the $d_\text{model}$-dimensional vectors that enter the Transformer. The embedding table is a learned parameter, trained end-to-end with the rest of the model.</figcaption>
+      </figure>
+
+      <p>The following PyTorch implementation shows the embedding lookup with $\sqrt{d_\text{model}}$ scaling and optional weight tying to the output projection.</p>
+
+      <pre><code class="language-python">
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+class TokenEmbedding(nn.Module):
+    """Token embedding with optional weight tying to the output projection."""
+    def __init__(self, vocab_size, d_model, tie_weights=True):
+        super().__init__()
+        self.embedding = nn.Embedding(vocab_size, d_model)  # (vocab_size, d_model)
+        self.d_model = d_model
+        self.tie_weights = tie_weights
+        if not tie_weights:
+            self.output_proj = nn.Linear(d_model, vocab_size, bias=False)
+
+    def embed(self, token_ids):
+        """Look up embeddings: (batch, seq_len) -> (batch, seq_len, d_model)."""
+        return self.embedding(token_ids) * (self.d_model ** 0.5)  # scale by sqrt(d_model)
+
+    def to_logits(self, hidden_states):
+        """Project hidden states to vocabulary logits for next-token prediction."""
+        if self.tie_weights:
+            # Reuse embedding matrix as output projection (weight tying)
+            # hidden_states: (batch, seq_len, d_model)
+            # embedding.weight: (vocab_size, d_model)
+            return hidden_states @ self.embedding.weight.T  # (batch, seq_len, vocab_size)
+        return self.output_proj(hidden_states)
+
+# Usage in a language model
+emb = TokenEmbedding(vocab_size=32000, d_model=4096, tie_weights=True)
+x = emb.embed(token_ids)           # (B, S) -> (B, S, 4096)
+# ... transformer layers ...
+logits = emb.to_logits(hidden)      # (B, S, 4096) -> (B, S, 32000)
+loss = F.cross_entropy(logits.view(-1, 32000), targets.view(-1))
+</code></pre>
+
+      <h3>Tied Input/Output Embeddings</h3>
+
+      <p>Press and Wolf (2017) showed that sharing the embedding matrix between the input embedding layer and the output projection (the linear layer before the final softmax) consistently helps. The output projection maps from $d_\text{model}$ back to vocabulary size — this is exactly $E^\top$ if we tie the weights. Tying saves $V \times d_\text{model}$ parameters and acts as a regularizer by forcing the model to use the same representation space for both input and output. GPT-2, LLaMA, and most modern models tie embeddings.</p>
+
+      <h3>Embedding Initialization and Scaling</h3>
+
+      <p>Embeddings are typically initialized from $\mathcal{N}(0, 0.02^2)$ or $\mathcal{N}(0, 1/\sqrt{d_\text{model}})$. The original Transformer multiplied embeddings by $\sqrt{d_\text{model}}$ before adding positional encodings, scaling them up so they are not dominated by the positional signal. This scaling is essential: without it, the positional encoding (which has unit variance by construction) would overwhelm the embedding signal in early training.</p>
+
+      <h3>The Embedding Dimension Choice</h3>
+
+      <p>Common values of $d_\text{model}$ follow a power-of-two progression: 512 (original Transformer), 768 (BERT-base, GPT-2 small), 1024 (BERT-large), 2048, 4096 (LLaMA-7B), 8192 (LLaMA-70B). Larger dimensions give each token more expressive capacity but cost more in parameters and compute. Scaling laws suggest that model width and depth should grow together — a very wide but shallow model or a narrow but deep model are both suboptimal for a fixed parameter budget.</p>
+
+      <h3>Token Frequency and Embedding Quality</h3>
+
+      <p>Tokens that appear frequently in training data develop rich, well-separated embeddings because they receive many gradient updates. Rare tokens — unusual names, code snippets, non-Latin characters — receive few updates, and their embeddings remain close to their random initialization. This creates a quality gap: the model is far more capable at processing common tokens than rare ones.</p>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 280" xmlns="http://www.w3.org/2000/svg">
+          <text x="400" y="22" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="600" fill="#1A1A18">Embedding Space: Frequent vs Rare Tokens</text>
+
+          <!-- Frequent token cluster (well-separated) -->
+          <rect x="30" y="40" width="350" height="220" rx="10" fill="none" stroke="#5DCAA5" stroke-width="1" stroke-dasharray="5 4"/>
+          <text x="205" y="60" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#0F6E56">Frequent tokens: well-separated clusters</text>
+
+          <!-- Cluster 1: animals -->
+          <circle cx="80" cy="120" r="4" fill="#0F6E56"/>
+          <text x="92" y="124" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#0F6E56">cat</text>
+          <circle cx="110" cy="135" r="4" fill="#0F6E56"/>
+          <text x="122" y="139" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#0F6E56">dog</text>
+          <circle cx="90" cy="150" r="4" fill="#0F6E56"/>
+          <text x="102" y="154" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#0F6E56">bird</text>
+
+          <!-- Cluster 2: countries -->
+          <circle cx="220" cy="110" r="4" fill="#534AB7"/>
+          <text x="235" y="114" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#534AB7">France</text>
+          <circle cx="250" cy="130" r="4" fill="#534AB7"/>
+          <text x="265" y="134" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#534AB7">Germany</text>
+          <circle cx="230" cy="148" r="4" fill="#534AB7"/>
+          <text x="245" y="152" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#534AB7">Italy</text>
+
+          <!-- Cluster 3: verbs -->
+          <circle cx="150" cy="200" r="4" fill="#185FA5"/>
+          <text x="165" y="204" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#185FA5">run</text>
+          <circle cx="180" cy="215" r="4" fill="#185FA5"/>
+          <text x="195" y="219" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#185FA5">walk</text>
+          <circle cx="200" cy="198" r="4" fill="#185FA5"/>
+          <text x="215" y="202" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#185FA5">jump</text>
+
+          <!-- Rare token region (clumped near origin) -->
+          <rect x="430" y="40" width="340" height="220" rx="10" fill="none" stroke="#F0997B" stroke-width="1" stroke-dasharray="5 4"/>
+          <text x="600" y="60" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#993C1D">Rare tokens: clumped near initialization</text>
+
+          <!-- Random-looking scatter near center -->
+          <circle cx="570" cy="150" r="3" fill="#993C1D" opacity="0.6"/>
+          <text x="585" y="154" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#993C1D">xQ7z</text>
+          <circle cx="590" cy="160" r="3" fill="#993C1D" opacity="0.6"/>
+          <text x="605" y="164" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#993C1D">▁Ωmega</text>
+          <circle cx="610" cy="145" r="3" fill="#993C1D" opacity="0.6"/>
+          <text x="625" y="149" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#993C1D">blobfish</text>
+          <circle cx="580" cy="138" r="3" fill="#993C1D" opacity="0.6"/>
+          <text x="595" y="134" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#993C1D">tl;dr</text>
+          <circle cx="600" cy="170" r="3" fill="#993C1D" opacity="0.6"/>
+          <text x="615" y="174" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#993C1D">KHTML</text>
+          <circle cx="565" cy="168" r="3" fill="#993C1D" opacity="0.6"/>
+          <circle cx="615" cy="155" r="3" fill="#993C1D" opacity="0.6"/>
+          <circle cx="585" cy="178" r="3" fill="#993C1D" opacity="0.6"/>
+
+          <!-- Labels -->
+          <text x="600" y="210" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">Few gradient updates → embeddings</text>
+          <text x="600" y="224" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">remain near random init</text>
+
+          <!-- Annotation -->
+          <text x="400" y="274" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#5C5B56">Frequent tokens develop semantic structure (clusters, analogies). Rare tokens stay noisy.</text>
+        </svg>
+        <figcaption>Figure 5.5 — Schematic of embedding space quality. Frequent tokens (left, teal/purple/blue) form semantically meaningful clusters after training — animals near animals, countries near countries. Rare tokens (right, coral) receive few gradient updates and remain clumped near their random initialization, with little semantic structure.</figcaption>
+      </figure>
+
+      <p>Techniques like vocabulary pruning (removing unused tokens) and adaptive input representations (giving common tokens more dimensions) can partially address this, but the fundamental tension between vocabulary coverage and per-token training signal remains.</p>
+    </section>
+
+    <!-- ================================================================== -->
+    <!-- SECTION 6: SPECIAL TOKENS                                          -->
+    <!-- ================================================================== -->
+    <section class="chapter-section" id="special-tokens">
+      <h2>Special Tokens</h2>
+
+      <p>Beyond content tokens, every model reserves a handful of IDs for control signals that structure the input, mark boundaries, and coordinate different phases of processing. These special tokens are critical infrastructure — get them wrong and the model misinterprets its input.</p>
+
+      <h3>Encoder-Style Special Tokens</h3>
+
+      <p>BERT introduced three special tokens that became standard for encoder models. <strong>[CLS]</strong> (classification) is prepended to every input and serves as a sequence-level representation after encoding — classification heads read from [CLS]'s final hidden state. <strong>[SEP]</strong> (separator) marks the boundary between sentence pairs in tasks like natural language inference. <strong>[MASK]</strong> is used during pre-training to mark positions where the model must predict the original token.</p>
+
+      <h3>Decoder-Style Special Tokens</h3>
+
+      <p>Autoregressive models use different conventions. <strong>&lt;BOS&gt;</strong> (beginning of sequence) marks the start of generation — the model's first prediction is conditioned on this token alone. <strong>&lt;EOS&gt;</strong> (end of sequence) signals that generation should stop. <strong>&lt;PAD&gt;</strong> fills sequences to a uniform length within a batch; padding tokens are masked out in the attention computation so they don't influence predictions.</p>
+
+      <h3>Modern Special Tokens</h3>
+
+      <p>As models have become more capable, the special token vocabulary has grown. Chat models add tokens for turn boundaries: <strong>&lt;|im_start|&gt;</strong> and <strong>&lt;|im_end|&gt;</strong> delimit messages in ChatGPT's format. System prompt tokens mark instructions that should be treated differently from user content. Tool call delimiters bracket structured outputs like function calls. Multimodal models add <strong>&lt;image&gt;</strong> placeholder tokens where visual encodings will be inserted. Each special token must be added to the vocabulary, assigned an embedding, and given appropriate handling in the attention mask.</p>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 180" xmlns="http://www.w3.org/2000/svg">
+          <!-- Example tokenized chat message -->
+          <text x="400" y="22" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="600" fill="#1A1A18">Tokenized Chat Input with Special Tokens</text>
+
+          <!-- Tokens in a row -->
+          <rect x="30" y="45" width="80" height="32" rx="5" fill="#FAEEDA" stroke="#EF9F27" stroke-width="1.5"/>
+          <text x="70" y="66" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="600" fill="#854F0B">&lt;|system|&gt;</text>
+
+          <rect x="118" y="45" width="104" height="32" rx="5" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="1"/>
+          <text x="170" y="66" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#5C5B56">You are helpful</text>
+
+          <rect x="230" y="45" width="90" height="32" rx="5" fill="#FAEEDA" stroke="#EF9F27" stroke-width="1.5"/>
+          <text x="275" y="66" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="600" fill="#854F0B">&lt;|im_end|&gt;</text>
+
+          <rect x="328" y="45" width="66" height="32" rx="5" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1.5"/>
+          <text x="361" y="66" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="600" fill="#0F6E56">&lt;|user|&gt;</text>
+
+          <rect x="402" y="45" width="148" height="32" rx="5" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="1"/>
+          <text x="476" y="66" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#5C5B56">What is attention?</text>
+
+          <rect x="558" y="45" width="90" height="32" rx="5" fill="#FAEEDA" stroke="#EF9F27" stroke-width="1.5"/>
+          <text x="603" y="66" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="600" fill="#854F0B">&lt;|im_end|&gt;</text>
+
+          <rect x="656" y="45" width="90" height="32" rx="5" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <text x="701" y="66" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="600" fill="#534AB7">&lt;|assistant|&gt;</text>
+
+          <!-- Legend below -->
+          <rect x="120" y="110" width="14" height="14" rx="3" fill="#FAEEDA" stroke="#EF9F27" stroke-width="1"/>
+          <text x="142" y="122" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#5C5B56">Control / delimiter tokens</text>
+
+          <rect x="330" y="110" width="14" height="14" rx="3" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="352" y="122" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#5C5B56">Role markers</text>
+
+          <rect x="490" y="110" width="14" height="14" rx="3" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="1"/>
+          <text x="512" y="122" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#5C5B56">Content tokens</text>
+
+          <rect x="630" y="110" width="14" height="14" rx="3" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1"/>
+          <text x="652" y="122" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#5C5B56">Generation start</text>
+
+          <text x="400" y="160" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">The model generates tokens only after the &lt;|assistant|&gt; marker. Everything before is the prompt.</text>
+        </svg>
+        <figcaption>Figure 5.6 — A tokenized chat input showing special tokens. Control tokens (amber) delimit turns and mark system instructions. Role markers (teal, purple) identify who is speaking. Content tokens (gray) carry the actual text. The model generates only after the &lt;|assistant|&gt; token — everything before is the conditioning prompt.</figcaption>
+      </figure>
+
+      <div class="callout callout-insight">
+        <div class="callout-title">Key Insight</div>
+        <p>Tokenization is the most under-appreciated design decision in modern LLMs. A poor tokenizer can cost a model 30-50% of its effective context window for non-English languages, fragment code in semantically meaningless ways, and create artifacts where common phrases split across token boundaries receive inconsistent treatment. The shift toward larger, more multilingual vocabularies (100K-200K tokens) is one of the quietest but most impactful improvements in recent model generations.</p>
+      </div>
+
+      <p>This end-to-end pipeline ties everything together: tokenize raw text, prepend and append special tokens, pad to uniform length, build the attention mask, and produce embeddings ready for the Transformer.</p>
+
+      <pre><code class="language-python">
+import torch
+import torch.nn as nn
+
+class TextPipeline:
+    """End-to-end: raw text -> tokenized + padded batch -> embeddings."""
+    def __init__(self, tokenizer, d_model, max_len=512,
+                 pad_id=0, cls_id=101, sep_id=102):
+        self.tokenizer = tokenizer
+        self.max_len = max_len
+        self.pad_id = pad_id
+        self.cls_id = cls_id
+        self.sep_id = sep_id
+        self.embedding = nn.Embedding(tokenizer.vocab_size, d_model)
+        self.pos_embedding = nn.Embedding(max_len, d_model)
+
+    def tokenize_batch(self, texts):
+        """Tokenize a list of strings into padded tensors with attention masks."""
+        batch_ids = []
+        for text in texts:
+            ids = [self.cls_id] + self.tokenizer.encode(text) + [self.sep_id]
+            ids = ids[:self.max_len]                          # truncate
+            batch_ids.append(ids)
+
+        # Pad to longest sequence in batch
+        max_len = max(len(ids) for ids in batch_ids)
+        padded = [ids + [self.pad_id] * (max_len - len(ids)) for ids in batch_ids]
+
+        input_ids = torch.tensor(padded)                      # (batch, seq_len)
+        attention_mask = (input_ids != self.pad_id).long()     # (batch, seq_len)
+        return input_ids, attention_mask
+
+    def embed(self, input_ids):
+        """Convert token ids to embeddings with positional encoding."""
+        positions = torch.arange(input_ids.size(1), device=input_ids.device)
+        tok_emb = self.embedding(input_ids)                   # (batch, seq_len, d_model)
+        pos_emb = self.pos_embedding(positions)               # (seq_len, d_model)
+        return tok_emb + pos_emb                              # (batch, seq_len, d_model)
+
+# Full pipeline
+input_ids, mask = pipeline.tokenize_batch(["The cat sat.", "Hello world."])
+embeddings = pipeline.embed(input_ids)  # ready for transformer layers
+</code></pre>
+    </section>
+
+  </article>
+
+  <footer class="chapter-footer">
+    <div class="footer-nav">
+      <a href="ch04.html">&larr; Previous: Inside the Transformer Block</a>
+      <a href="ch06.html">Next: Pre-training Fundamentals &rarr;</a>
+    </div>
+  </footer>
+
+</body>
+</html>

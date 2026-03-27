@@ -1,0 +1,993 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Chapter 10: Scaling Laws and Emergent Abilities — Transformer Research Book</title>
+  <link rel="stylesheet" href="../assets/style.css">
+  <link rel="stylesheet" href="../assets/math.css">
+  <link rel="stylesheet" href="../assets/prism.css">
+  <!-- KaTeX for math rendering -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"
+    onload="renderMathInElement(document.body, {
+      delimiters: [
+        {left: '$$', right: '$$', display: true},
+        {left: '$', right: '$', display: false}
+      ]
+    })">
+  </script>
+  <!-- Prism for code blocks -->
+  <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/prism.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-python.min.js"></script>
+</head>
+<body>
+  <nav class="chapter-nav">
+    <a href="../index.html" class="nav-home">← Table of Contents</a>
+    <span class="nav-chapter">Chapter 10</span>
+    <div style="display:flex; align-items:center; gap:1rem;">
+      <button class="theme-toggle" onclick="toggleTheme()" aria-label="Toggle dark mode">
+        <span class="icon-moon">&#9789;</span><span class="icon-sun">&#9788;</span>
+      </button>
+      <a href="ch11.html" class="nav-next">Next Chapter →</a>
+    </div>
+  </nav>
+  <script>
+    function toggleTheme() {
+      document.documentElement.classList.toggle('dark');
+      localStorage.setItem('theme', document.documentElement.classList.contains('dark') ? 'dark' : 'light');
+    }
+    if (localStorage.getItem('theme') === 'dark') document.documentElement.classList.add('dark');
+  </script>
+
+  <article class="chapter">
+
+    <header class="chapter-header">
+      <div class="chapter-number">Chapter 10</div>
+      <h1 class="chapter-title">Scaling Laws and Emergent Abilities</h1>
+      <p class="chapter-lead">In 2020, a team at OpenAI plotted language model loss against parameter count on a log-log scale and found a straight line. That line — a power law — meant that the performance of next-token prediction was governed by simple mathematical relationships, not unpredictable alchemy. Double the parameters, and loss drops by a predictable amount. Double the data, same story. Double the compute, same again. These scaling laws transformed deep learning from an empirical art into something closer to engineering: you can now predict, before training a model, roughly how well it will perform. But scaling laws also revealed something they could not predict — that certain abilities appear suddenly and without warning once models cross an invisible threshold. By the end of this chapter you will understand the Kaplan and Chinchilla scaling laws, why modern models like LLaMA deliberately violate them, what emergent abilities are (and whether they are real), and how these laws generalize across vision, code, and scientific domains.</p>
+    </header>
+
+    <!-- ================================================================== -->
+    <!-- SECTION 1: KAPLAN SCALING LAWS                                      -->
+    <!-- ================================================================== -->
+    <section class="chapter-section" id="kaplan-scaling-laws">
+      <h2>The Kaplan et al. (2020) Scaling Laws</h2>
+
+      <p>Before scaling laws, training a large language model was a series of expensive guesses. How many parameters should the model have? How much data should you train on? How long should you train? Each combination required actually running the experiment — weeks of GPU time — to find out if it worked. Kaplan et al. changed this by showing that loss follows clean power law relationships with three variables: the number of model parameters $N$, the number of training tokens $D$, and the total training compute $C$.</p>
+
+      <h3>Power Laws in Log-Log Space</h3>
+
+      <p>A power law takes the form $L(x) = a \cdot x^{-\alpha}$, where $\alpha$ is the scaling exponent. The critical property: in a log-log plot, this is a straight line with slope $-\alpha$. Kaplan et al. fit three independent power laws on decoder-only Transformer language models (the GPT architecture from Chapter 8):</p>
+
+      $$L(N) = \left(\frac{N_c}{N}\right)^{\alpha_N}, \quad \alpha_N \approx 0.076$$
+
+      $$L(D) = \left(\frac{D_c}{D}\right)^{\alpha_D}, \quad \alpha_D \approx 0.095$$
+
+      $$L(C) = \left(\frac{C_c}{C}\right)^{\alpha_C}, \quad \alpha_C \approx 0.050$$
+
+      <p>Here $N$ is the parameter count, $D$ is the number of training tokens, and $C$ is the total compute in FLOPs (matrix multiply, $\mathbb{R}^{m \times n} \times \mathbb{R}^{n \times p}$, costs $2mnp$ FLOPs). The constants $N_c$, $D_c$, $C_c$ are fitted intercepts. The exponents tell us that loss is most sensitive to data ($\alpha_D > \alpha_N > \alpha_C$) — each doubling of data reduces loss more than each doubling of parameters.</p>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 320" xmlns="http://www.w3.org/2000/svg">
+          <text x="400" y="22" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="600" fill="#1A1A18">Power Law Scaling: Loss vs. Parameters, Data, and Compute</text>
+
+          <!-- === Panel 1: Loss vs N === -->
+          <rect x="30" y="40" width="230" height="240" rx="6" fill="#FFFFFF" stroke="#E5E3DC" stroke-width="1"/>
+          <text x="145" y="60" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#534AB7">Loss vs. Parameters (N)</text>
+
+          <!-- Axes -->
+          <line x1="70" y1="250" x2="240" y2="250" stroke="#C8C6BE" stroke-width="1"/>
+          <line x1="70" y1="250" x2="70" y2="80" stroke="#C8C6BE" stroke-width="1"/>
+          <text x="155" y="272" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">log(N) →</text>
+          <text x="50" y="165" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94" transform="rotate(-90 50 165)">log(L) →</text>
+
+          <!-- Data points -->
+          <circle cx="90" cy="220" r="4" fill="#534AB7" opacity="0.7"/>
+          <circle cx="110" cy="205" r="4" fill="#534AB7" opacity="0.7"/>
+          <circle cx="130" cy="190" r="4" fill="#534AB7" opacity="0.7"/>
+          <circle cx="150" cy="172" r="4" fill="#534AB7" opacity="0.7"/>
+          <circle cx="170" cy="158" r="4" fill="#534AB7" opacity="0.7"/>
+          <circle cx="190" cy="142" r="4" fill="#534AB7" opacity="0.7"/>
+          <circle cx="210" cy="128" r="4" fill="#534AB7" opacity="0.7"/>
+          <circle cx="230" cy="115" r="4" fill="#534AB7" opacity="0.7"/>
+
+          <!-- Fit line -->
+          <line x1="85" y1="224" x2="235" y2="112" stroke="#534AB7" stroke-width="2" stroke-dasharray="4 3"/>
+          <text x="195" y="100" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#534AB7">α = 0.076</text>
+
+          <!-- === Panel 2: Loss vs D === -->
+          <rect x="285" y="40" width="230" height="240" rx="6" fill="#FFFFFF" stroke="#E5E3DC" stroke-width="1"/>
+          <text x="400" y="60" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#0F6E56">Loss vs. Data (D)</text>
+
+          <line x1="325" y1="250" x2="495" y2="250" stroke="#C8C6BE" stroke-width="1"/>
+          <line x1="325" y1="250" x2="325" y2="80" stroke="#C8C6BE" stroke-width="1"/>
+          <text x="410" y="272" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">log(D) →</text>
+          <text x="305" y="165" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94" transform="rotate(-90 305 165)">log(L) →</text>
+
+          <circle cx="345" cy="228" r="4" fill="#0F6E56" opacity="0.7"/>
+          <circle cx="365" cy="208" r="4" fill="#0F6E56" opacity="0.7"/>
+          <circle cx="385" cy="188" r="4" fill="#0F6E56" opacity="0.7"/>
+          <circle cx="405" cy="168" r="4" fill="#0F6E56" opacity="0.7"/>
+          <circle cx="425" cy="150" r="4" fill="#0F6E56" opacity="0.7"/>
+          <circle cx="445" cy="132" r="4" fill="#0F6E56" opacity="0.7"/>
+          <circle cx="465" cy="116" r="4" fill="#0F6E56" opacity="0.7"/>
+          <circle cx="485" cy="102" r="4" fill="#0F6E56" opacity="0.7"/>
+
+          <line x1="340" y1="232" x2="490" y2="98" stroke="#0F6E56" stroke-width="2" stroke-dasharray="4 3"/>
+          <text x="450" y="92" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#0F6E56">α = 0.095</text>
+
+          <!-- === Panel 3: Loss vs C === -->
+          <rect x="540" y="40" width="230" height="240" rx="6" fill="#FFFFFF" stroke="#E5E3DC" stroke-width="1"/>
+          <text x="655" y="60" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#993C1D">Loss vs. Compute (C)</text>
+
+          <line x1="580" y1="250" x2="750" y2="250" stroke="#C8C6BE" stroke-width="1"/>
+          <line x1="580" y1="250" x2="580" y2="80" stroke="#C8C6BE" stroke-width="1"/>
+          <text x="665" y="272" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">log(C) →</text>
+          <text x="560" y="165" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94" transform="rotate(-90 560 165)">log(L) →</text>
+
+          <circle cx="600" cy="225" r="4" fill="#993C1D" opacity="0.7"/>
+          <circle cx="620" cy="210" r="4" fill="#993C1D" opacity="0.7"/>
+          <circle cx="640" cy="195" r="4" fill="#993C1D" opacity="0.7"/>
+          <circle cx="660" cy="178" r="4" fill="#993C1D" opacity="0.7"/>
+          <circle cx="680" cy="162" r="4" fill="#993C1D" opacity="0.7"/>
+          <circle cx="700" cy="148" r="4" fill="#993C1D" opacity="0.7"/>
+          <circle cx="720" cy="135" r="4" fill="#993C1D" opacity="0.7"/>
+          <circle cx="740" cy="124" r="4" fill="#993C1D" opacity="0.7"/>
+
+          <line x1="595" y1="228" x2="745" y2="121" stroke="#993C1D" stroke-width="2" stroke-dasharray="4 3"/>
+          <text x="710" y="115" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#993C1D">α = 0.050</text>
+
+          <!-- Bottom note -->
+          <text x="400" y="306" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#5C5B56">All three relationships are straight lines in log-log space — the hallmark of a power law.</text>
+        </svg>
+        <figcaption>Figure 10.1 — Kaplan et al.'s three scaling laws. Loss follows a power law relationship with parameters N (purple), training data D (teal), and compute C (coral). Each panel is a log-log plot; the dashed lines are linear fits. The steeper slope for data (α=0.095) means loss is more sensitive to data than to parameters or compute.</figcaption>
+      </figure>
+
+      <p>These power laws held over *seven orders of magnitude* — from models with 768 parameters to models with 1.5 billion parameters. This remarkable regularity meant you could train a handful of small models, fit the power law, and predict the loss of a 100× larger model before spending the compute to train it.</p>
+
+      <p>A key caveat: Kaplan's laws were established entirely on <strong>decoder-only</strong> Transformer language models (the GPT architecture from Chapter 8). The loss being measured is cross-entropy on next-token prediction. For encoder-only models like BERT (Chapter 7), the masked language modeling loss is not directly comparable — it measures a different quantity (predicting masked tokens bidirectionally rather than predicting the next token causally). For encoder-decoder models like T5 (Chapter 9), the compute profile is different because of cross-attention overhead. The general principle — bigger models trained on more data get lower loss — applies universally, but the specific exponents depend on the architecture and training objective.</p>
+
+      <h3>Optimal Allocation: Where Should Compute Go?</h3>
+
+      <p>The most consequential finding was about how to *allocate* a fixed compute budget. If you have $C$ FLOPs to spend, you must choose how to split them between model size $N$ and data size $D$. The relationship between compute, parameters, and data is approximately:</p>
+
+      $$C \approx 6 \cdot N \cdot D$$
+
+      <p>The factor of 6 comes from: 2 FLOPs per multiply-add (scalar multiply, $a \cdot b$, then add to accumulator), times 3 for the forward pass, backward pass on activations, and backward pass on weights. This is a useful back-of-envelope approximation.</p>
+
+      <p>Kaplan's key finding: the optimal allocation heavily favors scaling model size over data.</p>
+
+      $$N_{\text{opt}} \propto C^{0.73}, \quad D_{\text{opt}} \propto C^{0.27}$$
+
+      <p>This means: if your compute budget doubles, you should increase the model size by $2^{0.73} \approx 1.66\times$ but only increase the data by $2^{0.27} \approx 1.21\times$. The implication was stark — build the biggest model you can afford and train it on a relatively small dataset. This advice directly shaped GPT-3: 175 billion parameters trained on only 300 billion tokens.</p>
+
+      <h3>IsoFLOP Curves</h3>
+
+      <p>An <strong>IsoFLOP curve</strong> shows loss as a function of model size $N$ for a fixed compute budget $C$. Since $D = C / (6N)$, choosing a larger model means training on fewer tokens. The resulting curve is U-shaped: too small a model wastes compute re-reading data it already learned from; too large a model is severely undertrained on too few tokens. The bottom of each U is the compute-optimal model size.</p>
+
+      <figure class="diagram-figure diagram-interactive">
+        <div class="widget-container" id="widget-ch10-isoflop">
+          <style>
+            #widget-ch10-isoflop .controls { display: flex; gap: 1.5rem; padding: 0.5rem 0 0.8rem; font-family: system-ui, -apple-system, sans-serif; }
+            #widget-ch10-isoflop .controls label { display: flex; align-items: center; gap: 8px; font-size: 13px; color: #5C5B56; }
+          </style>
+
+          <div class="controls">
+            <label>
+              Compute budget: 10^<span id="ch10-flop-display">20</span> FLOPs
+              <input type="range" min="18" max="24" step="1" value="20"
+                style="width:180px; accent-color:#534AB7;"
+                oninput="updateCh10IsoFlop(this.value)">
+            </label>
+            <span id="ch10-optimal-display" style="font-size:12px; color:#534AB7; font-weight:500;"></span>
+          </div>
+
+          <svg id="ch10-isoflop-svg" width="100%" viewBox="0 0 800 300">
+            <!-- Axes -->
+            <line x1="80" y1="260" x2="740" y2="260" stroke="#C8C6BE" stroke-width="1"/>
+            <line x1="80" y1="260" x2="80" y2="40" stroke="#C8C6BE" stroke-width="1"/>
+            <text x="410" y="290" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#9C9A94">Model size N (log scale)</text>
+            <text x="30" y="150" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#9C9A94" transform="rotate(-90 30 150)">Loss</text>
+
+            <!-- X axis labels -->
+            <text x="140" y="276" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">10M</text>
+            <text x="260" y="276" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">100M</text>
+            <text x="380" y="276" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">1B</text>
+            <text x="500" y="276" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">10B</text>
+            <text x="620" y="276" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">100B</text>
+            <text x="720" y="276" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">1T</text>
+
+            <!-- Background IsoFLOP curves (light) -->
+            <path id="ch10-curve-18" d="" stroke="#E5E3DC" stroke-width="1" fill="none"/>
+            <path id="ch10-curve-19" d="" stroke="#E5E3DC" stroke-width="1" fill="none"/>
+            <path id="ch10-curve-20" d="" stroke="#E5E3DC" stroke-width="1" fill="none"/>
+            <path id="ch10-curve-21" d="" stroke="#E5E3DC" stroke-width="1" fill="none"/>
+            <path id="ch10-curve-22" d="" stroke="#E5E3DC" stroke-width="1" fill="none"/>
+            <path id="ch10-curve-23" d="" stroke="#E5E3DC" stroke-width="1" fill="none"/>
+            <path id="ch10-curve-24" d="" stroke="#E5E3DC" stroke-width="1" fill="none"/>
+
+            <!-- Active curve (highlighted) -->
+            <path id="ch10-active-curve" d="" stroke="#534AB7" stroke-width="2.5" fill="none"/>
+
+            <!-- Optimal point -->
+            <circle id="ch10-opt-dot" cx="300" cy="150" r="6" fill="#534AB7" stroke="#EEEDFE" stroke-width="2"/>
+
+            <!-- Optimal line connecting all minima -->
+            <path id="ch10-opt-line" d="" stroke="#534AB7" stroke-width="1.5" stroke-dasharray="4 3" fill="none"/>
+
+            <!-- Optimal labels -->
+            <text id="ch10-opt-n-label" x="300" y="140" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#534AB7"></text>
+          </svg>
+
+          <p style="font-family:system-ui; font-size:13px; color:#9C9A94; font-style:italic; padding:0.5rem 0 0.5rem;" id="ch10-isoflop-obs">
+          </p>
+        </div>
+
+        <script>
+          (function() {
+            // Kaplan-style loss model: L(N, C) = (Nc/N)^aN + (Dc/D)^aD where D = C/(6N)
+            var aN = 0.076, aD = 0.095;
+            var Nc = 8.8e13, Dc = 5.4e13;
+            var Lmin = 1.5, Lmax = 5.0;
+
+            function lossKaplan(N, C) {
+              var D = C / (6 * N);
+              if (D < 1e6) return Lmax;
+              var lN = Math.pow(Nc / N, aN);
+              var lD = Math.pow(Dc / D, aD);
+              return Math.min(Lmax, lN + lD + 1.69);
+            }
+
+            function nToX(n) {
+              // Map log10(N) from 7 (10M) to 12 (1T) → x 100..720
+              var logN = Math.log10(n);
+              return 80 + (logN - 7) * (660 / 5);
+            }
+
+            function lToY(l) {
+              // Map loss 1.5..5.0 → y 240..50
+              return 260 - ((l - Lmin) / (Lmax - Lmin)) * 220;
+            }
+
+            function buildCurve(Cexp) {
+              var C = Math.pow(10, Cexp);
+              var points = [];
+              var bestN = 1e7, bestL = Lmax;
+              for (var logN = 7; logN <= 12; logN += 0.1) {
+                var N = Math.pow(10, logN);
+                if (6 * N > C) break;
+                var l = lossKaplan(N, C);
+                if (l < Lmin || l > Lmax) continue;
+                points.push({x: nToX(N), y: lToY(l), N: N, L: l});
+                if (l < bestL) { bestL = l; bestN = N; }
+              }
+              var d = points.map(function(p, i) {
+                return (i === 0 ? 'M' : 'L') + p.x.toFixed(1) + ' ' + p.y.toFixed(1);
+              }).join(' ');
+              return {d: d, bestN: bestN, bestL: bestL};
+            }
+
+            var optPoints = [];
+            for (var e = 18; e <= 24; e++) {
+              var c = buildCurve(e);
+              document.getElementById('ch10-curve-' + e).setAttribute('d', c.d);
+              optPoints.push({x: nToX(c.bestN), y: lToY(c.bestL)});
+            }
+            var optD = optPoints.map(function(p, i) {
+              return (i === 0 ? 'M' : 'L') + p.x.toFixed(1) + ' ' + p.y.toFixed(1);
+            }).join(' ');
+            document.getElementById('ch10-opt-line').setAttribute('d', optD);
+
+            window.updateCh10IsoFlop = function(val) {
+              val = parseInt(val);
+              document.getElementById('ch10-flop-display').textContent = val;
+
+              // Reset all curves to light
+              for (var e = 18; e <= 24; e++) {
+                document.getElementById('ch10-curve-' + e).setAttribute('stroke', '#E5E3DC');
+                document.getElementById('ch10-curve-' + e).setAttribute('stroke-width', '1');
+              }
+              // Highlight active
+              document.getElementById('ch10-curve-' + val).setAttribute('stroke', '#AFA9EC');
+              document.getElementById('ch10-curve-' + val).setAttribute('stroke-width', '1.5');
+
+              var c = buildCurve(val);
+              document.getElementById('ch10-active-curve').setAttribute('d', c.d);
+              document.getElementById('ch10-opt-dot').setAttribute('cx', nToX(c.bestN));
+              document.getElementById('ch10-opt-dot').setAttribute('cy', lToY(c.bestL));
+
+              var nStr = c.bestN >= 1e9 ? (c.bestN / 1e9).toFixed(1) + 'B' : (c.bestN / 1e6).toFixed(0) + 'M';
+              var D = Math.pow(10, val) / (6 * c.bestN);
+              var dStr = D >= 1e12 ? (D / 1e12).toFixed(1) + 'T' : D >= 1e9 ? (D / 1e9).toFixed(1) + 'B' : (D / 1e6).toFixed(0) + 'M';
+
+              document.getElementById('ch10-opt-n-label').textContent = 'N* = ' + nStr;
+              document.getElementById('ch10-opt-n-label').setAttribute('x', nToX(c.bestN));
+              document.getElementById('ch10-opt-n-label').setAttribute('y', lToY(c.bestL) - 12);
+
+              document.getElementById('ch10-optimal-display').textContent = 'Optimal: ' + nStr + ' params, ' + dStr + ' tokens';
+
+              document.getElementById('ch10-isoflop-obs').textContent =
+                'At 10^' + val + ' FLOPs, the optimal model has ~' + nStr + ' parameters trained on ~' + dStr +
+                ' tokens (D = C / 6N). Smaller models waste compute on redundant data; larger models are severely undertrained.';
+            };
+            updateCh10IsoFlop(20);
+          })();
+        </script>
+
+        <figcaption>Figure 10.2 — Interactive: IsoFLOP curves. Each curve shows loss vs. model size for a fixed compute budget. The U-shape means there is a single optimal model size for each budget (purple dot). The dashed line connects all optima, tracing the compute frontier. Move the slider to see how the optimal allocation shifts as the budget grows.</figcaption>
+      </figure>
+
+      <p>The IsoFLOP curves reveal the fundamental tension: at any compute budget, you are choosing a point on a U-shaped tradeoff. The left side (too-small models) wastes compute re-processing data the model has already learned. The right side (too-large models) wastes parameters that never see enough data to learn effectively. The optimal point balances these two failure modes.</p>
+
+      <p>Fitting a power law to your own training runs is straightforward. Given several (parameter count, final loss) pairs, a least-squares fit in log-space recovers the exponent:</p>
+
+<pre><code class="language-python">
+import torch
+
+# Empirical data: (parameter_count, final_loss) from training runs
+params = torch.tensor([1e6, 5e6, 1e7, 5e7, 1e8, 5e8])
+losses = torch.tensor([3.42, 2.98, 2.71, 2.35, 2.14, 1.87])
+
+# Power law: L = a * N^(-alpha)  =>  log(L) = log(a) - alpha * log(N)
+log_N = torch.log(params).unsqueeze(1)    # (6, 1)
+log_L = torch.log(losses)                  # (6,)
+# Solve [1, log(N)] @ [log(a), -alpha]^T = log(L) via least squares
+X = torch.cat([torch.ones_like(log_N), log_N], dim=1)  # (6, 2)
+coeffs = torch.linalg.lstsq(X, log_L).solution          # [log(a), -alpha]
+alpha = -coeffs[1].item()
+a = torch.exp(coeffs[0]).item()
+print(f"Fitted: L = {a:.2f} * N^(-{alpha:.4f})")
+# Predict loss for a 1B-parameter model:
+L_pred = a * (1e9 ** -alpha)
+print(f"Predicted loss at 1B params: {L_pred:.3f}")
+</code></pre>
+
+    </section>
+
+    <!-- ================================================================== -->
+    <!-- SECTION 2: CHINCHILLA SCALING LAWS                                  -->
+    <!-- ================================================================== -->
+    <section class="chapter-section" id="chinchilla-scaling-laws">
+      <h2>Chinchilla Scaling Laws (Hoffmann et al., 2022)</h2>
+
+      <p>Two years after Kaplan, a team at DeepMind ran a far more thorough experiment and reached a fundamentally different conclusion. Kaplan had recommended making models as large as possible within a compute budget. Hoffmann et al. showed that Kaplan's models were <em>massively undertrained</em> — given the same compute, you get lower loss by training a smaller model on more data.</p>
+
+      <h3>The Chinchilla Finding</h3>
+
+      <p>The critical methodological difference: Kaplan trained each model size for a fixed number of tokens and varied only the model size. Hoffmann et al. varied *both* model size and training duration, training over 400 models from 70M to 16B parameters on 5B to 500B tokens each. The result overturned Kaplan's allocation rule:</p>
+
+      <table>
+        <thead>
+          <tr><th></th><th>Kaplan (2020)</th><th>Chinchilla (2022)</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>$N_{\text{opt}} \propto$</td><td>$C^{0.73}$</td><td>$C^{0.50}$</td></tr>
+          <tr><td>$D_{\text{opt}} \propto$</td><td>$C^{0.27}$</td><td>$C^{0.50}$</td></tr>
+          <tr><td>Rule of thumb</td><td>Scale N fast, D slow</td><td>Scale N and D equally (~20 tokens per param)</td></tr>
+        </tbody>
+      </table>
+
+      <p>The Chinchilla rule of thumb is: for compute-optimal training, you need approximately <strong>20 tokens per parameter</strong>. A 7B model should train on ~140B tokens. A 70B model should train on ~1.4T tokens. A 175B model should train on ~3.5T tokens.</p>
+
+      <p>This immediately showed that GPT-3 (175B parameters, 300B tokens — only 1.7 tokens per parameter) was 12× undertrained. DeepMind trained Chinchilla: a 70B model on 1.4T tokens using the *same compute budget* as Gopher (280B on 300B tokens). Chinchilla outperformed Gopher on every benchmark despite being 4× smaller. The lesson was clear: brute-force scaling of parameters, without proportional scaling of data, is wasteful.</p>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 360" xmlns="http://www.w3.org/2000/svg">
+          <text x="400" y="22" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="600" fill="#1A1A18">Kaplan vs. Chinchilla: Compute Allocation</text>
+
+          <!-- Panel headers -->
+          <rect x="30" y="42" width="350" height="28" rx="5" fill="#FAECE7" stroke="#F0997B" stroke-width="1"/>
+          <text x="205" y="61" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#993C1D">Kaplan: Scale Parameters Fast</text>
+
+          <rect x="420" y="42" width="350" height="28" rx="5" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="595" y="61" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#0F6E56">Chinchilla: Scale Both Equally</text>
+
+          <line x1="400" y1="38" x2="400" y2="350" stroke="#E5E3DC" stroke-width="1" stroke-dasharray="5 4"/>
+
+          <!-- Kaplan side: big model, small data -->
+          <rect x="60" y="90" width="180" height="140" rx="8" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <text x="150" y="140" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="24" font-weight="700" fill="#534AB7">175B</text>
+          <text x="150" y="160" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#534AB7">parameters</text>
+          <text x="150" y="218" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">N ∝ C^0.73</text>
+
+          <rect x="260" y="160" width="90" height="70" rx="6" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="305" y="193" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="16" font-weight="700" fill="#0F6E56">300B</text>
+          <text x="305" y="210" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#0F6E56">tokens</text>
+
+          <text x="205" y="255" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#993C1D">1.7 tokens/param — undertrained!</text>
+          <text x="205" y="275" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#5C5B56">= GPT-3</text>
+
+          <!-- Chinchilla side: balanced -->
+          <rect x="450" y="110" width="140" height="120" rx="8" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <text x="520" y="155" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="22" font-weight="700" fill="#534AB7">70B</text>
+          <text x="520" y="175" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#534AB7">parameters</text>
+          <text x="520" y="218" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">N ∝ C^0.50</text>
+
+          <rect x="610" y="100" width="130" height="130" rx="6" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1.5"/>
+          <text x="675" y="155" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="22" font-weight="700" fill="#0F6E56">1.4T</text>
+          <text x="675" y="175" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#0F6E56">tokens</text>
+
+          <text x="595" y="255" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#0F6E56">20 tokens/param — compute-optimal</text>
+          <text x="595" y="275" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#5C5B56">= Chinchilla</text>
+
+          <!-- Bottom comparison -->
+          <rect x="100" y="298" width="600" height="36" rx="6" fill="#E6F1FB" stroke="#85B7EB" stroke-width="1"/>
+          <text x="400" y="315" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#185FA5">Same compute budget → Chinchilla (70B) beats GPT-3/Gopher (175B/280B) on every benchmark</text>
+          <text x="400" y="330" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#185FA5">The extra data matters more than the extra parameters</text>
+        </svg>
+        <figcaption>Figure 10.3 — Kaplan vs. Chinchilla compute allocation. Given the same compute budget (~$10^{24}$ FLOPs), Kaplan's rule builds a 175B-parameter model on 300B tokens (severely undertrained at 1.7 tokens/param). Chinchilla's rule builds a 70B model on 1.4T tokens (20 tokens/param). The smaller, better-trained model wins on every benchmark.</figcaption>
+      </figure>
+
+      <p>To make the allocation concrete, here is a calculator that shows the Kaplan and Chinchilla recommendations for any compute budget:</p>
+
+<pre><code class="language-python">
+def optimal_allocation(C_flops, method="chinchilla"):
+    """Given compute budget C (in FLOPs), return optimal (N_params, D_tokens).
+    Uses C ≈ 6 * N * D approximation.
+    """
+    if method == "kaplan":
+        # Kaplan: N ∝ C^0.73, solve for D = C / (6N)
+        N = (C_flops / 6) ** 0.73
+        D = C_flops / (6 * N)
+    else:  # chinchilla: N ∝ C^0.50
+        N = (C_flops / 6) ** 0.50
+        D = C_flops / (6 * N)  # D ≈ 20 * N
+    return int(N), int(D)
+
+print(f"{'Budget':<14} {'Kaplan':>30}  {'Chinchilla':>30}")
+print("-" * 76)
+for exp in [20, 21, 22, 23, 24]:
+    C = 10 ** exp
+    kN, kD = optimal_allocation(C, "kaplan")
+    cN, cD = optimal_allocation(C, "chinchilla")
+    print(f"10^{exp} FLOPs   {kN/1e6:>10.0f}M params, {kD/1e6:>8.0f}M tok"
+          f"  {cN/1e6:>10.0f}M params, {cD/1e6:>8.0f}M tok")
+# Notice: Chinchilla always recommends a smaller model on more data
+</code></pre>
+
+      <h3>The Chinchilla Frontier</h3>
+
+      <p>Plotting real models on an N-vs-D chart reveals how far off the optimal frontier most early models were. Gopher (280B, 300B tokens) and GPT-3 (175B, 300B tokens) are both far to the right of the Chinchilla-optimal line — they have too many parameters for the data they were trained on. Chinchilla (70B, 1.4T tokens) sits on the optimal frontier.</p>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 380" xmlns="http://www.w3.org/2000/svg">
+          <text x="400" y="22" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="600" fill="#1A1A18">Model Placement: Parameters vs. Training Tokens</text>
+
+          <!-- Axes -->
+          <line x1="100" y1="320" x2="740" y2="320" stroke="#C8C6BE" stroke-width="1"/>
+          <line x1="100" y1="320" x2="100" y2="50" stroke="#C8C6BE" stroke-width="1"/>
+          <text x="420" y="355" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#9C9A94">Parameters N (log scale)</text>
+          <text x="40" y="185" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#9C9A94" transform="rotate(-90 40 185)">Training Tokens D (log scale)</text>
+
+          <!-- X labels -->
+          <text x="180" y="340" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">1B</text>
+          <text x="310" y="340" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">10B</text>
+          <text x="440" y="340" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">70B</text>
+          <text x="530" y="340" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">175B</text>
+          <text x="620" y="340" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">405B</text>
+          <text x="700" y="340" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">540B</text>
+
+          <!-- Y labels -->
+          <text x="90" y="290" text-anchor="end" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">300B</text>
+          <text x="90" y="230" text-anchor="end" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">1T</text>
+          <text x="90" y="170" text-anchor="end" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">2T</text>
+          <text x="90" y="110" text-anchor="end" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">5T</text>
+          <text x="90" y="70" text-anchor="end" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">15T</text>
+
+          <!-- Chinchilla-optimal line (D ≈ 20N) -->
+          <line x1="130" y1="295" x2="680" y2="80" stroke="#0F6E56" stroke-width="2" stroke-dasharray="6 3"/>
+          <text x="680" y="72" text-anchor="start" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#0F6E56">D = 20N</text>
+
+          <!-- Undertrained region label -->
+          <text x="600" y="260" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#993C1D" opacity="0.6">undertrained →</text>
+          <text x="200" y="100" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#0F6E56" opacity="0.6">← over-trained</text>
+
+          <!-- GPT-3: 175B params, 300B tokens — undertrained -->
+          <circle cx="530" cy="288" r="10" fill="#FAECE7" stroke="#F0997B" stroke-width="2"/>
+          <text x="530" y="276" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#993C1D">GPT-3</text>
+          <text x="548" y="300" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#9C9A94">175B, 300B</text>
+
+          <!-- Gopher: 280B, 300B tokens -->
+          <circle cx="575" cy="288" r="10" fill="#FAECE7" stroke="#F0997B" stroke-width="2"/>
+          <text x="592" y="280" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#993C1D">Gopher</text>
+          <text x="592" y="300" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#9C9A94">280B, 300B</text>
+
+          <!-- Chinchilla: 70B, 1.4T — on the line -->
+          <circle cx="440" cy="222" r="10" fill="#E1F5EE" stroke="#0F6E56" stroke-width="2.5"/>
+          <text x="458" y="215" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#0F6E56">Chinchilla</text>
+          <text x="458" y="230" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#9C9A94">70B, 1.4T</text>
+
+          <!-- PaLM: 540B, 780B tokens — undertrained -->
+          <circle cx="700" cy="265" r="10" fill="#FAEEDA" stroke="#EF9F27" stroke-width="2"/>
+          <text x="700" y="253" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#854F0B">PaLM</text>
+          <text x="700" y="265" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#9C9A94">540B, 780B</text>
+
+          <!-- LLaMA 1 65B: 65B, 1.4T — near optimal -->
+          <circle cx="430" cy="222" r="8" fill="#EEEDFE" stroke="#534AB7" stroke-width="2"/>
+          <text x="410" y="240" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#534AB7">LLaMA 65B</text>
+
+          <!-- LLaMA 3 8B: 8B, 15T — way past optimal, inference-optimized -->
+          <circle cx="290" cy="70" r="9" fill="#534AB7" stroke="#EEEDFE" stroke-width="2"/>
+          <text x="290" y="58" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#534AB7">LLaMA 3 8B</text>
+          <text x="290" y="92" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#534AB7">8B, 15T</text>
+
+          <!-- LLaMA 3.1 405B -->
+          <circle cx="620" cy="72" r="9" fill="#534AB7" stroke="#EEEDFE" stroke-width="2"/>
+          <text x="620" y="60" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#534AB7">LLaMA 3.1 405B</text>
+        </svg>
+        <figcaption>Figure 10.4 — Real models plotted on the parameters-vs-tokens plane. The dashed green line is the Chinchilla-optimal frontier (D ≈ 20N). GPT-3, Gopher, and PaLM are below the line (undertrained). Chinchilla and LLaMA 65B sit near the line. LLaMA 3 8B is far above it — deliberately over-trained for inference efficiency, the topic of the next section.</figcaption>
+      </figure>
+
+      <h3>Limitations of Chinchilla</h3>
+
+      <p>Chinchilla's rule optimizes for one thing: minimum training loss per FLOP. It ignores several factors that matter in practice:</p>
+
+      <ul>
+        <li><strong>Inference cost.</strong> A 70B model that achieves the same loss as a 175B model is cheaper to *deploy*, not just cheaper to train. Chinchilla's framework treats training as the only cost.</li>
+        <li><strong>Downstream performance vs. loss.</strong> Perplexity is a noisy proxy for task performance. A model with slightly higher perplexity but trained on more diverse data may score better on downstream benchmarks.</li>
+        <li><strong>Data availability.</strong> Chinchilla assumes you can always get more data. In practice, high-quality text data may be limited — a problem we return to in Section 3.</li>
+      </ul>
+    </section>
+
+    <!-- ================================================================== -->
+    <!-- SECTION 3: BEYOND CHINCHILLA                                        -->
+    <!-- ================================================================== -->
+    <section class="chapter-section" id="beyond-chinchilla">
+      <h2>Beyond Chinchilla: The Inference-Optimal Regime</h2>
+
+      <p>Chinchilla answered the question "given a compute budget, how do I get the lowest training loss?" But in production, you do not pay for training once — you pay for inference *every time a user sends a query*. A 70B model costs 10× more per query than a 7B model. If the 7B model can be made nearly as good by training it much longer, the total cost (training + inference over millions of queries) is dramatically lower.</p>
+
+      <h3>LLaMA's Insight</h3>
+
+      <p>Meta's LLaMA (Touvron et al., 2023, Chapter 8) made this tradeoff explicit. LLaMA 7B was trained on 1 trillion tokens — approximately 7× past the Chinchilla-optimal point of ~140B tokens for a 7B model. The extra training compute was substantial, but the result was a small model that competed with much larger models at inference time.</p>
+
+      <p>LLaMA 3 pushed this further. The 8B model was trained on 15 trillion tokens — <strong>94× past Chinchilla-optimal</strong>. This is emphatically not compute-efficient training: you are spending far more FLOPs than necessary to reach a given loss. But the resulting model is extraordinarily inference-efficient: it matches LLaMA 2 70B (a model 9× larger) on many benchmarks, while serving at a fraction of the latency and cost.</p>
+
+      <p>The inference cost calculation depends on the architecture. Encoder-only models like BERT (Chapter 7) process the full input in a single forward pass — there is no autoregressive loop, so inference cost scales linearly with input length and model size. Decoder-only models (Chapter 8) are the most expensive because each output token requires reading the full KV cache. Encoder-decoder models (Chapter 9) fall in between: the encoder runs once per input, but the decoder is autoregressive. For tasks with short outputs (like classification), encoder-decoder models can be quite efficient; for tasks with long outputs (like translation), the decoder cost dominates.</p>
+
+      <figure class="diagram-figure diagram-interactive">
+        <div class="widget-container" id="widget-ch10-inference">
+          <style>
+            #widget-ch10-inference .controls { display: flex; gap: 1.5rem; padding: 0.5rem 0 0.8rem; font-family: system-ui, -apple-system, sans-serif; }
+            #widget-ch10-inference .controls label { display: flex; align-items: center; gap: 8px; font-size: 13px; color: #5C5B56; }
+          </style>
+
+          <div class="controls">
+            <label>
+              Expected queries: 10^<span id="ch10-query-display">6</span>
+              <input type="range" min="3" max="10" step="1" value="6"
+                style="width:180px; accent-color:#534AB7;"
+                oninput="updateCh10Inference(this.value)">
+            </label>
+          </div>
+
+          <svg id="ch10-inference-svg" width="100%" viewBox="0 0 800 280">
+            <!-- Axes -->
+            <line x1="80" y1="240" x2="720" y2="240" stroke="#C8C6BE" stroke-width="1"/>
+            <line x1="80" y1="240" x2="80" y2="40" stroke="#C8C6BE" stroke-width="1"/>
+            <text x="400" y="270" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#9C9A94">Model size N (log scale) →</text>
+            <text x="30" y="140" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#9C9A94" transform="rotate(-90 30 140)">Quality ↑</text>
+
+            <text x="140" y="256" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">1B</text>
+            <text x="280" y="256" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">7B</text>
+            <text x="420" y="256" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">70B</text>
+            <text x="560" y="256" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">405B</text>
+
+            <!-- Compute-optimal curve (Chinchilla) — static -->
+            <path d="M120 200 Q250 120 420 80 Q560 55 680 48" stroke="#AFA9EC" stroke-width="2" fill="none"/>
+            <text x="690" y="46" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#AFA9EC">Chinchilla</text>
+
+            <!-- Inference-optimal curve — shifts based on Q -->
+            <path id="ch10-inf-curve" d="" stroke="#0F6E56" stroke-width="2.5" fill="none"/>
+            <text id="ch10-inf-label" x="690" y="80" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#0F6E56">Inference-optimal</text>
+
+            <!-- Model dots -->
+            <circle cx="280" cy="105" r="6" fill="#534AB7" stroke="#EEEDFE" stroke-width="2"/>
+            <text x="280" y="95" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#534AB7">LLaMA 3 8B</text>
+
+            <circle cx="420" cy="68" r="6" fill="#534AB7" stroke="#EEEDFE" stroke-width="2"/>
+            <text x="420" y="58" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#534AB7">LLaMA 3 70B</text>
+
+            <circle cx="360" cy="80" r="5" fill="#993C1D" stroke="#FAECE7" stroke-width="2"/>
+            <text x="360" y="70" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#993C1D">Mistral 7B</text>
+
+            <!-- Best point indicator -->
+            <circle id="ch10-best-dot" cx="280" cy="105" r="8" fill="none" stroke="#0F6E56" stroke-width="2.5"/>
+            <text id="ch10-best-label" x="280" y="128" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="600" fill="#0F6E56">← best value</text>
+          </svg>
+
+          <p style="font-family:system-ui; font-size:13px; color:#9C9A94; font-style:italic; padding:0.5rem 0 0.5rem;" id="ch10-inf-obs">
+          </p>
+        </div>
+
+        <script>
+          (function() {
+            window.updateCh10Inference = function(val) {
+              val = parseInt(val);
+              document.getElementById('ch10-query-display').textContent = val;
+              var Q = Math.pow(10, val);
+
+              // As Q grows, the inference-optimal frontier shifts left (smaller models preferred)
+              // because total_cost = train_cost + inference_cost_per_query * Q
+              // and inference_cost ∝ N
+              var shift = Math.min(100, (val - 3) * 15);
+              var baseY = 170 - shift * 0.5;
+              var midY = 90 - shift * 0.3;
+              var endY = 70 - shift * 0.1;
+
+              var d = 'M120 ' + baseY + ' Q250 ' + midY + ' 420 ' + endY +
+                      ' Q560 ' + (endY - 10) + ' 680 ' + (endY - 12);
+              document.getElementById('ch10-inf-curve').setAttribute('d', d);
+
+              // Which model is best depends on Q
+              var bestX, bestLabel, bestY;
+              if (val <= 4) {
+                bestX = 420; bestY = 68; bestLabel = 'LLaMA 3 70B';
+              } else if (val <= 7) {
+                bestX = 280; bestY = 105; bestLabel = 'LLaMA 3 8B';
+              } else {
+                bestX = 280; bestY = 105; bestLabel = 'LLaMA 3 8B';
+              }
+              document.getElementById('ch10-best-dot').setAttribute('cx', bestX);
+              document.getElementById('ch10-best-dot').setAttribute('cy', bestY);
+              document.getElementById('ch10-best-label').setAttribute('x', bestX);
+              document.getElementById('ch10-best-label').setAttribute('y', bestY + 22);
+              document.getElementById('ch10-best-label').textContent = '← best: ' + bestLabel;
+
+              var obs;
+              if (val <= 4) {
+                obs = 'At 10^' + val + ' queries, training cost dominates. Larger, compute-optimal models (70B) are the best investment — you amortize training over few queries.';
+              } else if (val <= 7) {
+                obs = 'At 10^' + val + ' queries, inference cost is significant. Smaller, over-trained models (8B on 15T tokens) become more cost-effective despite the extra training compute.';
+              } else {
+                obs = 'At 10^' + val + ' queries, inference cost overwhelms training cost. The smallest model that meets quality thresholds (8B) is dramatically cheaper, even though training it 94× past Chinchilla-optimal was expensive.';
+              }
+              document.getElementById('ch10-inf-obs').textContent = obs;
+            };
+            updateCh10Inference(6);
+          })();
+        </script>
+
+        <figcaption>Figure 10.5 — Interactive: Compute-optimal vs. inference-optimal frontier. The purple curve (Chinchilla) shows the best quality achievable at each model size with optimal training. The green curve (inference-optimal) accounts for total deployment cost. Slide the query volume higher to see smaller models become preferred — at 10^8 queries, the 8B model is the clear winner despite 94× extra training cost.</figcaption>
+      </figure>
+
+      <h3>Data-Constrained Scaling</h3>
+
+      <p>Over-training small models on more data works beautifully — until you run out of data. LLaMA 3 was trained on 15 trillion tokens. The total stock of high-quality English text on the internet is estimated at 5-10 trillion tokens; with multilingual and code data, perhaps 20-40 trillion tokens. Models are already approaching this ceiling.</p>
+
+      <p>When data is constrained, the scaling laws change. Muennighoff et al. (2023) showed that repeating data up to 4 epochs causes minimal degradation, but beyond that, loss starts to increase — the model overfits. This has driven interest in synthetic data (using one model to generate training data for another), data augmentation (paraphrasing, back-translation), and multimodal data (using images, video, and audio as additional signal). The data wall is one of the most pressing constraints on continued scaling.</p>
+
+      <p>To see these dynamics in practice, here is a mini scaling experiment that trains multiple model sizes on real text data:</p>
+
+<pre><code class="language-python">
+import torch
+import torch.nn as nn
+from datasets import load_dataset
+
+# Load a small text dataset from HuggingFace
+ds = load_dataset("roneneldan/TinyStories", split="train[:50000]")
+
+class TinyGPT(nn.Module):
+    """Minimal GPT for scaling experiments."""
+    def __init__(self, vocab_size, d_model, n_layers, n_heads):
+        super().__init__()
+        self.embed = nn.Embedding(vocab_size, d_model)
+        self.pos = nn.Embedding(256, d_model)  # max seq len 256
+        layer = nn.TransformerEncoderLayer(
+            d_model, n_heads, 4 * d_model,
+            dropout=0.0, batch_first=True, norm_first=True
+        )
+        self.blocks = nn.TransformerEncoder(layer, n_layers)
+        self.head = nn.Linear(d_model, vocab_size, bias=False)
+
+    def forward(self, x):                        # x: (B, S)
+        B, S = x.shape
+        h = self.embed(x) + self.pos(torch.arange(S, device=x.device))
+        mask = nn.Transformer.generate_square_subsequent_mask(S, device=x.device)
+        h = self.blocks(h, mask=mask, is_causal=True)  # (B, S, d_model)
+        return self.head(h)                              # (B, S, vocab_size)
+
+# Train 4 sizes, record final loss → then fit a power law (Code Block 1)
+configs = [
+    {"d_model": 64,  "n_layers": 2, "n_heads": 2},   # ~50K params
+    {"d_model": 128, "n_layers": 3, "n_heads": 4},   # ~500K params
+    {"d_model": 256, "n_layers": 4, "n_heads": 8},   # ~4M params
+    {"d_model": 512, "n_layers": 6, "n_heads": 8},   # ~25M params
+]
+results = {}  # {n_params: final_loss}
+for cfg in configs:
+    model = TinyGPT(vocab_size=10000, **cfg)
+    n_params = sum(p.numel() for p in model.parameters())
+    # ... train on tokenized TinyStories, record final cross-entropy loss ...
+    results[n_params] = None  # fill in after training
+    print(f"d={cfg['d_model']}, L={cfg['n_layers']} → {n_params/1e6:.2f}M params")
+</code></pre>
+
+    </section>
+
+    <!-- ================================================================== -->
+    <!-- SECTION 4: EMERGENT ABILITIES                                       -->
+    <!-- ================================================================== -->
+    <section class="chapter-section" id="emergent-abilities">
+      <h2>Emergent Abilities</h2>
+
+      <p>Scaling laws predict smooth, continuous improvement: double the compute, reduce the loss by a predictable amount. But some abilities do not follow this pattern. They are absent in small models, absent in medium models, and then suddenly present in large models — with no gradual transition. These are <strong>emergent abilities</strong>: capabilities that are not predictable by extrapolating from smaller-scale experiments.</p>
+
+      <h3>What Emerges?</h3>
+
+      <p>Wei et al. (2022) systematically cataloged emergent abilities across GPT-3 (Chapter 8), PaLM, Chinchilla, and other model families. They identified tasks where performance was near-random for all models below a critical scale and then jumped sharply above it. Examples include:</p>
+
+      <ul>
+        <li><strong>Multi-digit arithmetic.</strong> Models below ~10B parameters score near 0% on 3-digit addition. Models above ~100B score above 80%. There is no gradual improvement in between.</li>
+        <li><strong>Chain-of-thought reasoning.</strong> Small models produce incoherent chains even when prompted with "Let's think step by step." Above ~60B parameters, models suddenly produce valid reasoning chains that improve final accuracy.</li>
+        <li><strong>Few-shot code generation.</strong> Code quality on HumanEval is near-zero below ~10B and rises steeply above it.</li>
+        <li><strong>Word unscrambling, logical deduction, abstract pattern matching.</strong> Each appears at a different threshold, suggesting that different capabilities have different computational requirements.</li>
+      </ul>
+
+      <p>Instruction-tuned encoder-decoder models show a parallel phenomenon. Flan-T5 (Chapter 9) exhibits strong zero-shot performance on tasks that the base T5 cannot solve, and the jump is more pronounced at larger scales (Flan-T5-XL vs. Flan-T5-Base). This suggests emergence is not architecture-specific — it depends on scale and the richness of the training signal, whether that signal comes from next-token prediction (decoder-only) or span corruption plus instruction tuning (encoder-decoder).</p>
+
+      <p>Encoder-only models like BERT (Chapter 7) are generally too small to exhibit emergence in the Wei et al. sense. BERT-Large (340M) is below the threshold for any of the emergent tasks identified. This is itself an interesting observation: the encoder-only paradigm peaked before scaling reached the levels where emergence becomes visible.</p>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 320" xmlns="http://www.w3.org/2000/svg">
+          <text x="400" y="22" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="600" fill="#1A1A18">Smooth Scaling vs. Emergent Phase Transition</text>
+
+          <!-- Panel headers -->
+          <rect x="30" y="42" width="350" height="28" rx="5" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="205" y="61" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#0F6E56">Smoothly Scaling Task (e.g., QA)</text>
+
+          <rect x="420" y="42" width="350" height="28" rx="5" fill="#FAECE7" stroke="#F0997B" stroke-width="1"/>
+          <text x="595" y="61" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#993C1D">Emergent Task (e.g., 3-Digit Addition)</text>
+
+          <line x1="400" y1="38" x2="400" y2="310" stroke="#E5E3DC" stroke-width="1" stroke-dasharray="5 4"/>
+
+          <!-- LEFT: smooth curve -->
+          <line x1="60" y1="270" x2="360" y2="270" stroke="#C8C6BE" stroke-width="1"/>
+          <line x1="60" y1="270" x2="60" y2="90" stroke="#C8C6BE" stroke-width="1"/>
+          <text x="210" y="292" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">Model scale (log) →</text>
+          <text x="48" y="100" text-anchor="end" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">100%</text>
+          <text x="48" y="270" text-anchor="end" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">0%</text>
+
+          <!-- Smooth S-curve -->
+          <path d="M80 260 Q130 250 160 230 Q200 190 230 150 Q270 110 320 100 L350 98" stroke="#0F6E56" stroke-width="2.5" fill="none"/>
+          <!-- Model family markers -->
+          <circle cx="100" cy="255" r="4" fill="#0F6E56"/>
+          <circle cx="140" cy="242" r="4" fill="#0F6E56"/>
+          <circle cx="180" cy="215" r="5" fill="#0F6E56"/>
+          <circle cx="220" cy="165" r="5" fill="#0F6E56"/>
+          <circle cx="270" cy="115" r="5" fill="#0F6E56"/>
+          <circle cx="330" cy="100" r="5" fill="#0F6E56"/>
+
+          <text x="100" y="248" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#9C9A94">100M</text>
+          <text x="220" y="158" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#9C9A94">10B</text>
+          <text x="330" y="93" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#9C9A94">175B</text>
+
+          <!-- RIGHT: step function -->
+          <line x1="450" y1="270" x2="750" y2="270" stroke="#C8C6BE" stroke-width="1"/>
+          <line x1="450" y1="270" x2="450" y2="90" stroke="#C8C6BE" stroke-width="1"/>
+          <text x="600" y="292" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">Model scale (log) →</text>
+          <text x="438" y="100" text-anchor="end" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">100%</text>
+          <text x="438" y="270" text-anchor="end" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">0%</text>
+
+          <!-- Flat near zero, then sharp jump -->
+          <path d="M480 265 L560 262 L580 260 Q600 255 610 230 Q625 150 635 110 L650 105 L720 100" stroke="#993C1D" stroke-width="2.5" fill="none"/>
+          <circle cx="490" cy="264" r="4" fill="#993C1D"/>
+          <circle cx="520" cy="263" r="4" fill="#993C1D"/>
+          <circle cx="560" cy="261" r="4" fill="#993C1D"/>
+          <circle cx="600" cy="253" r="5" fill="#993C1D"/>
+          <circle cx="635" cy="110" r="5" fill="#993C1D"/>
+          <circle cx="700" cy="101" r="5" fill="#993C1D"/>
+
+          <text x="490" y="257" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#9C9A94">100M</text>
+          <text x="600" y="246" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#9C9A94">10B</text>
+          <text x="700" y="94" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#9C9A94">175B</text>
+
+          <!-- Phase transition annotation -->
+          <line x1="615" y1="255" x2="615" y2="108" stroke="#993C1D" stroke-width="1" stroke-dasharray="3 2"/>
+          <text x="625" y="185" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#993C1D">critical</text>
+          <text x="625" y="197" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#993C1D">threshold</text>
+        </svg>
+        <figcaption>Figure 10.6 — Two patterns of capability scaling. Left: a smoothly scaling task (like general QA) shows gradual, predictable improvement with model size. Right: an emergent task (like 3-digit addition) stays near random chance across many scales, then jumps sharply above a critical threshold. The dashed line marks the phase transition.</figcaption>
+      </figure>
+
+      <h3>The Controversy: Is Emergence a Metric Artifact?</h3>
+
+      <p>Schaeffer et al. (2023) challenged the entire concept of emergence. Their argument is simple and powerful: the appearance of a "phase transition" depends on which metric you use to measure performance. If you use exact-match accuracy on multi-digit arithmetic (the model must get *every* digit correct to score a point), then accuracy is 0% until the model is good enough to get them all right, at which point it jumps to near-100%. This is a step function — but it does not mean the underlying capability improved suddenly.</p>
+
+      <p>If instead you measure digit-level accuracy (how many digits out of the answer were correct), the improvement is smooth and continuous. The model gradually gets more digits right as it scales. The "emergence" was an artifact of the nonlinear, threshold metric, not a genuine discontinuity in capability.</p>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 300" xmlns="http://www.w3.org/2000/svg">
+          <text x="400" y="22" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="600" fill="#1A1A18">Same Task, Different Metrics: Is Emergence Real?</text>
+
+          <!-- Panel 1: Exact match -->
+          <rect x="30" y="42" width="230" height="24" rx="4" fill="#FAECE7" stroke="#F0997B" stroke-width="1"/>
+          <text x="145" y="59" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#993C1D">Exact-Match Accuracy</text>
+
+          <line x1="50" y1="240" x2="240" y2="240" stroke="#C8C6BE" stroke-width="1"/>
+          <line x1="50" y1="240" x2="50" y2="80" stroke="#C8C6BE" stroke-width="1"/>
+
+          <!-- Step function -->
+          <path d="M70 235 L140 233 L155 230 Q165 220 170 170 Q175 120 180 95 L220 90" stroke="#993C1D" stroke-width="2.5" fill="none"/>
+          <circle cx="90" cy="234" r="3" fill="#993C1D"/>
+          <circle cx="120" cy="233" r="3" fill="#993C1D"/>
+          <circle cx="150" cy="231" r="3" fill="#993C1D"/>
+          <circle cx="175" cy="140" r="4" fill="#993C1D"/>
+          <circle cx="200" cy="92" r="4" fill="#993C1D"/>
+
+          <text x="145" y="260" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">model scale →</text>
+          <text x="145" y="278" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#993C1D">Looks emergent!</text>
+
+          <!-- Panel 2: Digit accuracy -->
+          <rect x="285" y="42" width="230" height="24" rx="4" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="400" y="59" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#0F6E56">Digit-Level Accuracy</text>
+
+          <line x1="305" y1="240" x2="495" y2="240" stroke="#C8C6BE" stroke-width="1"/>
+          <line x1="305" y1="240" x2="305" y2="80" stroke="#C8C6BE" stroke-width="1"/>
+
+          <!-- Smooth curve -->
+          <path d="M325 230 Q360 210 380 180 Q410 140 430 115 Q450 100 475 92" stroke="#0F6E56" stroke-width="2.5" fill="none"/>
+          <circle cx="340" cy="222" r="3" fill="#0F6E56"/>
+          <circle cx="365" cy="202" r="3" fill="#0F6E56"/>
+          <circle cx="395" cy="160" r="4" fill="#0F6E56"/>
+          <circle cx="430" cy="115" r="4" fill="#0F6E56"/>
+          <circle cx="460" cy="96" r="4" fill="#0F6E56"/>
+
+          <text x="400" y="260" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">model scale →</text>
+          <text x="400" y="278" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#0F6E56">Looks smooth!</text>
+
+          <!-- Panel 3: Brier score -->
+          <rect x="540" y="42" width="230" height="24" rx="4" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1"/>
+          <text x="655" y="59" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#534AB7">Token Log-Likelihood</text>
+
+          <line x1="560" y1="240" x2="750" y2="240" stroke="#C8C6BE" stroke-width="1"/>
+          <line x1="560" y1="240" x2="560" y2="80" stroke="#C8C6BE" stroke-width="1"/>
+
+          <!-- Smooth curve -->
+          <path d="M580 228 Q610 205 635 175 Q665 140 690 118 Q710 105 735 95" stroke="#534AB7" stroke-width="2.5" fill="none"/>
+          <circle cx="595" cy="218" r="3" fill="#534AB7"/>
+          <circle cx="620" cy="196" r="3" fill="#534AB7"/>
+          <circle cx="650" cy="160" r="4" fill="#534AB7"/>
+          <circle cx="690" cy="118" r="4" fill="#534AB7"/>
+          <circle cx="720" cy="102" r="4" fill="#534AB7"/>
+
+          <text x="655" y="260" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">model scale →</text>
+          <text x="655" y="278" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#534AB7">Also smooth!</text>
+        </svg>
+        <figcaption>Figure 10.7 — The Schaeffer et al. argument: three metrics applied to the same task (multi-digit addition). Exact-match accuracy (left) creates an artificial step function because it requires all-or-nothing correctness. Digit-level accuracy (center) and token log-likelihood (right) reveal smooth, continuous improvement at all scales. The "emergence" is in the metric, not the model.</figcaption>
+      </figure>
+
+      <p>The resolution is nuanced. Schaeffer et al. are technically correct that nonlinear metrics inflate the appearance of discontinuity. But the practical observation remains: a 1B-parameter model *cannot* do multi-step chain-of-thought reasoning, period. A 100B-parameter model can. The smooth underlying improvement in per-token probability does not help if the task requires getting a 20-step chain entirely correct — the threshold metric is the one users care about. Emergence may be a metric artifact in the mathematical sense, but it is a real phenomenon in the practical sense of "what can this model actually do?"</p>
+
+      <p>To explore this metric sensitivity yourself, here is how to load a benchmark that exhibits the emergence pattern:</p>
+
+<pre><code class="language-python">
+from datasets import load_dataset
+
+# GSM8K: grade school math — the canonical "emergent" benchmark
+ds = load_dataset("gsm8k", "main", split="test[:5]")
+for ex in ds:
+    question = ex["question"]
+    # Answer format: step-by-step solution ending with "#### final_answer"
+    answer = ex["answer"].split("####")[-1].strip()
+    print(f"Q: {question[:80]}...")
+    print(f"A: {answer}\n")
+
+# To reproduce the Schaeffer argument:
+# 1. Generate predictions from models at different scales
+# 2. Compute exact-match accuracy: pred == gold (step function)
+# 3. Compute digit-level accuracy: fraction of correct digits (smooth)
+import torch
+
+# Simulated per-digit competence at each scale (in practice: run inference)
+scales_B = [0.1, 0.5, 1, 5, 10, 50, 100]  # model size in billions
+competence = torch.tensor([0.05, 0.15, 0.25, 0.45, 0.65, 0.85, 0.95])
+
+# Exact-match: needs ~0.95 per digit; for 4-digit answer, P(all correct) ≈ competence^4
+exact_match = competence ** 4       # threshold creates a sharp jump
+digit_accuracy = competence          # linear metric stays smooth
+
+for i, s in enumerate(scales_B):
+    print(f"{s:>5.1f}B params → exact: {exact_match[i]:.2f}  digit: {digit_accuracy[i]:.2f}")
+# Notice: exact_match jumps from 0.04 (5B) to 0.52 (50B) to 0.81 (100B) — "emergent"
+# digit_accuracy improves smoothly: 0.45 → 0.85 → 0.95
+</code></pre>
+
+    </section>
+
+    <!-- ================================================================== -->
+    <!-- SECTION 5: SCALING IN NON-LANGUAGE DOMAINS                          -->
+    <!-- ================================================================== -->
+    <section class="chapter-section" id="scaling-non-language">
+      <h2>Scaling in Non-Language Domains</h2>
+
+      <p>The scaling laws described so far were discovered in language modeling. But the power law form turns out to be remarkably universal — it appears whenever you train a neural network at varying scales on a sufficiently large dataset. The exponents differ, but the shape is the same: a straight line in log-log space. This section surveys scaling behavior across domains and notes which architecture family (from Chapters 7-9) each domain typically uses.</p>
+
+      <h3>Vision Transformers</h3>
+
+      <p>Zhai et al. (2022) showed that Vision Transformers (ViT — essentially the encoder-only architecture from Chapter 7 applied to image patches) follow power law scaling similar to language models. Scaling model size on JFT-300M and JFT-3B datasets, they found that ViT classification accuracy improves as a power law of compute, with an exponent of approximately 0.07 — close to the language scaling exponent. Larger ViTs consistently outperform smaller ones when trained with sufficient data.</p>
+
+      <h3>Code Generation</h3>
+
+      <p>Code models (decoder-only, Chapter 8 architecture) show a smooth but steep relationship between scale and pass rate on HumanEval (a benchmark of 164 programming problems). Codex (12B, 2021) scored 28.8%; code-davinci-002 (~175B, 2022) scored 47%; GPT-4 (2023) scored 67%. The improvement per order of magnitude of compute is larger than for natural language — code quality seems to benefit more from scale, possibly because code has stricter correctness requirements that penalize small errors heavily.</p>
+
+      <h3>Multimodal Scaling</h3>
+
+      <p>CLIP and its successors pair a vision encoder (encoder-only) with a text encoder (also encoder-only) and train them jointly on image-text pairs. Cherti et al. (2023) showed that scaling the dataset (from 15M to 2B image-text pairs) consistently improved zero-shot ImageNet accuracy, and that larger models benefited more from larger datasets. The image encoder and text encoder have different optimal scaling rates — the text encoder saturates earlier, suggesting that visual representation requires more parameters to capture than linguistic representation.</p>
+
+      <h3>Scientific Models</h3>
+
+      <p>Protein language models like ESM-2 (Lin et al., 2023) use the encoder-only architecture (Chapter 7) and train on amino acid sequences with a masked language modeling objective — structurally identical to BERT but on a biological alphabet. ESM-2 follows a clear power law: scaling from 8M to 15B parameters monotonically improves structure prediction accuracy. The exponent is similar to language scaling, suggesting that protein "languages" and natural languages may have similar information-theoretic structure.</p>
+
+      <p>Drug discovery and molecular generation models use both encoder-only (for molecular property prediction) and decoder-only (for molecule generation) architectures. Scaling laws have been less thoroughly studied here, partly because datasets are smaller and more specialized.</p>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 320" xmlns="http://www.w3.org/2000/svg">
+          <text x="400" y="22" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="600" fill="#1A1A18">Scaling Laws Across Domains</text>
+
+          <!-- Axes -->
+          <line x1="100" y1="260" x2="720" y2="260" stroke="#C8C6BE" stroke-width="1"/>
+          <line x1="100" y1="260" x2="100" y2="50" stroke="#C8C6BE" stroke-width="1"/>
+          <text x="410" y="290" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#9C9A94">Training Compute (log FLOPs) →</text>
+          <text x="40" y="155" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#9C9A94" transform="rotate(-90 40 155)">Performance ↑</text>
+
+          <!-- Gridlines -->
+          <line x1="100" y1="200" x2="720" y2="200" stroke="#F1EFE8" stroke-width="0.5"/>
+          <line x1="100" y1="140" x2="720" y2="140" stroke="#F1EFE8" stroke-width="0.5"/>
+          <line x1="100" y1="80" x2="720" y2="80" stroke="#F1EFE8" stroke-width="0.5"/>
+
+          <!-- Language (purple) — steepest -->
+          <line x1="140" y1="240" x2="680" y2="70" stroke="#534AB7" stroke-width="2.5"/>
+          <circle cx="680" cy="70" r="5" fill="#534AB7"/>
+          <text x="695" y="74" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#534AB7">Language</text>
+
+          <!-- Code (amber) — even steeper on the relevant range -->
+          <line x1="200" y1="248" x2="680" y2="82" stroke="#854F0B" stroke-width="2"/>
+          <circle cx="680" cy="82" r="5" fill="#854F0B"/>
+          <text x="695" y="86" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#854F0B">Code</text>
+
+          <!-- Vision (blue) -->
+          <line x1="140" y1="235" x2="680" y2="100" stroke="#185FA5" stroke-width="2"/>
+          <circle cx="680" cy="100" r="5" fill="#185FA5"/>
+          <text x="695" y="104" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#185FA5">Vision</text>
+
+          <!-- Protein (teal) -->
+          <line x1="180" y1="242" x2="580" y2="120" stroke="#0F6E56" stroke-width="2"/>
+          <circle cx="580" cy="120" r="5" fill="#0F6E56"/>
+          <text x="595" y="124" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#0F6E56">Protein</text>
+
+          <!-- Math (coral) — less data, more variable -->
+          <line x1="240" y1="250" x2="620" y2="138" stroke="#993C1D" stroke-width="2" stroke-dasharray="4 3"/>
+          <circle cx="620" cy="138" r="5" fill="#993C1D"/>
+          <text x="635" y="142" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#993C1D">Math</text>
+
+          <!-- Architecture annotations -->
+          <rect x="120" y="40" width="560" height="20" rx="4" fill="none"/>
+          <text x="180" y="52" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#534AB7">decoder-only</text>
+          <text x="300" y="52" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#854F0B">decoder-only</text>
+          <text x="420" y="52" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#185FA5">encoder-only</text>
+          <text x="530" y="52" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#0F6E56">encoder-only</text>
+          <text x="630" y="52" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#993C1D">decoder-only</text>
+        </svg>
+        <figcaption>Figure 10.8 — Scaling laws across domains. All five domains show approximately linear relationships in log-performance vs. log-compute space (power laws), but with different slopes. Language and code models (decoder-only, Chapter 8) scale steeply. Vision and protein models (encoder-only, Chapter 7) show similar exponents. Math (decoder-only) has a steeper slope but less data, so the relationship is noisier. Architecture labels indicate the dominant architecture used in each domain.</figcaption>
+      </figure>
+
+      <div class="callout callout-insight">
+        <div class="callout-title">Key Insight</div>
+        <p>The power law form of scaling is universal across domains and architectures. What changes is the exponent — how steeply performance improves per unit of compute — and the data ceiling. Language and code have enormous datasets (trillions of tokens); protein sequences are limited to hundreds of billions of amino acids; drug molecules to millions of SMILES strings. The data ceiling, not the architecture, is usually the binding constraint on how far scaling can take you in a given domain.</p>
+      </div>
+    </section>
+
+  </article>
+
+  <footer class="chapter-footer">
+    <div class="footer-nav">
+      <a href="ch09.html">← Previous: Encoder-Decoder Models</a>
+      <a href="ch11.html">Next: Instruction Tuning, RLHF, and Alignment →</a>
+    </div>
+  </footer>
+
+</body>
+</html>

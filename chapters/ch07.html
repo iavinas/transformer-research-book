@@ -1,0 +1,908 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Chapter 07: Encoder-Only Models — BERT and Beyond — Transformer Research Book</title>
+  <link rel="stylesheet" href="../assets/style.css">
+  <link rel="stylesheet" href="../assets/math.css">
+  <link rel="stylesheet" href="../assets/prism.css">
+  <!-- KaTeX for math rendering -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"
+    onload="renderMathInElement(document.body, {
+      delimiters: [
+        {left: '$$', right: '$$', display: true},
+        {left: '$', right: '$', display: false}
+      ]
+    })">
+  </script>
+  <!-- Prism for code blocks -->
+  <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/prism.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-python.min.js"></script>
+</head>
+<body>
+  <nav class="chapter-nav">
+    <a href="../index.html" class="nav-home">&larr; Table of Contents</a>
+    <span class="nav-chapter">Chapter 07</span>
+    <div style="display:flex; align-items:center; gap:1rem;">
+      <button class="theme-toggle" onclick="toggleTheme()" aria-label="Toggle dark mode">
+        <span class="icon-moon">&#9789;</span><span class="icon-sun">&#9788;</span>
+      </button>
+      <a href="ch08.html" class="nav-next">Next Chapter &rarr;</a>
+    </div>
+  </nav>
+  <script>
+    function toggleTheme() {
+      document.documentElement.classList.toggle('dark');
+      localStorage.setItem('theme', document.documentElement.classList.contains('dark') ? 'dark' : 'light');
+    }
+    if (localStorage.getItem('theme') === 'dark') document.documentElement.classList.add('dark');
+  </script>
+
+  <article class="chapter">
+
+    <header class="chapter-header">
+      <div class="chapter-number">Chapter 07</div>
+      <h1 class="chapter-title">Encoder-Only Models &mdash; BERT and Beyond</h1>
+      <p class="chapter-lead">Before BERT, every NLP task was its own engineering project: a custom architecture, custom features, custom training pipeline. A sentiment classifier shared nothing with a question answering system. Then in October 2018, a single pre-trained Transformer encoder shattered records on eleven tasks simultaneously &mdash; with nothing more than a thin classification head swapped on top. The idea was shockingly simple: train a deep bidirectional encoder to fill in blanks, then repurpose its internal representations for any downstream task. By the end of this chapter you will understand how BERT's masked language model works, why bidirectional context gives it decisive advantages on understanding tasks, how a half-dozen subsequent variants improved the recipe, and when encoder-only models remain the right architectural choice even in the era of massive generative models.</p>
+    </header>
+
+    <!-- ================================================================== -->
+    <!-- SECTION 1: BERT                                                    -->
+    <!-- ================================================================== -->
+    <section class="chapter-section" id="bert">
+      <h2>BERT (Devlin et al., 2018)</h2>
+
+      <p>The acronym stands for <strong>Bidirectional Encoder Representations from Transformers</strong>, and the key word is <em>bidirectional</em>. GPT, which appeared four months earlier, used a left-to-right causal mask: each token could only attend to tokens before it. This is natural for generation &mdash; you predict the next word from the preceding words &mdash; but it is a severe handicap for understanding tasks. When deciding whether "bank" means a financial institution or a river bank, you need context on <em>both</em> sides. BERT removed the causal mask entirely, letting every token attend to every other token in the sequence.</p>
+
+      <h3>Architecture</h3>
+
+      <p>BERT is a stack of standard Transformer encoder layers with no decoder. Two sizes were released:</p>
+
+      <table>
+        <thead>
+          <tr><th>Model</th><th>Layers</th><th>Hidden size ($d_\text{model}$)</th><th>Attention heads</th><th>Parameters</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>BERT-Base</td><td>12</td><td>768</td><td>12</td><td>110M</td></tr>
+          <tr><td>BERT-Large</td><td>24</td><td>1024</td><td>16</td><td>340M</td></tr>
+        </tbody>
+      </table>
+
+      <p>The input to BERT is the sum of three embeddings: a token embedding, a segment embedding (marking whether a token belongs to sentence A or sentence B), and a learned positional embedding. The maximum sequence length is 512 tokens. A special <code>[CLS]</code> token is prepended, and its final-layer representation serves as the aggregate sequence representation for classification tasks. A <code>[SEP]</code> token separates the two segments.</p>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 470" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="ch07-arr" viewBox="0 0 10 10" refX="9" refY="5"
+              markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+              <path d="M1 1L9 5L1 9" fill="none" stroke="context-stroke"
+                stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </marker>
+          </defs>
+
+          <text x="400" y="22" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="500" fill="#5C5B56">BERT Architecture: Bidirectional Encoder with Two Pre-training Heads</text>
+
+          <!-- Input tokens -->
+          <rect x="40" y="400" width="64" height="34" rx="5" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1.5"/>
+          <text x="72" y="422" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#0F6E56">[CLS]</text>
+
+          <rect x="120" y="400" width="64" height="34" rx="5" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="152" y="422" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#0F6E56">The</text>
+
+          <rect x="200" y="400" width="64" height="34" rx="5" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="232" y="422" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#0F6E56">cat</text>
+
+          <rect x="280" y="400" width="64" height="34" rx="5" fill="#534AB7" stroke="#534AB7"/>
+          <text x="312" y="422" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#FFFFFF">[MASK]</text>
+
+          <rect x="360" y="400" width="64" height="34" rx="5" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="392" y="422" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#0F6E56">on</text>
+
+          <rect x="440" y="400" width="64" height="34" rx="5" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="472" y="422" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#0F6E56">[SEP]</text>
+
+          <rect x="520" y="400" width="64" height="34" rx="5" fill="#FAEEDA" stroke="#EF9F27" stroke-width="1"/>
+          <text x="552" y="422" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#854F0B">It</text>
+
+          <rect x="600" y="400" width="64" height="34" rx="5" fill="#FAEEDA" stroke="#EF9F27" stroke-width="1"/>
+          <text x="632" y="422" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#854F0B">was</text>
+
+          <rect x="680" y="400" width="64" height="34" rx="5" fill="#FAEEDA" stroke="#EF9F27" stroke-width="1"/>
+          <text x="712" y="422" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#854F0B">soft</text>
+
+          <!-- Segment labels -->
+          <text x="250" y="455" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#0F6E56">Segment A</text>
+          <text x="632" y="455" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#854F0B">Segment B</text>
+
+          <!-- Embedding sum label -->
+          <rect x="180" y="350" width="440" height="28" rx="5" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="1"/>
+          <text x="400" y="369" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#5C5B56">Token Embedding + Segment Embedding + Position Embedding</text>
+          <line x1="400" y1="400" x2="400" y2="380" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch07-arr)"/>
+
+          <!-- Encoder stack -->
+          <rect x="120" y="220" width="560" height="100" rx="8" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <text x="400" y="256" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="15" font-weight="500" fill="#534AB7">Transformer Encoder Stack</text>
+          <text x="400" y="278" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#9C9A94">12 layers (Base) / 24 layers (Large)</text>
+          <text x="400" y="296" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#9C9A94">Bidirectional self-attention &mdash; every token sees every token</text>
+
+          <!-- ×N bracket -->
+          <line x1="698" y1="220" x2="698" y2="320" stroke="#C8C6BE" stroke-width="1" stroke-dasharray="4 3"/>
+          <line x1="692" y1="220" x2="698" y2="220" stroke="#C8C6BE" stroke-width="1"/>
+          <line x1="692" y1="320" x2="698" y2="320" stroke="#C8C6BE" stroke-width="1"/>
+          <text x="714" y="274" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#9C9A94">&times; N</text>
+
+          <line x1="400" y1="350" x2="400" y2="322" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch07-arr)"/>
+
+          <!-- Two output heads -->
+          <!-- MLM head (above masked token position) -->
+          <line x1="312" y1="218" x2="312" y2="170" stroke="#534AB7" stroke-width="1.5" marker-end="url(#ch07-arr)"/>
+          <rect x="240" y="130" width="144" height="38" rx="6" fill="#534AB7" stroke="#534AB7"/>
+          <text x="312" y="148" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#FFFFFF">MLM Head</text>
+          <text x="312" y="162" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#AFA9EC">predict: "sat"</text>
+
+          <!-- Vocab projection label -->
+          <line x1="312" y1="128" x2="312" y2="100" stroke="#534AB7" stroke-width="1.5" marker-end="url(#ch07-arr)"/>
+          <rect x="245" y="74" width="134" height="24" rx="4" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1"/>
+          <text x="312" y="91" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#534AB7">softmax over vocab</text>
+
+          <!-- NSP head (above [CLS] position) -->
+          <line x1="72" y1="218" x2="72" y2="170" stroke="#0F6E56" stroke-width="1.5" marker-end="url(#ch07-arr)"/>
+          <rect x="24" y="130" width="96" height="38" rx="6" fill="#0F6E56" stroke="#0F6E56"/>
+          <text x="72" y="148" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#FFFFFF">NSP Head</text>
+          <text x="72" y="162" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#5DCAA5">IsNext?</text>
+
+          <line x1="72" y1="128" x2="72" y2="100" stroke="#0F6E56" stroke-width="1.5" marker-end="url(#ch07-arr)"/>
+          <rect x="30" y="74" width="84" height="24" rx="4" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="72" y="91" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#0F6E56">binary classifier</text>
+
+          <!-- Labels for heads -->
+          <text x="72" y="58" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">from [CLS]</text>
+          <text x="312" y="58" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">from [MASK] positions</text>
+        </svg>
+        <figcaption>Figure 7.1 &mdash; The BERT architecture during pre-training. Input tokens (teal for segment A, amber for segment B) are summed with segment and position embeddings, then processed by a bidirectional encoder stack. Two pre-training objectives operate simultaneously: the MLM head (purple) predicts the original token at masked positions, and the NSP head (teal) classifies whether segment B genuinely follows segment A.</figcaption>
+      </figure>
+
+      <h3>Pre-training Task 1: Masked Language Modeling (MLM)</h3>
+
+      <p>The central pre-training objective is the <strong>masked language model</strong>. Before feeding a sentence to the encoder, 15% of its tokens are selected for prediction. Of those selected tokens, 80% are replaced with a special <code>[MASK]</code> token, 10% are replaced with a random token from the vocabulary, and 10% are left unchanged. The model must predict the original token at every selected position.</p>
+
+      <p>This 80/10/10 split is not arbitrary. If all selected tokens were replaced with <code>[MASK]</code>, the model would learn representations that are useful only when <code>[MASK]</code> is present &mdash; a token that never appears during fine-tuning. The random replacement and unchanged tokens force the model to maintain good representations for <em>all</em> positions, since any position might need to be predicted. The model can never be sure which tokens are "real" and which are corrupted, so it must build strong contextual representations everywhere.</p>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 280" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="ch07-arr2" viewBox="0 0 10 10" refX="9" refY="5"
+              markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+              <path d="M1 1L9 5L1 9" fill="none" stroke="context-stroke"
+                stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </marker>
+          </defs>
+
+          <text x="400" y="22" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="500" fill="#5C5B56">MLM Masking Strategy: 80% [MASK] / 10% Random / 10% Unchanged</text>
+
+          <!-- Original sentence -->
+          <text x="50" y="62" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#9C9A94">ORIGINAL</text>
+          <rect x="130" y="44" width="70" height="30" rx="4" fill="#FFFFFF" stroke="#E5E3DC" stroke-width="1"/>
+          <text x="165" y="64" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#5C5B56">The</text>
+
+          <rect x="212" y="44" width="70" height="30" rx="4" fill="#FFFFFF" stroke="#E5E3DC" stroke-width="1"/>
+          <text x="247" y="64" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#5C5B56">cat</text>
+
+          <rect x="294" y="44" width="70" height="30" rx="4" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <text x="329" y="64" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#534AB7">sat</text>
+
+          <rect x="376" y="44" width="70" height="30" rx="4" fill="#FFFFFF" stroke="#E5E3DC" stroke-width="1"/>
+          <text x="411" y="64" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#5C5B56">on</text>
+
+          <rect x="458" y="44" width="70" height="30" rx="4" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <text x="493" y="64" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#534AB7">the</text>
+
+          <rect x="540" y="44" width="70" height="30" rx="4" fill="#FFFFFF" stroke="#E5E3DC" stroke-width="1"/>
+          <text x="575" y="64" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#5C5B56">warm</text>
+
+          <rect x="622" y="44" width="70" height="30" rx="4" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <text x="657" y="64" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#534AB7">mat</text>
+
+          <!-- Arrows down -->
+          <line x1="329" y1="76" x2="329" y2="106" stroke="#534AB7" stroke-width="1.5" marker-end="url(#ch07-arr2)"/>
+          <line x1="493" y1="76" x2="493" y2="106" stroke="#534AB7" stroke-width="1.5" marker-end="url(#ch07-arr2)"/>
+          <line x1="657" y1="76" x2="657" y2="106" stroke="#534AB7" stroke-width="1.5" marker-end="url(#ch07-arr2)"/>
+
+          <!-- Selection label -->
+          <text x="493" y="100" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#534AB7">15% selected</text>
+
+          <!-- Corrupted sentence -->
+          <text x="50" y="132" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#9C9A94">INPUT</text>
+          <rect x="130" y="114" width="70" height="30" rx="4" fill="#FFFFFF" stroke="#E5E3DC" stroke-width="1"/>
+          <text x="165" y="134" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#5C5B56">The</text>
+
+          <rect x="212" y="114" width="70" height="30" rx="4" fill="#FFFFFF" stroke="#E5E3DC" stroke-width="1"/>
+          <text x="247" y="134" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#5C5B56">cat</text>
+
+          <rect x="294" y="114" width="70" height="30" rx="4" fill="#534AB7" stroke="#534AB7"/>
+          <text x="329" y="134" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#FFFFFF">[MASK]</text>
+          <text x="329" y="158" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#534AB7">80%</text>
+
+          <rect x="376" y="114" width="70" height="30" rx="4" fill="#FFFFFF" stroke="#E5E3DC" stroke-width="1"/>
+          <text x="411" y="134" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#5C5B56">on</text>
+
+          <rect x="458" y="114" width="70" height="30" rx="4" fill="#FAECE7" stroke="#F0997B" stroke-width="1.5"/>
+          <text x="493" y="134" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#993C1D">dog</text>
+          <text x="493" y="158" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#993C1D">10% random</text>
+
+          <rect x="540" y="114" width="70" height="30" rx="4" fill="#FFFFFF" stroke="#E5E3DC" stroke-width="1"/>
+          <text x="575" y="134" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#5C5B56">warm</text>
+
+          <rect x="622" y="114" width="70" height="30" rx="4" fill="#FAEEDA" stroke="#EF9F27" stroke-width="1.5"/>
+          <text x="657" y="134" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#854F0B">mat</text>
+          <text x="657" y="158" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#854F0B">10% unchanged</text>
+
+          <!-- Target labels -->
+          <text x="50" y="200" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#9C9A94">TARGET</text>
+          <text x="165" y="200" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#C8C6BE">&mdash;</text>
+          <text x="247" y="200" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#C8C6BE">&mdash;</text>
+          <text x="411" y="200" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#C8C6BE">&mdash;</text>
+          <text x="575" y="200" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#C8C6BE">&mdash;</text>
+
+          <rect x="294" y="186" width="70" height="26" rx="4" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1"/>
+          <text x="329" y="204" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#534AB7">sat</text>
+
+          <rect x="458" y="186" width="70" height="26" rx="4" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1"/>
+          <text x="493" y="204" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#534AB7">the</text>
+
+          <rect x="622" y="186" width="70" height="26" rx="4" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1"/>
+          <text x="657" y="204" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#534AB7">mat</text>
+
+          <!-- Loss only on selected -->
+          <text x="400" y="240" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#5C5B56">Cross-entropy loss computed only at the 3 selected positions</text>
+
+          <!-- Loss arrows -->
+          <line x1="329" y1="214" x2="329" y2="248" stroke="#993C1D" stroke-width="1" stroke-dasharray="4 3"/>
+          <line x1="493" y1="214" x2="493" y2="248" stroke="#993C1D" stroke-width="1" stroke-dasharray="4 3"/>
+          <line x1="657" y1="214" x2="657" y2="248" stroke="#993C1D" stroke-width="1" stroke-dasharray="4 3"/>
+
+          <rect x="280" y="252" width="240" height="22" rx="4" fill="#FAECE7" stroke="none"/>
+          <text x="400" y="268" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#993C1D">&#8594; only ~15% of tokens contribute to gradient per batch</text>
+        </svg>
+        <figcaption>Figure 7.2 &mdash; The MLM masking process. Three tokens are selected for prediction (highlighted in purple). Of these, "sat" is replaced with [MASK] (80% case), "the" is replaced with the random word "dog" (10% case), and "mat" is left unchanged (10% case). The model must predict the original token at all three positions. Unselected positions (dashes) produce no loss signal.</figcaption>
+      </figure>
+
+      <p>The MLM loss is standard cross-entropy, but only over the selected positions:</p>
+
+      $$\mathcal{L}_\text{MLM} = -\sum_{i \in \mathcal{M}} \log P(x_i \mid \tilde{x})$$
+
+      <p>Here $\mathcal{M}$ is the set of masked positions and $\tilde{x}$ is the corrupted input. Because only 15% of tokens contribute to the loss, BERT is less sample-efficient than autoregressive models (which get a loss signal from every token). This is a well-known tradeoff: bidirectionality improves representation quality but reduces training efficiency per token. BERT compensates by training on large corpora for many steps &mdash; the original model trained on BooksCorpus (800M words) and English Wikipedia (2,500M words) for 1M steps with a batch size of 256.</p>
+
+      <p>Here is a minimal PyTorch implementation of the MLM head and the 80/10/10 masking strategy:</p>
+
+<pre><code class="language-python">
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+class MLMHead(nn.Module):
+    """Predict original tokens at masked positions."""
+    def __init__(self, d_model, vocab_size):
+        super().__init__()
+        self.dense = nn.Linear(d_model, d_model)
+        self.layer_norm = nn.LayerNorm(d_model)
+        self.projection = nn.Linear(d_model, vocab_size)
+
+    def forward(self, hidden_states, masked_positions):
+        # Extract representations at masked positions only
+        masked_hidden = hidden_states[masked_positions]       # (num_masked, d_model)
+        x = self.layer_norm(F.gelu(self.dense(masked_hidden)))
+        logits = self.projection(x)                           # (num_masked, vocab_size)
+        return logits
+
+def create_mlm_batch(token_ids, vocab_size, mask_token_id=103, mask_prob=0.15):
+    """Apply BERT's masking strategy: 80% [MASK], 10% random, 10% keep."""
+    labels = token_ids.clone()
+    # Select 15% of positions to predict
+    mask = torch.rand(token_ids.shape) < mask_prob
+    labels[~mask] = -100  # only compute loss on masked positions
+
+    # Of the selected positions: 80% become [MASK]
+    indices = mask.nonzero(as_tuple=True)
+    rand = torch.rand(indices[0].shape)
+    token_ids[indices[0][rand < 0.8], indices[1][rand < 0.8]] = mask_token_id
+    # 10% become a random token
+    random_mask = (rand >= 0.8) & (rand < 0.9)
+    token_ids[indices[0][random_mask], indices[1][random_mask]] = torch.randint(0, vocab_size, (random_mask.sum(),))
+    # 10% stay unchanged — model must still predict them
+    return token_ids, labels
+</code></pre>
+
+      <h3>Pre-training Task 2: Next Sentence Prediction (NSP)</h3>
+
+      <p>The second objective, <strong>Next Sentence Prediction</strong>, trains the model to predict whether two segments are consecutive in the original document. Half the training pairs are genuine consecutive sentences (labeled <code>IsNext</code>); the other half pair a sentence with a random sentence from a different document (labeled <code>NotNext</code>). The prediction is made from the <code>[CLS]</code> token's representation via a binary classifier.</p>
+
+      <p>NSP was intended to improve performance on tasks requiring reasoning about sentence pairs, like natural language inference and question answering. In retrospect, it turned out to be BERT's weakest design choice. RoBERTa later showed that removing NSP entirely and training only with MLM &mdash; using full-document inputs rather than sentence pairs &mdash; significantly improves downstream performance. The NSP task was too easy: the model could often distinguish unrelated sentences based on topic mismatch alone, without learning genuine inter-sentence reasoning.</p>
+
+      <h3>Fine-tuning Paradigm</h3>
+
+      <p>BERT's fine-tuning recipe is elegant in its simplicity: take the pre-trained encoder, add a thin task-specific head on top, and fine-tune <em>all</em> parameters end-to-end on the target task's labeled data. The task head is typically a single linear layer.</p>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 310" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="ch07-arr3" viewBox="0 0 10 10" refX="9" refY="5"
+              markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+              <path d="M1 1L9 5L1 9" fill="none" stroke="context-stroke"
+                stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </marker>
+          </defs>
+
+          <!-- Panel headers -->
+          <rect x="20" y="10" width="360" height="30" rx="5" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1"/>
+          <text x="200" y="30" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="600" fill="#534AB7">Pre-training (unsupervised, once)</text>
+
+          <rect x="420" y="10" width="360" height="30" rx="5" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="600" y="30" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="600" fill="#0F6E56">Fine-tuning (per task, fast)</text>
+
+          <!-- Vertical divider -->
+          <line x1="400" y1="5" x2="400" y2="300" stroke="#E5E3DC" stroke-width="1" stroke-dasharray="5 4"/>
+
+          <!-- Left: pre-training -->
+          <rect x="60" y="180" width="280" height="56" rx="6" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <text x="200" y="206" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="500" fill="#534AB7">BERT Encoder (12/24 layers)</text>
+          <text x="200" y="224" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">110M / 340M parameters</text>
+
+          <line x1="200" y1="178" x2="200" y2="158" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch07-arr3)"/>
+
+          <rect x="100" y="114" width="90" height="40" rx="6" fill="#534AB7" stroke="#534AB7"/>
+          <text x="145" y="139" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#FFFFFF">MLM Head</text>
+
+          <rect x="210" y="114" width="90" height="40" rx="6" fill="#0F6E56" stroke="#0F6E56"/>
+          <text x="255" y="139" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#FFFFFF">NSP Head</text>
+
+          <rect x="60" y="250" width="280" height="34" rx="5" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="1"/>
+          <text x="200" y="272" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#5C5B56">BooksCorpus + Wikipedia (~16GB)</text>
+
+          <line x1="200" y1="250" x2="200" y2="238" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch07-arr3)"/>
+
+          <text x="200" y="70" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">4 days on 16 TPUs</text>
+
+          <!-- Right: fine-tuning — 3 tasks -->
+          <!-- Sentiment -->
+          <rect x="440" y="180" width="150" height="56" rx="6" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <text x="515" y="206" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#534AB7">BERT Encoder</text>
+          <text x="515" y="222" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">fine-tuned</text>
+
+          <line x1="515" y1="178" x2="515" y2="158" stroke="#0F6E56" stroke-width="1.5" marker-end="url(#ch07-arr3)"/>
+
+          <rect x="460" y="120" width="110" height="36" rx="6" fill="#0F6E56" stroke="#0F6E56"/>
+          <text x="515" y="143" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#FFFFFF">Sentiment</text>
+
+          <rect x="440" y="250" width="150" height="34" rx="5" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="515" y="272" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#0F6E56">SST-2 (67K examples)</text>
+
+          <line x1="515" y1="250" x2="515" y2="238" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch07-arr3)"/>
+
+          <!-- QA -->
+          <rect x="620" y="180" width="150" height="56" rx="6" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <text x="695" y="206" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#534AB7">BERT Encoder</text>
+          <text x="695" y="222" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">fine-tuned</text>
+
+          <line x1="695" y1="178" x2="695" y2="158" stroke="#993C1D" stroke-width="1.5" marker-end="url(#ch07-arr3)"/>
+
+          <rect x="640" y="120" width="110" height="36" rx="6" fill="#993C1D" stroke="#993C1D"/>
+          <text x="695" y="143" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#FFFFFF">QA (spans)</text>
+
+          <rect x="620" y="250" width="150" height="34" rx="5" fill="#FAECE7" stroke="#F0997B" stroke-width="1"/>
+          <text x="695" y="272" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#993C1D">SQuAD 2.0 (130K)</text>
+
+          <line x1="695" y1="250" x2="695" y2="238" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch07-arr3)"/>
+
+          <text x="600" y="80" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">~1 hour on 1 GPU per task</text>
+        </svg>
+        <figcaption>Figure 7.3 &mdash; The pre-train / fine-tune paradigm. Left: BERT is pre-trained once on a large unsupervised corpus with MLM and NSP heads (expensive: days on TPU clusters). Right: the same pre-trained encoder is fine-tuned separately for each downstream task by swapping in a thin task-specific head (cheap: under an hour on a single GPU). The encoder weights are shared across tasks at initialization.</figcaption>
+      </figure>
+
+      <p>For classification tasks (sentiment, NLI), the <code>[CLS]</code> representation is projected through a linear layer to $C$ classes: $\hat{y} = \text{softmax}(W\,h_{\text{[CLS]}} + b)$ (matrix multiply, $\mathbb{R}^{C \times d} \times \mathbb{R}^{d \times 1} \to \mathbb{R}^{C \times 1}$). For span extraction (SQuAD), two linear layers predict the start and end positions of the answer span. For token classification (NER), each token's final representation is projected to the tag set. In every case, fine-tuning typically takes 2&ndash;4 epochs with a small learning rate ($2 \times 10^{-5}$ to $5 \times 10^{-5}$) and is finished in under an hour on a single GPU.</p>
+
+      <p>Here is a minimal PyTorch implementation of a BERT classification head and fine-tuning loop:</p>
+
+<pre><code class="language-python">
+class BERTClassifier(nn.Module):
+    """Fine-tune BERT for sequence classification using the [CLS] token."""
+    def __init__(self, bert_encoder, d_model, num_classes, dropout=0.1):
+        super().__init__()
+        self.encoder = bert_encoder           # pre-trained Transformer encoder
+        self.dropout = nn.Dropout(dropout)
+        self.classifier = nn.Linear(d_model, num_classes)
+
+    def forward(self, input_ids, attention_mask):
+        # Run full encoder: (batch, seq_len, d_model)
+        hidden_states = self.encoder(input_ids, attention_mask)
+        # Extract [CLS] token representation (position 0)
+        cls_output = hidden_states[:, 0, :]   # (batch, d_model)
+        cls_output = self.dropout(cls_output)
+        logits = self.classifier(cls_output)  # (batch, num_classes)
+        return logits
+
+# Fine-tuning loop sketch
+optimizer = torch.optim.AdamW(model.parameters(), lr=2e-5, weight_decay=0.01)
+for input_ids, mask, labels in dataloader:
+    logits = model(input_ids, mask)
+    loss = F.cross_entropy(logits, labels)
+    loss.backward()
+    optimizer.step()
+    optimizer.zero_grad()
+</code></pre>
+
+      <h3>Contextualized Representations</h3>
+
+      <p>Before BERT, word representations were <strong>static</strong>: word2vec (Mikolov et al., 2013) and GloVe (Pennington et al., 2014) assigned a single vector to each word regardless of context. The word "bank" had one embedding whether it appeared in "river bank" or "investment bank." ELMo (Peters et al., 2018) partially addressed this by concatenating forward and backward LSTM hidden states, but the two directions were independently computed and merely concatenated &mdash; not jointly attended.</p>
+
+      <p>BERT's representations are <strong>deeply contextualized</strong>: the same word produces different vectors in different contexts because every layer of the encoder integrates information from every other token via bidirectional self-attention. Probing experiments revealed that BERT's representations encode a remarkably rich hierarchy of linguistic structure: lower layers capture surface-level features (part-of-speech), middle layers capture syntactic structure (dependency parse), and upper layers capture task-specific semantic information.</p>
+
+      <h3>BERT's Impact</h3>
+
+      <p>When BERT was released, it achieved state-of-the-art results on all eleven tasks in the GLUE benchmark, the SQuAD 1.1 and 2.0 question answering benchmarks, and the SWAG commonsense reasoning benchmark. In several cases it surpassed human performance. The results were not marginal &mdash; BERT-Large improved the GLUE score by 7.7 absolute points over the previous best.</p>
+
+      <p>The deeper impact was methodological. Before BERT, NLP practitioners spent most of their effort on feature engineering and architecture design for specific tasks. After BERT, the standard workflow became: take the pre-trained model, fine-tune it, ship it. The field consolidated around a single architecture and a single pre-training recipe, and the research focus shifted from task-specific innovations to better pre-training, better data, and larger scale. This paradigm shift &mdash; pre-train once, fine-tune everywhere &mdash; remains the foundation of modern NLP.</p>
+
+    </section>
+
+    <!-- ================================================================== -->
+    <!-- SECTION 2: BERT VARIANTS AND IMPROVEMENTS                          -->
+    <!-- ================================================================== -->
+    <section class="chapter-section" id="bert-variants-and-improvements">
+      <h2>BERT Variants and Improvements</h2>
+
+      <p>Within a year of BERT's release, a series of follow-up works systematically improved every aspect of the recipe: the pre-training objective, the data regime, the attention mechanism, the model size, and the training efficiency. Each of these variants isolated a specific weakness in the original BERT and fixed it, collectively advancing encoder-only models far beyond the original baseline.</p>
+
+      <h3>RoBERTa: The Recipe Matters More Than the Architecture</h3>
+
+      <p>Liu et al. (2019) published <strong>RoBERTa</strong> (Robustly Optimized BERT Approach) with a simple but devastating thesis: BERT was significantly <em>undertrained</em>, and most of the gap to optimal performance could be closed by fixing the training recipe without changing the architecture at all.</p>
+
+      <p>The changes were:</p>
+      <ul>
+        <li><strong>Remove NSP entirely.</strong> Train with MLM only, using full-document inputs packed to the 512-token limit. This improved downstream performance on all tasks.</li>
+        <li><strong>Dynamic masking.</strong> BERT applied masking once during data preprocessing, so every epoch saw the same masks. RoBERTa generates fresh random masks for each input on every pass through the data, effectively multiplying the diversity of training signals.</li>
+        <li><strong>More data, longer training.</strong> RoBERTa trained on 160GB of text (10&times; BERT's 16GB) including CC-News, OpenWebText, and Stories. Training ran for 500K steps with a larger batch size of 8,192 sequences.</li>
+        <li><strong>Larger batches.</strong> Increasing the batch size from 256 to 8,192 improved optimization stability and MLM accuracy.</li>
+      </ul>
+
+      <p>The result: RoBERTa matched or exceeded XLNet (which introduced a complex permutation-based objective) on every benchmark, proving that the original Transformer encoder architecture was not the bottleneck &mdash; the training recipe was. This lesson recurs throughout deep learning: the architecture often matters less than the data, compute, and hyperparameter choices.</p>
+
+      <h3>ALBERT: Smaller, But Not Weaker</h3>
+
+      <p>Lan et al. (2019) introduced <strong>ALBERT</strong> (A Lite BERT) with two parameter-reduction techniques. <strong>Factorized embedding parameterization</strong> decouples the vocabulary embedding size $E$ from the hidden size $H$: instead of a single $V \times H$ embedding matrix (which is huge when $H = 4096$), ALBERT uses a $V \times E$ matrix followed by an $E \times H$ projection, with $E \ll H$. <strong>Cross-layer parameter sharing</strong> reuses the same Transformer block weights across all layers. An ALBERT-xxlarge model with 12M unique parameters (vs BERT-Large's 340M) actually <em>outperformed</em> BERT-Large on several benchmarks.</p>
+
+      <p>ALBERT also replaced NSP with a <strong>Sentence Order Prediction (SOP)</strong> task, where the model must distinguish correctly ordered sentence pairs from swapped ones. SOP is harder than NSP (both sentences come from the same document, so topic cues are absent) and consistently improved downstream performance on multi-sentence tasks.</p>
+
+      <h3>DeBERTa: Disentangled Attention</h3>
+
+      <p>He et al. (2020) proposed <strong>DeBERTa</strong> (Decoding-enhanced BERT with Disentangled Attention), which improved BERT by separating the roles of content and position in the attention computation. In standard BERT, each token's representation is the sum of its content embedding and its position embedding: $H_i = E_{\text{token}}(x_i) + E_{\text{pos}}(i)$. This means the attention score $H_i^\top H_j$ (dot product, yields a scalar) conflates four distinct interactions: content-to-content, content-to-position, position-to-content, and position-to-position.</p>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 320" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="ch07-arr4" viewBox="0 0 10 10" refX="9" refY="5"
+              markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+              <path d="M1 1L9 5L1 9" fill="none" stroke="context-stroke"
+                stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </marker>
+          </defs>
+
+          <!-- Panel headers -->
+          <rect x="20" y="10" width="360" height="30" rx="5" fill="#FAECE7" stroke="#F0997B" stroke-width="1"/>
+          <text x="200" y="30" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="600" fill="#993C1D">Standard BERT &mdash; Entangled</text>
+
+          <rect x="420" y="10" width="360" height="30" rx="5" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="600" y="30" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="600" fill="#0F6E56">DeBERTa &mdash; Disentangled</text>
+
+          <line x1="400" y1="5" x2="400" y2="310" stroke="#E5E3DC" stroke-width="1" stroke-dasharray="5 4"/>
+
+          <!-- Left: standard BERT attention -->
+          <rect x="50" y="70" width="140" height="40" rx="6" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <text x="120" y="95" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#534AB7">H&#x1D62; = content + pos</text>
+
+          <rect x="210" y="70" width="140" height="40" rx="6" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <text x="280" y="95" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#534AB7">H&#x2C7C; = content + pos</text>
+
+          <line x1="120" y1="112" x2="200" y2="150" stroke="#534AB7" stroke-width="1.5"/>
+          <line x1="280" y1="112" x2="200" y2="150" stroke="#534AB7" stroke-width="1.5"/>
+
+          <rect x="140" y="150" width="120" height="36" rx="6" fill="#534AB7" stroke="#534AB7"/>
+          <text x="200" y="173" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#FFFFFF">H&#x1D62;&#x1D40; H&#x2C7C;</text>
+
+          <text x="200" y="210" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#5C5B56">Single entangled score</text>
+          <text x="200" y="228" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">conflates 4 interactions</text>
+
+          <!-- Right: DeBERTa disentangled -->
+          <rect x="440" y="60" width="100" height="32" rx="5" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <text x="490" y="81" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#534AB7">content&#x1D62;</text>
+
+          <rect x="555" y="60" width="90" height="32" rx="5" fill="#FAEEDA" stroke="#EF9F27" stroke-width="1.5"/>
+          <text x="600" y="81" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#854F0B">pos&#x1D62;</text>
+
+          <rect x="660" y="60" width="100" height="32" rx="5" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <text x="710" y="81" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#534AB7">content&#x2C7C;</text>
+
+          <!-- Three score components -->
+          <line x1="490" y1="94" x2="555" y2="125" stroke="#534AB7" stroke-width="1"/>
+          <line x1="710" y1="94" x2="645" y2="125" stroke="#534AB7" stroke-width="1"/>
+          <rect x="530" y="120" width="140" height="28" rx="5" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1"/>
+          <text x="600" y="139" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#534AB7">content–content</text>
+
+          <line x1="490" y1="94" x2="555" y2="167" stroke="#854F0B" stroke-width="1"/>
+          <rect x="530" y="158" width="140" height="28" rx="5" fill="#FAEEDA" stroke="#EF9F27" stroke-width="1"/>
+          <text x="600" y="177" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#854F0B">content–position</text>
+
+          <line x1="600" y1="94" x2="555" y2="205" stroke="#854F0B" stroke-width="1"/>
+          <line x1="710" y1="94" x2="645" y2="205" stroke="#854F0B" stroke-width="1"/>
+          <rect x="530" y="196" width="140" height="28" rx="5" fill="#FAEEDA" stroke="#EF9F27" stroke-width="1"/>
+          <text x="600" y="215" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#854F0B">position–content</text>
+
+          <!-- Sum -->
+          <line x1="600" y1="226" x2="600" y2="255" stroke="#0F6E56" stroke-width="1.5" marker-end="url(#ch07-arr4)"/>
+          <rect x="540" y="258" width="120" height="28" rx="5" fill="#0F6E56" stroke="#0F6E56"/>
+          <text x="600" y="277" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#FFFFFF">A&#x1D62;&#x2C7C; = sum</text>
+
+          <text x="600" y="305" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#0F6E56">Three explicit terms, each learnable</text>
+        </svg>
+        <figcaption>Figure 7.4 &mdash; Standard BERT (left) computes attention from a single entangled representation that mixes content and position. DeBERTa (right) maintains separate content and position representations and computes three explicit interaction terms: content-to-content (semantic relevance), content-to-position (where should I look?), and position-to-content (what's at that position?). This disentanglement allows the model to learn richer attention patterns.</figcaption>
+      </figure>
+
+      <p>DeBERTa computes the attention score as the sum of three disentangled terms:</p>
+
+      $$A_{ij} = \underbrace{H_i^c {H_j^c}^\top}_{\text{content-to-content}} + \underbrace{H_i^c {P_{i|j}}^\top}_{\text{content-to-position}} + \underbrace{P_{j|i} {H_j^c}^\top}_{\text{position-to-content}}$$
+
+      <p>Here $H^c$ denotes content representations and $P$ denotes relative position embeddings. The position-to-position term is dropped as empirically uninformative. DeBERTa also introduced an <strong>Enhanced Mask Decoder (EMD)</strong> that incorporates absolute position information only in the final prediction layer, after the disentangled attention layers have processed relative positions. DeBERTa-V3 (Large) became one of the strongest encoder models, exceeding human performance on the SuperGLUE benchmark.</p>
+
+      <h3>DistilBERT: Knowledge Distillation</h3>
+
+      <p>Sanh et al. (2019) applied <strong>knowledge distillation</strong> to compress BERT-Base into a smaller model called <strong>DistilBERT</strong>. The student model has 6 layers (half of BERT-Base's 12) and is trained to mimic three signals from the teacher: the soft probability distribution over the vocabulary (distillation loss), the hidden state representations (cosine embedding loss), and the true MLM labels (standard MLM loss).</p>
+
+      <p>The result: DistilBERT retains 97% of BERT's performance on GLUE while being 40% smaller (66M parameters) and 60% faster at inference. This demonstrated that BERT's 12 layers contain significant redundancy &mdash; much of the information can be compressed into 6 layers with minimal quality loss. DistilBERT became the default choice for production NLP where latency and memory are constrained.</p>
+
+      <h3>SpanBERT: Masking Spans, Not Random Tokens</h3>
+
+      <p>Joshi et al. (2020) proposed <strong>SpanBERT</strong>, which modifies the masking strategy to mask contiguous spans of tokens rather than random individual tokens. Span lengths are sampled from a geometric distribution with mean 3.8, favoring short spans but occasionally producing long ones. The model predicts each masked token using both its position's representation and the representations of the span boundary tokens (the tokens immediately before and after the masked span).</p>
+
+      <p>This <strong>Span Boundary Objective (SBO)</strong> encourages the boundary tokens to encode a summary of the span's content, which proves particularly useful for tasks that require understanding entities and their relationships: coreference resolution, relation extraction, and extractive question answering. SpanBERT set new records on SQuAD 1.1, SQuAD 2.0, and the OntoNotes coreference task.</p>
+
+      <figure class="diagram-figure diagram-interactive">
+        <div class="widget-container" id="widget-ch07-variants">
+          <style>
+            #widget-ch07-variants .variant-bar {
+              display: flex; align-items: center; gap: 0.6rem;
+              margin-bottom: 0.5rem;
+              font-family: system-ui, -apple-system, sans-serif; font-size: 13px;
+            }
+            #widget-ch07-variants .variant-name {
+              width: 100px; text-align: right; color: #5C5B56; font-weight: 500;
+            }
+            #widget-ch07-variants .bar-track {
+              flex: 1; height: 24px; background: #F1EFE8; border-radius: 4px;
+              position: relative; overflow: hidden;
+            }
+            #widget-ch07-variants .bar-fill {
+              height: 100%; border-radius: 4px; display: flex; align-items: center;
+              padding-left: 8px; font-size: 11px; font-weight: 500; color: #FFFFFF;
+              transition: width 0.4s ease;
+            }
+            #widget-ch07-variants .bar-params {
+              width: 70px; text-align: right; color: #9C9A94; font-size: 11px;
+            }
+            #widget-ch07-variants .controls {
+              display: flex; gap: 1.2rem; padding: 0.5rem 0;
+              font-family: system-ui, -apple-system, sans-serif; font-size: 13px; color: #5C5B56;
+            }
+          </style>
+
+          <div class="controls">
+            <label style="display:flex; align-items:center; gap:8px;">
+              Metric:
+              <select id="ch07-metric-select" onchange="updateCh07Variants()" style="font-family:system-ui; font-size:13px; padding:2px 6px; border:1px solid #E5E3DC; border-radius:4px;">
+                <option value="glue">GLUE Score</option>
+                <option value="squad">SQuAD 2.0 F1</option>
+                <option value="speed">Relative Speed</option>
+              </select>
+            </label>
+          </div>
+
+          <div id="ch07-bars-container"></div>
+
+          <p style="font-family:system-ui, -apple-system, sans-serif; font-size:13px; color:#9C9A94; font-style:italic;
+                    padding:0.5rem 0 0.5rem;" id="ch07-variants-observation">
+          </p>
+        </div>
+
+        <script>
+          (function() {
+            var ch07Data = {
+              glue: [
+                { name: "BERT-Base", val: 79.6, params: "110M", color: "#AFA9EC" },
+                { name: "DistilBERT", val: 77.0, params: "66M", color: "#85B7EB" },
+                { name: "ALBERT-xxl", val: 89.4, params: "12M*", color: "#EF9F27" },
+                { name: "SpanBERT", val: 82.8, params: "110M", color: "#5DCAA5" },
+                { name: "RoBERTa-L", val: 90.2, params: "355M", color: "#534AB7" },
+                { name: "DeBERTa-L", val: 91.3, params: "400M", color: "#0F6E56" }
+              ],
+              squad: [
+                { name: "BERT-Base", val: 76.3, params: "110M", color: "#AFA9EC" },
+                { name: "DistilBERT", val: 71.8, params: "66M", color: "#85B7EB" },
+                { name: "ALBERT-xxl", val: 84.1, params: "12M*", color: "#EF9F27" },
+                { name: "SpanBERT", val: 88.7, params: "110M", color: "#5DCAA5" },
+                { name: "RoBERTa-L", val: 89.4, params: "355M", color: "#534AB7" },
+                { name: "DeBERTa-L", val: 90.7, params: "400M", color: "#0F6E56" }
+              ],
+              speed: [
+                { name: "BERT-Base", val: 100, params: "110M", color: "#AFA9EC" },
+                { name: "DistilBERT", val: 160, params: "66M", color: "#85B7EB" },
+                { name: "ALBERT-xxl", val: 30, params: "12M*", color: "#EF9F27" },
+                { name: "SpanBERT", val: 100, params: "110M", color: "#5DCAA5" },
+                { name: "RoBERTa-L", val: 33, params: "355M", color: "#534AB7" },
+                { name: "DeBERTa-L", val: 28, params: "400M", color: "#0F6E56" }
+              ]
+            };
+            var ch07Labels = {
+              glue: "GLUE Score (higher is better). DeBERTa-Large leads at 91.3, surpassing human baselines.",
+              squad: "SQuAD 2.0 F1 (higher is better). SpanBERT's span masking shines on extractive QA.",
+              speed: "Relative inference speed (% of BERT-Base, higher is faster). DistilBERT is 60% faster; large models are 3\u00D7 slower."
+            };
+            window.updateCh07Variants = function() {
+              var metric = document.getElementById('ch07-metric-select').value;
+              var data = ch07Data[metric];
+              var maxVal = metric === 'speed' ? 180 : 100;
+              var container = document.getElementById('ch07-bars-container');
+              container.innerHTML = '';
+              for (var i = 0; i < data.length; i++) {
+                var d = data[i];
+                var pct = (d.val / maxVal) * 100;
+                var row = document.createElement('div');
+                row.className = 'variant-bar';
+                row.innerHTML = '<span class="variant-name">' + d.name + '</span>' +
+                  '<div class="bar-track"><div class="bar-fill" style="width:' + pct + '%;background:' + d.color + ';">' + d.val + (metric === 'speed' ? '%' : '') + '</div></div>' +
+                  '<span class="bar-params">' + d.params + '</span>';
+                container.appendChild(row);
+              }
+              document.getElementById('ch07-variants-observation').textContent = ch07Labels[metric];
+            };
+            updateCh07Variants();
+          })();
+        </script>
+
+        <figcaption>Figure 7.5 &mdash; Interactive: Compare BERT variants across three metrics. GLUE and SQuAD show quality; Speed shows inference throughput relative to BERT-Base. Note ALBERT-xxl's tiny parameter count (12M unique) with strong quality but low speed (parameter sharing doesn't reduce computation, only memory). *ALBERT has 12M unique parameters but 233M total during forward pass due to reuse.</figcaption>
+      </figure>
+
+    </section>
+
+    <!-- ================================================================== -->
+    <!-- SECTION 3: MULTILINGUAL AND DOMAIN-SPECIFIC ENCODERS               -->
+    <!-- ================================================================== -->
+    <section class="chapter-section" id="multilingual-and-domain-specific-encoders">
+      <h2>Multilingual and Domain-Specific Encoders</h2>
+
+      <p>BERT's pre-train / fine-tune paradigm transfers naturally across languages and domains. The encoder architecture is agnostic to what text it processes &mdash; it just needs enough pre-training data to build good representations. This opened two important research directions: multilingual models that handle many languages with a single model, and domain-specific models that specialize in the vocabulary and patterns of particular fields.</p>
+
+      <h3>mBERT: Multilingual BERT</h3>
+
+      <p>Google released <strong>mBERT</strong> alongside the original BERT as a single model trained on Wikipedia text in 104 languages. The architecture is identical to BERT-Base (12 layers, 768 hidden, 110M parameters), with a larger shared WordPiece vocabulary of 110K tokens covering all languages. No language identifiers or explicit cross-lingual alignment signals were used &mdash; the model simply consumed mixed-language text during pre-training.</p>
+
+      <p>The surprising result was that mBERT learned cross-lingual representations spontaneously. A model fine-tuned for named entity recognition on English data could be applied directly to French, German, or Chinese text with reasonable accuracy &mdash; a capability called <strong>zero-shot cross-lingual transfer</strong>. Pires et al. (2019) showed that this emerged from the shared subword vocabulary and shared Transformer parameters, which forced different languages to occupy overlapping regions of the embedding space.</p>
+
+      <p>The limitation is the <strong>curse of multilinguality</strong>: with a fixed model capacity, spreading parameters across 104 languages necessarily dilutes per-language quality. Low-resource languages suffer disproportionately because they contribute fewer examples to pre-training. This motivated dedicated multilingual models with more capacity.</p>
+
+      <h3>XLM-R: Cross-lingual Language Model &mdash; RoBERTa</h3>
+
+      <p>Conneau et al. (2020) trained <strong>XLM-R</strong> (XLM-RoBERTa) on 2.5TB of CommonCrawl data in 100 languages using the RoBERTa recipe. The key differences from mBERT: 10&times; more training data, larger model (550M parameters for XLM-R Large), and SentencePiece tokenization with a 250K vocabulary. XLM-R dramatically outperformed mBERT on cross-lingual benchmarks like XNLI and MLQA, particularly for low-resource languages that benefited from the larger data mix.</p>
+
+      <p>XLM-R demonstrated that the curse of multilinguality can be mitigated by scaling: with enough capacity and data, a single model can maintain strong per-language quality while enabling powerful cross-lingual transfer. It became the standard backbone for multilingual NLP applications and remains competitive in 2025.</p>
+
+      <h3>Domain-Specific Encoders</h3>
+
+      <p>General-purpose encoders are pre-trained on web text and Wikipedia, which means their representations are optimized for general-domain language. Specialized domains &mdash; biomedicine, law, finance, clinical medicine &mdash; use distinctive vocabulary, syntax, and conventions that are underrepresented in general corpora. Domain-specific pre-training addresses this by continuing (or restarting) BERT pre-training on domain text.</p>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 300" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="ch07-arr5" viewBox="0 0 10 10" refX="9" refY="5"
+              markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+              <path d="M1 1L9 5L1 9" fill="none" stroke="context-stroke"
+                stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </marker>
+          </defs>
+
+          <text x="400" y="22" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="500" fill="#5C5B56">Domain-Specific Encoder Landscape</text>
+
+          <!-- Central BERT node -->
+          <rect x="310" y="50" width="180" height="44" rx="6" fill="#534AB7" stroke="#534AB7"/>
+          <text x="400" y="72" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="500" fill="#FFFFFF">BERT / RoBERTa</text>
+          <text x="400" y="88" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#AFA9EC">General domain</text>
+
+          <!-- BioBERT -->
+          <line x1="310" y1="72" x2="200" y2="136" stroke="#0F6E56" stroke-width="1.5" marker-end="url(#ch07-arr5)"/>
+          <rect x="80" y="130" width="140" height="52" rx="6" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1.5"/>
+          <text x="150" y="152" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="500" fill="#0F6E56">BioBERT</text>
+          <text x="150" y="170" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">PubMed abstracts</text>
+          <text x="150" y="200" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#5C5B56">+4.7% F1 on biomedical NER</text>
+
+          <!-- SciBERT -->
+          <line x1="355" y1="94" x2="320" y2="136" stroke="#185FA5" stroke-width="1.5" marker-end="url(#ch07-arr5)"/>
+          <rect x="250" y="130" width="140" height="52" rx="6" fill="#E6F1FB" stroke="#85B7EB" stroke-width="1.5"/>
+          <text x="320" y="152" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="500" fill="#185FA5">SciBERT</text>
+          <text x="320" y="170" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">Semantic Scholar papers</text>
+          <text x="320" y="200" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#5C5B56">+2.5% on SciERC RE</text>
+
+          <!-- LegalBERT -->
+          <line x1="445" y1="94" x2="480" y2="136" stroke="#854F0B" stroke-width="1.5" marker-end="url(#ch07-arr5)"/>
+          <rect x="410" y="130" width="140" height="52" rx="6" fill="#FAEEDA" stroke="#EF9F27" stroke-width="1.5"/>
+          <text x="480" y="152" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="500" fill="#854F0B">LegalBERT</text>
+          <text x="480" y="170" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">EU/UK/US legislation</text>
+          <text x="480" y="200" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#5C5B56">+3.1% on contract NLI</text>
+
+          <!-- FinBERT -->
+          <line x1="490" y1="72" x2="600" y2="136" stroke="#993C1D" stroke-width="1.5" marker-end="url(#ch07-arr5)"/>
+          <rect x="560" y="130" width="140" height="52" rx="6" fill="#FAECE7" stroke="#F0997B" stroke-width="1.5"/>
+          <text x="630" y="152" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="500" fill="#993C1D">FinBERT</text>
+          <text x="630" y="170" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">Financial news &amp; filings</text>
+          <text x="630" y="200" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#5C5B56">+6% on sentiment (FPB)</text>
+
+          <!-- ClinicalBERT -->
+          <line x1="400" y1="94" x2="400" y2="230" stroke="#534AB7" stroke-width="1.5" marker-end="url(#ch07-arr5)"/>
+          <rect x="300" y="234" width="200" height="52" rx="6" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <text x="400" y="256" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="500" fill="#534AB7">ClinicalBERT</text>
+          <text x="400" y="274" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">MIMIC-III clinical notes</text>
+
+          <!-- Pattern label -->
+          <text x="400" y="300" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#5C5B56">Pattern: general pre-training &#x2192; domain-specific continued pre-training &#x2192; task fine-tuning</text>
+        </svg>
+        <figcaption>Figure 7.6 &mdash; The domain-specific encoder landscape. Each model starts from BERT or RoBERTa weights and continues pre-training on domain text. Performance gains on domain benchmarks are substantial: BioBERT gains +4.7% F1 on biomedical NER, FinBERT gains +6% on financial sentiment. The pattern of "continued pre-training" generalizes to any domain with sufficient text.</figcaption>
+      </figure>
+
+      <p><strong>BioBERT</strong> (Lee et al., 2020) continued pre-training BERT on PubMed abstracts (4.5B words) and PMC full-text articles (13.5B words). It significantly outperformed general BERT on biomedical named entity recognition, relation extraction, and question answering. The gains came primarily from learning domain-specific tokenization patterns (BERT's WordPiece splits "immunoglobulin" into 4 subwords; BioBERT's representations better capture its meaning as a single concept) and statistical regularities in scientific text.</p>
+
+      <p><strong>SciBERT</strong> (Beltagy et al., 2019) trained from scratch on 1.14M papers from Semantic Scholar, using a custom scientific vocabulary (SCIVOCAB). It outperformed BERT on tasks from the scientific domain including citation intent classification, relation extraction on SciERC, and sequence labeling on biological entities. The custom vocabulary proved particularly important: general-domain BERT splits many scientific terms into uninformative subwords.</p>
+
+      <p><strong>LegalBERT</strong> (Chalkidis et al., 2020) continued pre-training on 12GB of diverse legal text from EU, UK, and US jurisdictions. Legal language is distinctive: extremely long sentences, nested conditional clauses, precise technical terminology, and frequent cross-references. LegalBERT improved performance on contract review NLI, court opinion classification, and legal NER.</p>
+
+      <p><strong>FinBERT</strong> (Araci, 2019) targeted financial text, training on a combination of financial news, earnings call transcripts, and SEC filings. Financial sentiment analysis is challenging because the same words carry domain-specific polarity: "volatile" is neutral in general text but negative in finance; "dividend cut" requires understanding that "cut" applies to a financial instrument. FinBERT achieved a 6-point improvement on the Financial PhraseBank sentiment benchmark.</p>
+
+      <p><strong>ClinicalBERT</strong> (Alsentzer et al., 2019) adapted BERT to clinical text from the MIMIC-III database of de-identified electronic health records. Clinical notes contain abbreviations, misspellings, domain jargon, and implicit temporal reasoning that differ substantially from any web corpus. ClinicalBERT improved performance on clinical NLI, hospital readmission prediction, and mortality prediction tasks.</p>
+
+      <p>The general pattern is clear: continued pre-training on 1&ndash;20GB of domain text, starting from a strong general checkpoint, consistently yields 2&ndash;8% improvements on domain-specific downstream tasks. The cost is modest (a few GPU-days), and the recipe is reliable. This approach remains standard practice for deploying encoder models in specialized industries.</p>
+
+    </section>
+
+    <!-- ================================================================== -->
+    <!-- SECTION 4: USE CASES FOR ENCODER-ONLY MODELS                       -->
+    <!-- ================================================================== -->
+    <section class="chapter-section" id="use-cases-for-encoder-only-models">
+      <h2>Use Cases for Encoder-Only Models</h2>
+
+      <p>In 2025, decoder-only generative models dominate headlines. But encoder-only models remain the better choice for a large class of production NLP tasks. Understanding when to use an encoder is a critical architectural decision.</p>
+
+      <h3>Text Classification</h3>
+
+      <p>Sentiment analysis, intent detection, toxicity classification, topic categorization &mdash; any task that maps a text to a label. The <code>[CLS]</code> token's final representation is passed through a linear layer, and cross-entropy loss trains the system. BERT-Base handles most classification tasks at sub-10ms latency per example, making it practical for real-time applications. A fine-tuned encoder typically matches or exceeds GPT-4's zero-shot classification accuracy on tasks with clear label definitions, at a fraction of the cost and latency.</p>
+
+      <h3>Named Entity Recognition</h3>
+
+      <p><strong>Named Entity Recognition (NER)</strong> is a token-level classification task: each token is assigned a tag (Person, Organization, Location, etc.) using a BIO or BIOES tagging scheme. Each token's final-layer representation is projected to the tag space. BERT-based NER models dominate production systems for entity extraction in search engines, medical records, financial documents, and legal contracts.</p>
+
+      <h3>Question Answering: Span Extraction</h3>
+
+      <p>In <strong>extractive question answering</strong>, the input is a question-context pair and the output is a span of text within the context that answers the question. Two linear layers predict the start and end positions of the answer span. The model scores each token as a potential start or end position, and the highest-scoring valid span (start &le; end, within length limits) is returned. BERT set the template for this approach on SQuAD, and variants like SpanBERT and DeBERTa refined it further.</p>
+
+      <h3>Semantic Textual Similarity</h3>
+
+      <p>Given two sentences, produce a score indicating their semantic similarity. Sentence-BERT (Reimers and Gurevych, 2019) fine-tuned BERT with a siamese architecture to produce meaningful sentence embeddings. The <code>[CLS]</code> representation (or mean-pooled token representations) from each sentence are compared using cosine similarity. This enables fast nearest-neighbor search: encode your corpus once, then compare query embeddings against the stored embeddings. Encoder-based sentence embeddings power semantic search, duplicate detection, and clustering at scale.</p>
+
+      <p>Here is a minimal PyTorch implementation of mean pooling and cosine similarity for sentence embeddings:</p>
+
+<pre><code class="language-python">
+def mean_pool(hidden_states, attention_mask):
+    """Mean pooling over token embeddings, ignoring padding tokens."""
+    # hidden_states: (batch, seq_len, d_model)
+    # attention_mask: (batch, seq_len) — 1 for real tokens, 0 for padding
+    mask_expanded = attention_mask.unsqueeze(-1).float()  # (batch, seq_len, 1)
+    sum_embeddings = (hidden_states * mask_expanded).sum(dim=1)
+    sum_mask = mask_expanded.sum(dim=1).clamp(min=1e-9)
+    return sum_embeddings / sum_mask  # (batch, d_model)
+
+# Compute cosine similarity between two sentences
+with torch.no_grad():
+    h1 = encoder(tokens_a, mask_a)  # (1, seq_len, d_model)
+    h2 = encoder(tokens_b, mask_b)
+    emb_a = mean_pool(h1, mask_a)   # (1, d_model)
+    emb_b = mean_pool(h2, mask_b)
+    similarity = F.cosine_similarity(emb_a, emb_b)  # scalar in [-1, 1]
+</code></pre>
+
+      <h3>When to Choose Encoder-Only Over Generative</h3>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 340" xmlns="http://www.w3.org/2000/svg">
+          <text x="400" y="22" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="500" fill="#5C5B56">When to Use an Encoder-Only Model</text>
+
+          <!-- Decision flow -->
+          <!-- Start -->
+          <rect x="300" y="44" width="200" height="36" rx="6" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="1"/>
+          <text x="400" y="67" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#5C5B56">Does the task generate text?</text>
+
+          <!-- Yes: decoder -->
+          <line x1="500" y1="62" x2="620" y2="62" stroke="#993C1D" stroke-width="1.5" marker-end="url(#ch07-arr5)"/>
+          <text x="560" y="55" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#993C1D">Yes</text>
+          <rect x="622" y="44" width="140" height="36" rx="6" fill="#FAECE7" stroke="#F0997B" stroke-width="1.5"/>
+          <text x="692" y="67" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#993C1D">Use Decoder</text>
+
+          <!-- No: next question -->
+          <line x1="400" y1="80" x2="400" y2="110" stroke="#0F6E56" stroke-width="1.5" marker-end="url(#ch07-arr5)"/>
+          <text x="414" y="100" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#0F6E56">No</text>
+
+          <rect x="260" y="112" width="280" height="36" rx="6" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="1"/>
+          <text x="400" y="135" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#5C5B56">Need &lt; 10ms latency per example?</text>
+
+          <line x1="540" y1="130" x2="620" y2="130" stroke="#0F6E56" stroke-width="1.5" marker-end="url(#ch07-arr5)"/>
+          <text x="580" y="123" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#0F6E56">Yes</text>
+          <rect x="622" y="112" width="140" height="36" rx="6" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1.5"/>
+          <text x="692" y="135" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#0F6E56">Encoder wins</text>
+
+          <line x1="400" y1="148" x2="400" y2="178" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch07-arr5)"/>
+          <text x="414" y="168" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#5C5B56">No</text>
+
+          <rect x="240" y="180" width="320" height="36" rx="6" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="1"/>
+          <text x="400" y="203" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#5C5B56">Have &gt; 1K labeled examples for the task?</text>
+
+          <line x1="560" y1="198" x2="620" y2="198" stroke="#0F6E56" stroke-width="1.5" marker-end="url(#ch07-arr5)"/>
+          <text x="590" y="191" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#0F6E56">Yes</text>
+          <rect x="622" y="180" width="140" height="36" rx="6" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1.5"/>
+          <text x="692" y="203" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#0F6E56">Encoder wins</text>
+
+          <line x1="400" y1="216" x2="400" y2="246" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch07-arr5)"/>
+          <text x="414" y="236" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#5C5B56">No</text>
+
+          <rect x="260" y="248" width="280" height="36" rx="6" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="1"/>
+          <text x="400" y="271" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#5C5B56">Need batch embeddings for search?</text>
+
+          <line x1="540" y1="266" x2="620" y2="266" stroke="#0F6E56" stroke-width="1.5" marker-end="url(#ch07-arr5)"/>
+          <text x="580" y="259" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#0F6E56">Yes</text>
+          <rect x="622" y="248" width="140" height="36" rx="6" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1.5"/>
+          <text x="692" y="271" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#0F6E56">Encoder wins</text>
+
+          <line x1="400" y1="284" x2="400" y2="310" stroke="#993C1D" stroke-width="1.5" marker-end="url(#ch07-arr5)"/>
+          <text x="414" y="302" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#993C1D">No</text>
+          <rect x="310" y="312" width="180" height="28" rx="6" fill="#FAECE7" stroke="#F0997B" stroke-width="1"/>
+          <text x="400" y="331" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#993C1D">Consider a decoder (LLM)</text>
+        </svg>
+        <figcaption>Figure 7.7 &mdash; Decision guide for choosing encoder-only models. Encoders dominate when the task is discriminative (not generative), latency matters, labeled data is available, or batch embedding is needed. Decoders are preferred for free-form text generation and few-shot scenarios with limited labeled data.</figcaption>
+      </figure>
+
+      <p>The encoder advantage comes from three sources:</p>
+
+      <p><strong>Latency.</strong> A BERT-Base forward pass on a 128-token input takes ~2ms on a modern GPU. An autoregressive decoder generating a classification answer ("positive") must produce multiple tokens sequentially, each requiring a full forward pass. Even with KV caching, a decoder is 10&ndash;100&times; slower for tasks that produce a single label.</p>
+
+      <p><strong>Bidirectionality.</strong> Encoders see the full input before making any decision. A sentiment classifier processing "The movie was not good, it was <em>absolutely brilliant</em>" benefits from seeing "absolutely brilliant" while processing "not good." A left-to-right decoder must assign intermediate hidden states before seeing the reversal, making it inherently less efficient at extracting bidirectional features for classification.</p>
+
+      <p><strong>Cost.</strong> A BERT-Base model with 110M parameters can be deployed on a single CPU in production. A GPT-class model with 7B+ parameters requires a GPU. For high-throughput production workloads processing millions of documents per day &mdash; email spam filtering, content moderation, search ranking &mdash; the cost difference is orders of magnitude.</p>
+
+      <p>The counterargument is flexibility. A large decoder can perform classification zero-shot via prompting, without fine-tuning. This is valuable when labeled data is scarce (fewer than ~100 examples) or when the task definition changes frequently. But when the task is stable and labeled data exists, a fine-tuned encoder is almost always faster, cheaper, and at least as accurate.</p>
+
+      <div class="callout callout-insight">
+        <div class="callout-title">Key Insight</div>
+        <p>Encoder-only models are not obsolete. They occupy a distinct and valuable niche: high-throughput, low-latency discriminative tasks where bidirectional context and fine-tuned precision matter more than generative flexibility. Every major search engine, content moderation system, and enterprise NLP pipeline still relies heavily on encoder-based models in production.</p>
+      </div>
+
+      <p>The BERT family established a template that persists today: pre-train a deep Transformer on massive text with a self-supervised objective, then adapt it cheaply to any task. The encoder-only branch of this family tree &mdash; BERT, RoBERTa, DeBERTa, and their domain-specific descendants &mdash; remains the most practical choice for the majority of real-world NLP deployments. The next chapter traces the decoder-only branch, which sacrificed bidirectionality for the ability to generate text &mdash; and ultimately scaled to models that changed how humans interact with computers.</p>
+
+    </section>
+
+  </article>
+
+  <footer class="chapter-footer">
+    <div class="footer-nav">
+      <a href="ch06.html">&larr; Previous: Pre-training Fundamentals</a>
+      <a href="ch08.html">Next: Decoder-Only Models &mdash; The GPT Lineage &rarr;</a>
+    </div>
+  </footer>
+
+</body>
+</html>

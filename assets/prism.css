@@ -1,0 +1,132 @@
+/* ============================================================
+   Prism.js Theme — Transformer Research Book
+   Matches the book's color palette and typography
+   ============================================================ */
+
+code[class*="language-"],
+pre[class*="language-"] {
+  color: #1A1A18;
+  background: none;
+  font-family: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+  font-size: 13.5px;
+  line-height: 1.6;
+  text-align: left;
+  white-space: pre;
+  word-spacing: normal;
+  word-break: normal;
+  word-wrap: normal;
+  tab-size: 4;
+  hyphens: none;
+}
+
+/* Code blocks */
+pre[class*="language-"] {
+  padding: 1.2rem 1.4rem;
+  margin: 1.5rem 0;
+  overflow: auto;
+  border-radius: 8px;
+  border: 1px solid #E5E3DC;
+  background: #FAFAF9;
+}
+
+/* Inline code */
+:not(pre) > code[class*="language-"] {
+  padding: 0.15em 0.4em;
+  border-radius: 4px;
+  background: #F1EFE8;
+  border: 1px solid #E5E3DC;
+}
+
+/* Token colors — mapped to book palette */
+.token.comment,
+.token.prolog,
+.token.docstring,
+.token.cdata {
+  color: #9C9A94;
+  font-style: italic;
+}
+
+.token.punctuation {
+  color: #5C5B56;
+}
+
+.token.namespace {
+  opacity: 0.8;
+}
+
+.token.property,
+.token.tag,
+.token.boolean,
+.token.number,
+.token.constant,
+.token.symbol {
+  color: #993C1D;
+}
+
+.token.deleted {
+  color: #993C1D;
+}
+
+.token.selector,
+.token.attr-name,
+.token.string,
+.token.char,
+.token.builtin {
+  color: #0F6E56;
+}
+
+.token.inserted {
+  color: #0F6E56;
+}
+
+.token.operator,
+.token.entity,
+.token.url,
+.language-css .token.string,
+.style .token.string {
+  color: #854F0B;
+}
+
+.token.atrule,
+.token.attr-value,
+.token.keyword {
+  color: #534AB7;
+}
+
+.token.function,
+.token.class-name {
+  color: #185FA5;
+}
+
+.token.regex,
+.token.important,
+.token.variable {
+  color: #854F0B;
+}
+
+.token.important,
+.token.bold {
+  font-weight: 700;
+}
+
+.token.italic {
+  font-style: italic;
+}
+
+.token.entity {
+  cursor: help;
+}
+
+/* Decorator / annotation (Python @decorator) */
+.token.decorator,
+.token.annotation {
+  color: #534AB7;
+}
+
+/* Line highlighting (optional) */
+pre[class*="language-"]::selection,
+pre[class*="language-"] ::selection,
+code[class*="language-"]::selection,
+code[class*="language-"] ::selection {
+  background: #EEEDFE;
+}

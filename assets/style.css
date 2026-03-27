@@ -1,0 +1,294 @@
+/* ============================================================
+   Transformer Research Book — Global Stylesheet
+   ============================================================ */
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg:           #FAFAF9;
+  --surface:      #FFFFFF;
+  --border:       #E5E3DC;
+  --border-mid:   #C8C6BE;
+  --text-1:       #1A1A18;
+  --text-2:       #5C5B56;
+  --text-3:       #9C9A94;
+
+  --purple:       #534AB7;
+  --purple-light: #EEEDFE;
+  --purple-mid:   #AFA9EC;
+  --teal:         #0F6E56;
+  --teal-light:   #E1F5EE;
+  --teal-mid:     #5DCAA5;
+  --coral:        #993C1D;
+  --coral-light:  #FAECE7;
+  --coral-mid:    #F0997B;
+  --amber:        #854F0B;
+  --amber-light:  #FAEEDA;
+  --amber-mid:    #EF9F27;
+  --blue:         #185FA5;
+  --blue-light:   #E6F1FB;
+  --blue-mid:     #85B7EB;
+  --gray-light:   #F1EFE8;
+  --gray-mid:     #B4B2A9;
+
+  --font-body:    'Georgia', 'Times New Roman', serif;
+  --font-ui:      system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono:    'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+
+  --content-width: 780px;
+  --section-gap:   3.5rem;
+  --para-gap:      1.4rem;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text-1);
+  font-family: var(--font-body);
+  font-size: 17px;
+  line-height: 1.75;
+}
+
+/* --- Navigation --- */
+.chapter-nav {
+  position: sticky; top: 0; z-index: 100;
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 0.75rem 2rem;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  font-family: var(--font-ui); font-size: 13px;
+}
+.chapter-nav a { color: var(--text-2); text-decoration: none; }
+.chapter-nav a:hover { color: var(--purple); }
+.nav-chapter { color: var(--text-3); }
+
+/* --- Layout --- */
+.chapter {
+  max-width: var(--content-width);
+  margin: 0 auto;
+  padding: 3rem 2rem 6rem;
+}
+
+/* --- Chapter header --- */
+.chapter-header {
+  margin-bottom: 3.5rem;
+  padding-bottom: 2rem;
+  border-bottom: 2px solid var(--border);
+}
+.chapter-number {
+  font-family: var(--font-ui); font-size: 13px; font-weight: 500;
+  color: var(--purple); letter-spacing: 0.08em; text-transform: uppercase;
+  margin-bottom: 0.6rem;
+}
+.chapter-title {
+  font-family: var(--font-ui); font-size: 2.4rem; font-weight: 700;
+  line-height: 1.2; color: var(--text-1); margin-bottom: 1.2rem;
+}
+.chapter-lead {
+  font-size: 1.1rem; line-height: 1.7; color: var(--text-2); max-width: 660px;
+}
+
+/* --- Headings --- */
+.chapter-section { margin-bottom: var(--section-gap); }
+h2 {
+  font-family: var(--font-ui); font-size: 1.55rem; font-weight: 600;
+  color: var(--text-1); margin-top: 3rem; margin-bottom: 1rem;
+  padding-bottom: 0.5rem; border-bottom: 1px solid var(--border);
+}
+h3 {
+  font-family: var(--font-ui); font-size: 1.15rem; font-weight: 600;
+  color: var(--text-1); margin-top: 2rem; margin-bottom: 0.6rem;
+}
+h4 {
+  font-family: var(--font-ui); font-size: 1rem; font-weight: 600;
+  color: var(--text-2); margin-top: 1.4rem; margin-bottom: 0.4rem;
+}
+
+/* --- Prose --- */
+p { margin-bottom: var(--para-gap); }
+strong { font-weight: 700; }
+em { font-style: italic; }
+a { color: var(--purple); text-decoration: underline; text-decoration-color: var(--purple-mid); }
+a:hover { color: var(--text-1); }
+
+/* --- Figures --- */
+.diagram-figure {
+  margin: 2.5rem 0;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+}
+.diagram-figure svg { display: block; width: 100%; height: auto; }
+figcaption {
+  font-family: var(--font-ui); font-size: 13px; color: var(--text-2);
+  padding: 0.7rem 1.2rem 0.9rem;
+  border-top: 1px solid var(--border);
+  background: var(--bg); line-height: 1.5;
+}
+.diagram-interactive .widget-container { padding: 1.2rem 1.5rem 0; }
+.widget-controls {
+  display: flex; flex-wrap: wrap; gap: 1.2rem; margin-bottom: 1rem;
+  font-family: var(--font-ui); font-size: 13px; color: var(--text-2);
+}
+.widget-controls label { display: flex; align-items: center; gap: 0.6rem; }
+.widget-controls input[type="range"] { width: 140px; accent-color: var(--purple); }
+.widget-observation {
+  font-family: var(--font-ui); font-size: 13px; color: var(--text-2);
+  padding: 0.6rem 0 1rem; font-style: italic;
+}
+
+/* --- Math --- */
+.math-block {
+  overflow-x: auto; padding: 1.2rem 1.5rem; margin: 1.5rem 0;
+  background: var(--surface); border: 1px solid var(--border);
+  border-left: 3px solid var(--purple-mid); border-radius: 0 6px 6px 0;
+}
+
+/* --- Code --- */
+pre {
+  margin: 1.5rem 0; border-radius: 8px; overflow-x: auto;
+  border: 1px solid var(--border);
+}
+pre code { font-family: var(--font-mono); font-size: 13.5px; line-height: 1.6; }
+
+/* --- Callouts --- */
+.callout {
+  margin: 2rem 0; padding: 1.1rem 1.4rem;
+  border-radius: 8px; border: 1px solid var(--border);
+}
+.callout-title {
+  font-family: var(--font-ui); font-size: 12px; font-weight: 700;
+  letter-spacing: 0.07em; text-transform: uppercase; margin-bottom: 0.5rem;
+}
+.callout p { margin-bottom: 0; }
+.callout-insight  { background: var(--blue-light);   border-color: var(--blue-mid); }
+.callout-insight  .callout-title { color: var(--blue); }
+.callout-warning  { background: var(--amber-light);  border-color: var(--amber-mid); }
+.callout-warning  .callout-title { color: var(--amber); }
+.callout-math     { background: var(--purple-light); border-color: var(--purple-mid); }
+.callout-math     .callout-title { color: var(--purple); }
+
+/* --- Tables --- */
+table { width: 100%; border-collapse: collapse; margin: 1.8rem 0; font-family: var(--font-ui); font-size: 14px; }
+th {
+  background: var(--gray-light); color: var(--text-1); font-weight: 600;
+  text-align: left; padding: 0.6rem 0.9rem; border-bottom: 2px solid var(--border-mid);
+}
+td { padding: 0.55rem 0.9rem; border-bottom: 1px solid var(--border); color: var(--text-2); }
+tr:last-child td { border-bottom: none; }
+tr:hover td { background: var(--bg); }
+
+/* --- Lists --- */
+ul, ol { padding-left: 1.5rem; margin-bottom: var(--para-gap); }
+li { margin-bottom: 0.3rem; line-height: 1.65; }
+
+/* --- Footer --- */
+.chapter-footer {
+  max-width: var(--content-width); margin: 0 auto;
+  padding: 2rem 2rem 4rem; border-top: 1px solid var(--border); margin-top: 3rem;
+}
+.footer-nav {
+  display: flex; justify-content: space-between;
+  font-family: var(--font-ui); font-size: 14px;
+}
+.footer-nav a { color: var(--text-2); text-decoration: none; }
+.footer-nav a:hover { color: var(--purple); }
+
+/* --- Dark mode toggle button --- */
+.theme-toggle {
+  background: none; border: 1px solid var(--border); border-radius: 6px;
+  padding: 0.3rem 0.5rem; cursor: pointer; font-size: 16px; line-height: 1;
+  color: var(--text-2); display: flex; align-items: center;
+}
+.theme-toggle:hover { border-color: var(--purple); color: var(--purple); }
+.theme-toggle .icon-sun { display: none; }
+.theme-toggle .icon-moon { display: inline; }
+html.dark .theme-toggle .icon-sun { display: inline; }
+html.dark .theme-toggle .icon-moon { display: none; }
+
+/* --- Dark mode overrides --- */
+html.dark {
+  --bg:           #1A1A1E;
+  --surface:      #242428;
+  --border:       #35353A;
+  --border-mid:   #4A4A50;
+  --text-1:       #E8E8E4;
+  --text-2:       #A8A8A2;
+  --text-3:       #6E6E68;
+
+  --purple:       #8B83E0;
+  --purple-light: #2A2840;
+  --purple-mid:   #5B54C0;
+  --teal:         #5DCAA5;
+  --teal-light:   #1A2E28;
+  --teal-mid:     #3A8A6E;
+  --coral:        #F0997B;
+  --coral-light:  #362420;
+  --coral-mid:    #C06040;
+  --amber:        #EF9F27;
+  --amber-light:  #302818;
+  --amber-mid:    #B07820;
+  --blue:         #85B7EB;
+  --blue-light:   #1A2838;
+  --blue-mid:     #4A80B0;
+  --gray-light:   #2A2A2E;
+  --gray-mid:     #5A5A56;
+}
+
+/* SVG diagrams: invert + hue-rotate for dark mode */
+html.dark .diagram-figure svg {
+  filter: invert(0.88) hue-rotate(180deg);
+}
+
+/* KaTeX math: keep readable in dark mode */
+html.dark .katex { color: var(--text-1); }
+
+/* Code blocks: dark mode */
+html.dark pre {
+  background: #1E1E22;
+  border-color: var(--border);
+}
+html.dark pre code {
+  color: #D4D4D4;
+}
+html.dark code[class*="language-"],
+html.dark pre[class*="language-"] {
+  background: #1E1E22;
+  color: #D4D4D4;
+  text-shadow: none;
+}
+html.dark .token.comment,
+html.dark .token.prolog,
+html.dark .token.doctype,
+html.dark .token.cdata { color: #6A9955; }
+html.dark .token.punctuation { color: #D4D4D4; }
+html.dark .token.property,
+html.dark .token.tag,
+html.dark .token.boolean,
+html.dark .token.number,
+html.dark .token.constant,
+html.dark .token.symbol { color: #B5CEA8; }
+html.dark .token.selector,
+html.dark .token.attr-name,
+html.dark .token.string,
+html.dark .token.char,
+html.dark .token.builtin { color: #CE9178; }
+html.dark .token.operator,
+html.dark .token.entity,
+html.dark .token.url { color: #D4D4D4; }
+html.dark .token.atrule,
+html.dark .token.attr-value,
+html.dark .token.keyword { color: #569CD6; }
+html.dark .token.function,
+html.dark .token.class-name { color: #DCDCAA; }
+html.dark .token.regex,
+html.dark .token.important,
+html.dark .token.variable { color: #D16969; }
+html.dark .token.decorator { color: #DCDCAA; }
+
+/* --- Responsive --- */
+@media (max-width: 640px) {
+  .chapter { padding: 1.5rem 1rem 4rem; }
+  .chapter-title { font-size: 1.8rem; }
+  h2 { font-size: 1.3rem; }
+}

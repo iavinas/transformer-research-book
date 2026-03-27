@@ -1,0 +1,1022 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Chapter 03: Attention Is All You Need — The Original Paper — Transformer Research Book</title>
+  <link rel="stylesheet" href="../assets/style.css">
+  <link rel="stylesheet" href="../assets/math.css">
+  <link rel="stylesheet" href="../assets/prism.css">
+  <!-- KaTeX for math rendering -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"
+    onload="renderMathInElement(document.body, {
+      delimiters: [
+        {left: '$$', right: '$$', display: true},
+        {left: '$', right: '$', display: false}
+      ]
+    })">
+  </script>
+  <!-- Prism for code blocks -->
+  <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/prism.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-python.min.js"></script>
+</head>
+<body>
+  <nav class="chapter-nav">
+    <a href="../index.html" class="nav-home">&larr; Table of Contents</a>
+    <span class="nav-chapter">Chapter 03</span>
+    <div style="display:flex; align-items:center; gap:1rem;">
+      <button class="theme-toggle" onclick="toggleTheme()" aria-label="Toggle dark mode">
+        <span class="icon-moon">&#9789;</span><span class="icon-sun">&#9788;</span>
+      </button>
+      <a href="ch04.html" class="nav-next">Next Chapter &rarr;</a>
+    </div>
+  </nav>
+  <script>
+    function toggleTheme() {
+      document.documentElement.classList.toggle('dark');
+      localStorage.setItem('theme', document.documentElement.classList.contains('dark') ? 'dark' : 'light');
+    }
+    if (localStorage.getItem('theme') === 'dark') document.documentElement.classList.add('dark');
+  </script>
+
+  <article class="chapter">
+
+    <header class="chapter-header">
+      <div class="chapter-number">Chapter 03</div>
+      <h1 class="chapter-title">Attention Is All You Need &mdash; The Original Paper</h1>
+      <p class="chapter-lead">In 2017, the dominant approach to sequence modeling required processing tokens one at a time &mdash; each word waited for the previous one before it could be analyzed. This sequential bottleneck capped training speed and made very long sequences impractical. The Transformer broke this constraint entirely, replacing recurrence with a mechanism called self-attention that processes all tokens simultaneously. By the end of this chapter you will understand not just how self-attention works, but why every architectural decision in the original paper &mdash; the scaling, the multi-head split, the positional encoding &mdash; was a direct answer to a concrete failure mode.</p>
+    </header>
+
+    <!-- ================================================================== -->
+    <!-- SECTION 1: PAPER OVERVIEW AND CONTEXT                              -->
+    <!-- ================================================================== -->
+    <section class="chapter-section" id="paper-overview-and-context">
+      <h2>Paper Overview and Context</h2>
+
+      <h3>The Machine Translation Setting</h3>
+
+      <p>Vaswani et al. evaluated their architecture on machine translation, specifically the WMT 2014 English-to-German and English-to-French benchmarks. These were the standard proving grounds for sequence-to-sequence models: English-German had about 4.5 million sentence pairs and was considered harder (morphologically richer target language), while English-French had 36 million pairs and served as a scale test. Any architecture that claimed to replace RNNs had to beat RNNs where RNNs were strongest &mdash; and in 2017, that was machine translation.</p>
+
+      <h3>Previous State-of-the-Art</h3>
+
+      <p>The best results before the Transformer came from two distinct approaches. Google's <strong>GNMT</strong> (Wu et al., 2016) stacked 8 LSTM layers with residual connections and attention, achieving 26.30 BLEU on English-German. It required weeks of training on 96 GPUs. Facebook's <strong>ConvS2S</strong> (Gehring et al., 2017) replaced recurrence with stacked convolutions, enabling parallel computation within each layer but still limited by the fixed receptive field of convolution kernels. ConvS2S reached 25.16 BLEU on English-German. Both systems were expensive to train and hit architectural ceilings that more compute alone could not overcome.</p>
+
+      <h3>Core Thesis</h3>
+
+      <p>The central claim of the paper was radical: self-attention can replace recurrence and convolution *entirely* as the mechanism for computing representations of sequences. No hidden state chain. No convolutional filters. Just a mechanism that lets every token look at every other token in a single operation. The paper's title &mdash; "Attention Is All You Need" &mdash; was deliberately provocative. The results backed the provocation: the Transformer achieved 28.4 BLEU on English-German and 41.0 on English-French, exceeding all prior work while training in a fraction of the time.</p>
+
+      <!-- Figure 3.1: Full Encoder-Decoder Architecture -->
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 620" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="ch03-arr" viewBox="0 0 10 10" refX="9" refY="5"
+              markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+              <path d="M1 1L9 5L1 9" fill="none" stroke="context-stroke"
+                stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </marker>
+          </defs>
+
+          <!-- Title labels -->
+          <text x="230" y="30" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="600" fill="#0F6E56">Encoder</text>
+          <text x="570" y="30" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="600" fill="#993C1D">Decoder</text>
+
+          <!-- ===== ENCODER STACK (left) ===== -->
+          <!-- Input -->
+          <rect x="80" y="540" width="300" height="40" rx="6" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1.5"/>
+          <text x="230" y="565" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="500" fill="#0F6E56">Input Embedding + Positional Encoding</text>
+
+          <line x1="230" y1="540" x2="230" y2="520" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch03-arr)"/>
+
+          <!-- Encoder Layer container -->
+          <rect x="80" y="310" width="300" height="210" rx="10" fill="none" stroke="#B4B2A9" stroke-width="1" stroke-dasharray="5 4"/>
+          <text x="90" y="330" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">Encoder Layer</text>
+
+          <!-- Multi-Head Self-Attention -->
+          <rect x="105" y="430" width="250" height="50" rx="6" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <text x="230" y="452" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#534AB7">Multi-Head Self-Attention</text>
+          <text x="230" y="470" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">Add &amp; Norm</text>
+
+          <line x1="230" y1="430" x2="230" y2="410" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch03-arr)"/>
+
+          <!-- Feed-Forward -->
+          <rect x="105" y="345" width="250" height="50" rx="6" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1.5"/>
+          <text x="230" y="367" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#0F6E56">Position-wise Feed-Forward</text>
+          <text x="230" y="385" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">Add &amp; Norm</text>
+
+          <!-- x N label -->
+          <line x1="395" y1="310" x2="395" y2="520" stroke="#C8C6BE" stroke-width="1" stroke-dasharray="4 3"/>
+          <line x1="389" y1="310" x2="395" y2="310" stroke="#C8C6BE" stroke-width="1"/>
+          <line x1="389" y1="520" x2="395" y2="520" stroke="#C8C6BE" stroke-width="1"/>
+          <text x="408" y="420" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#9C9A94">× 6</text>
+
+          <!-- Encoder output arrow -->
+          <line x1="230" y1="310" x2="230" y2="285" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch03-arr)"/>
+          <rect x="130" y="250" width="200" height="35" rx="6" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="1"/>
+          <text x="230" y="272" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#5C5B56">Encoder Output</text>
+
+          <!-- Cross-attention connection -->
+          <line x1="330" y1="267" x2="445" y2="370" stroke="#534AB7" stroke-width="2" marker-end="url(#ch03-arr)" stroke-dasharray="6 3"/>
+          <text x="400" y="305" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#534AB7">K, V</text>
+
+          <!-- ===== DECODER STACK (right) ===== -->
+          <!-- Output (shifted right) -->
+          <rect x="420" y="540" width="300" height="40" rx="6" fill="#FAECE7" stroke="#F0997B" stroke-width="1.5"/>
+          <text x="570" y="565" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="500" fill="#993C1D">Output Embedding + Positional Encoding</text>
+
+          <line x1="570" y1="540" x2="570" y2="520" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch03-arr)"/>
+
+          <!-- Decoder Layer container -->
+          <rect x="420" y="225" width="300" height="295" rx="10" fill="none" stroke="#B4B2A9" stroke-width="1" stroke-dasharray="5 4"/>
+          <text x="430" y="245" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">Decoder Layer</text>
+
+          <!-- Masked Multi-Head Self-Attention -->
+          <rect x="445" y="450" width="250" height="50" rx="6" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <text x="570" y="472" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#534AB7">Masked Multi-Head Self-Attention</text>
+          <text x="570" y="490" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">Add &amp; Norm</text>
+
+          <line x1="570" y1="450" x2="570" y2="430" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch03-arr)"/>
+
+          <!-- Cross-Attention -->
+          <rect x="445" y="345" width="250" height="70" rx="6" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <text x="570" y="370" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#534AB7">Multi-Head Cross-Attention</text>
+          <text x="570" y="388" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">Q from decoder, K/V from encoder</text>
+          <text x="570" y="406" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">Add &amp; Norm</text>
+
+          <line x1="570" y1="345" x2="570" y2="325" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch03-arr)"/>
+
+          <!-- Feed-Forward -->
+          <rect x="445" y="260" width="250" height="50" rx="6" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1.5"/>
+          <text x="570" y="282" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#0F6E56">Position-wise Feed-Forward</text>
+          <text x="570" y="300" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">Add &amp; Norm</text>
+
+          <!-- x N label -->
+          <line x1="735" y1="225" x2="735" y2="520" stroke="#C8C6BE" stroke-width="1" stroke-dasharray="4 3"/>
+          <line x1="729" y1="225" x2="735" y2="225" stroke="#C8C6BE" stroke-width="1"/>
+          <line x1="729" y1="520" x2="735" y2="520" stroke="#C8C6BE" stroke-width="1"/>
+          <text x="750" y="377" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#9C9A94">× 6</text>
+
+          <!-- Output head -->
+          <line x1="570" y1="225" x2="570" y2="200" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch03-arr)"/>
+          <rect x="445" y="155" width="250" height="45" rx="6" fill="#FAECE7" stroke="#F0997B" stroke-width="1.5"/>
+          <text x="570" y="175" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#993C1D">Linear + Softmax</text>
+          <text x="570" y="192" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">over vocabulary</text>
+
+          <!-- Output probabilities -->
+          <line x1="570" y1="155" x2="570" y2="130" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch03-arr)"/>
+          <text x="570" y="120" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#993C1D">Output Probabilities</text>
+
+          <!-- Bottom labels -->
+          <text x="230" y="605" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">"The cat sat on the mat"</text>
+          <text x="570" y="605" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">"&lt;BOS&gt; Die Katze saß auf ..."</text>
+        </svg>
+        <figcaption>Figure 3.1 &mdash; The full encoder-decoder Transformer architecture. The encoder (left) processes the entire source sentence in parallel through 6 identical layers of self-attention and feed-forward sublayers. The decoder (right) generates one target token at a time, using masked self-attention to prevent future token leakage and cross-attention to query the encoder output. Keys and values for cross-attention flow from the encoder to the decoder (dashed purple arrow).</figcaption>
+      </figure>
+    </section>
+
+    <!-- ================================================================== -->
+    <!-- SECTION 2: ENCODER ARCHITECTURE                                    -->
+    <!-- ================================================================== -->
+    <section class="chapter-section" id="encoder-architecture">
+      <h2>Encoder Architecture</h2>
+
+      <p>The encoder's job is to convert a sequence of discrete input tokens into a sequence of continuous representations that capture the meaning and relationships between all tokens simultaneously. Unlike an RNN encoder that builds up context word by word, the Transformer encoder computes all representations in parallel in a single forward pass.</p>
+
+      <h3>Input Embedding and Positional Encoding</h3>
+
+      <p>Each input token is mapped to a $d_\text{model}$-dimensional vector via a learned embedding table. In the original paper, $d_\text{model} = 512$. These embeddings are scaled by $\sqrt{d_\text{model}}$ before positional encoding is added &mdash; a detail easy to miss in the paper but important for keeping the embedding magnitudes in the right range relative to the positional signals. Positional encoding is added (not concatenated) to the token embeddings, producing vectors that encode both content and position.</p>
+
+      <h3>Stack of N = 6 Identical Layers</h3>
+
+      <p>The encoder stacks $N = 6$ identical layers. Each layer has two sublayers: a multi-head self-attention mechanism and a position-wise feed-forward network. "Identical" means the layers share the same architecture but have independent learned parameters &mdash; 6 different sets of attention weights and FFN weights, each learning different aspects of the input at different levels of abstraction. Early layers tend to capture local syntactic patterns, while later layers learn broader semantic relationships.</p>
+
+      <h3>Each Layer: Self-Attention + FFN</h3>
+
+      <p>Within each encoder layer, the information flow is:</p>
+
+      <ol>
+        <li><strong>Self-attention sublayer:</strong> Every token computes attention scores against every other token, producing a new representation that blends information from across the entire sequence.</li>
+        <li><strong>Feed-forward sublayer:</strong> Each token's representation is independently passed through a two-layer MLP with a ReLU activation. This applies the same transformation at every position but with different inputs, allowing the network to apply nonlinear feature extraction to the attention-refined representations.</li>
+      </ol>
+
+      <p>Both sublayers use the same inner dimension: the attention sublayer projects to $h$ heads of dimension $d_k = d_\text{model} / h = 64$ each, and the FFN sublayer expands to $d_\text{ff} = 2048$ (a 4× expansion) before projecting back to $d_\text{model}$.</p>
+
+      <h3>Residual Connections and Layer Normalization</h3>
+
+      <p>Each sublayer is wrapped in a residual connection followed by layer normalization. The output of each sublayer is $\text{LayerNorm}(x + \text{Sublayer}(x))$. This is the <strong>post-norm</strong> arrangement &mdash; the original paper normalizes *after* the residual addition. Residual connections ensure that information can flow unchanged through the network (a "highway" for gradients), while layer normalization stabilizes activations. Without residual connections, the 6-layer encoder would be far more difficult to train; without layer normalization, the activations would drift in scale across layers.</p>
+
+      <p>Post-norm placement was later found to cause training instability in very deep models (more on this in Chapter 4). Most modern Transformers use pre-norm, where the normalization happens *before* the sublayer. But for the original 6-layer design, post-norm worked well enough with careful hyperparameter tuning.</p>
+
+      <h3>Encoder Output</h3>
+
+      <p>After 6 layers of self-attention and feed-forward processing, the encoder produces a sequence of $d_\text{model}$-dimensional vectors, one per input token. These vectors are <strong>contextual representations</strong> &mdash; unlike the initial embeddings, each vector now encodes not just the meaning of its own token but the meaning of that token *in context*. The word "bank" in "river bank" and "bank account" would have very different encoder outputs, even though they share the same input embedding. These contextual vectors serve as the keys and values for the decoder's cross-attention mechanism.</p>
+    </section>
+
+    <!-- ================================================================== -->
+    <!-- SECTION 3: DECODER ARCHITECTURE                                    -->
+    <!-- ================================================================== -->
+    <section class="chapter-section" id="decoder-architecture">
+      <h2>Decoder Architecture</h2>
+
+      <p>The decoder generates output tokens one at a time, left to right. At each step it must decide the next token based on two sources of information: the tokens it has already generated (via masked self-attention) and the full source sentence (via cross-attention to the encoder output). This dual-attention structure is what makes the Transformer an encoder-decoder model rather than just an encoder.</p>
+
+      <h3>Masked Self-Attention for Causal Modeling</h3>
+
+      <p>During training, the decoder sees the entire target sentence at once (for efficiency via teacher forcing). But this creates a problem: at position $t$, the model should only be able to see target tokens $1$ through $t-1$, not future tokens. Allowing the model to peek at token $t+1$ when predicting token $t$ would be cheating &mdash; it would learn to copy rather than to predict. Think of it like an exam where the teacher covers answers you have not reached yet.</p>
+
+      <p>The solution is <strong>causal masking</strong>. Before the softmax in the self-attention computation, we add a mask matrix $M$ where $M_{ij} = 0$ if $j \le i$ (allowed) and $M_{ij} = -\infty$ if $j > i$ (forbidden). After adding this mask to the raw attention scores and applying softmax, the $-\infty$ entries become exactly zero &mdash; position $i$ attends only to positions $1$ through $i$.</p>
+
+      <!-- Figure 3.2: Causal Masking -->
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 320" xmlns="http://www.w3.org/2000/svg">
+          <!-- Panel 1: Raw Scores -->
+          <text x="130" y="30" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#5C5B56">Raw Scores</text>
+
+          <!-- 5x5 grid, starting x=40, cell width=36 -->
+          <rect x="40" y="48" width="36" height="36" fill="#EEEDFE" stroke="#FFFFFF" stroke-width="1"/>
+          <rect x="76" y="48" width="36" height="36" fill="#EEEDFE" stroke="#FFFFFF" stroke-width="1"/>
+          <rect x="112" y="48" width="36" height="36" fill="#EEEDFE" stroke="#FFFFFF" stroke-width="1"/>
+          <rect x="148" y="48" width="36" height="36" fill="#EEEDFE" stroke="#FFFFFF" stroke-width="1"/>
+          <rect x="184" y="48" width="36" height="36" fill="#EEEDFE" stroke="#FFFFFF" stroke-width="1"/>
+
+          <rect x="40" y="84" width="36" height="36" fill="#EEEDFE" stroke="#FFFFFF" stroke-width="1"/>
+          <rect x="76" y="84" width="36" height="36" fill="#EEEDFE" stroke="#FFFFFF" stroke-width="1"/>
+          <rect x="112" y="84" width="36" height="36" fill="#EEEDFE" stroke="#FFFFFF" stroke-width="1"/>
+          <rect x="148" y="84" width="36" height="36" fill="#EEEDFE" stroke="#FFFFFF" stroke-width="1"/>
+          <rect x="184" y="84" width="36" height="36" fill="#EEEDFE" stroke="#FFFFFF" stroke-width="1"/>
+
+          <rect x="40" y="120" width="36" height="36" fill="#EEEDFE" stroke="#FFFFFF" stroke-width="1"/>
+          <rect x="76" y="120" width="36" height="36" fill="#EEEDFE" stroke="#FFFFFF" stroke-width="1"/>
+          <rect x="112" y="120" width="36" height="36" fill="#EEEDFE" stroke="#FFFFFF" stroke-width="1"/>
+          <rect x="148" y="120" width="36" height="36" fill="#EEEDFE" stroke="#FFFFFF" stroke-width="1"/>
+          <rect x="184" y="120" width="36" height="36" fill="#EEEDFE" stroke="#FFFFFF" stroke-width="1"/>
+
+          <rect x="40" y="156" width="36" height="36" fill="#EEEDFE" stroke="#FFFFFF" stroke-width="1"/>
+          <rect x="76" y="156" width="36" height="36" fill="#EEEDFE" stroke="#FFFFFF" stroke-width="1"/>
+          <rect x="112" y="156" width="36" height="36" fill="#EEEDFE" stroke="#FFFFFF" stroke-width="1"/>
+          <rect x="148" y="156" width="36" height="36" fill="#EEEDFE" stroke="#FFFFFF" stroke-width="1"/>
+          <rect x="184" y="156" width="36" height="36" fill="#EEEDFE" stroke="#FFFFFF" stroke-width="1"/>
+
+          <rect x="40" y="192" width="36" height="36" fill="#EEEDFE" stroke="#FFFFFF" stroke-width="1"/>
+          <rect x="76" y="192" width="36" height="36" fill="#EEEDFE" stroke="#FFFFFF" stroke-width="1"/>
+          <rect x="112" y="192" width="36" height="36" fill="#EEEDFE" stroke="#FFFFFF" stroke-width="1"/>
+          <rect x="148" y="192" width="36" height="36" fill="#EEEDFE" stroke="#FFFFFF" stroke-width="1"/>
+          <rect x="184" y="192" width="36" height="36" fill="#EEEDFE" stroke="#FFFFFF" stroke-width="1"/>
+
+          <!-- Plus sign -->
+          <text x="252" y="155" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="20" font-weight="600" fill="#5C5B56">+</text>
+
+          <!-- Panel 2: Mask -->
+          <text x="400" y="30" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#5C5B56">Causal Mask</text>
+
+          <!-- Row 1: 0, -inf, -inf, -inf, -inf -->
+          <rect x="310" y="48" width="36" height="36" fill="#E1F5EE" stroke="#FFFFFF" stroke-width="1"/>
+          <text x="328" y="70" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#0F6E56">0</text>
+          <rect x="346" y="48" width="36" height="36" fill="#FAECE7" stroke="#FFFFFF" stroke-width="1"/>
+          <text x="364" y="70" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#993C1D">-∞</text>
+          <rect x="382" y="48" width="36" height="36" fill="#FAECE7" stroke="#FFFFFF" stroke-width="1"/>
+          <text x="400" y="70" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#993C1D">-∞</text>
+          <rect x="418" y="48" width="36" height="36" fill="#FAECE7" stroke="#FFFFFF" stroke-width="1"/>
+          <text x="436" y="70" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#993C1D">-∞</text>
+          <rect x="454" y="48" width="36" height="36" fill="#FAECE7" stroke="#FFFFFF" stroke-width="1"/>
+          <text x="472" y="70" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#993C1D">-∞</text>
+
+          <!-- Row 2 -->
+          <rect x="310" y="84" width="36" height="36" fill="#E1F5EE" stroke="#FFFFFF" stroke-width="1"/>
+          <text x="328" y="106" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#0F6E56">0</text>
+          <rect x="346" y="84" width="36" height="36" fill="#E1F5EE" stroke="#FFFFFF" stroke-width="1"/>
+          <text x="364" y="106" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#0F6E56">0</text>
+          <rect x="382" y="84" width="36" height="36" fill="#FAECE7" stroke="#FFFFFF" stroke-width="1"/>
+          <text x="400" y="106" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#993C1D">-∞</text>
+          <rect x="418" y="84" width="36" height="36" fill="#FAECE7" stroke="#FFFFFF" stroke-width="1"/>
+          <text x="436" y="106" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#993C1D">-∞</text>
+          <rect x="454" y="84" width="36" height="36" fill="#FAECE7" stroke="#FFFFFF" stroke-width="1"/>
+          <text x="472" y="106" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#993C1D">-∞</text>
+
+          <!-- Row 3 -->
+          <rect x="310" y="120" width="36" height="36" fill="#E1F5EE" stroke="#FFFFFF" stroke-width="1"/>
+          <text x="328" y="142" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#0F6E56">0</text>
+          <rect x="346" y="120" width="36" height="36" fill="#E1F5EE" stroke="#FFFFFF" stroke-width="1"/>
+          <text x="364" y="142" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#0F6E56">0</text>
+          <rect x="382" y="120" width="36" height="36" fill="#E1F5EE" stroke="#FFFFFF" stroke-width="1"/>
+          <text x="400" y="142" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#0F6E56">0</text>
+          <rect x="418" y="120" width="36" height="36" fill="#FAECE7" stroke="#FFFFFF" stroke-width="1"/>
+          <text x="436" y="142" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#993C1D">-∞</text>
+          <rect x="454" y="120" width="36" height="36" fill="#FAECE7" stroke="#FFFFFF" stroke-width="1"/>
+          <text x="472" y="142" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#993C1D">-∞</text>
+
+          <!-- Row 4 -->
+          <rect x="310" y="156" width="36" height="36" fill="#E1F5EE" stroke="#FFFFFF" stroke-width="1"/>
+          <text x="328" y="178" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#0F6E56">0</text>
+          <rect x="346" y="156" width="36" height="36" fill="#E1F5EE" stroke="#FFFFFF" stroke-width="1"/>
+          <text x="364" y="178" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#0F6E56">0</text>
+          <rect x="382" y="156" width="36" height="36" fill="#E1F5EE" stroke="#FFFFFF" stroke-width="1"/>
+          <text x="400" y="178" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#0F6E56">0</text>
+          <rect x="418" y="156" width="36" height="36" fill="#E1F5EE" stroke="#FFFFFF" stroke-width="1"/>
+          <text x="436" y="178" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#0F6E56">0</text>
+          <rect x="454" y="156" width="36" height="36" fill="#FAECE7" stroke="#FFFFFF" stroke-width="1"/>
+          <text x="472" y="178" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#993C1D">-∞</text>
+
+          <!-- Row 5 -->
+          <rect x="310" y="192" width="36" height="36" fill="#E1F5EE" stroke="#FFFFFF" stroke-width="1"/>
+          <text x="328" y="214" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#0F6E56">0</text>
+          <rect x="346" y="192" width="36" height="36" fill="#E1F5EE" stroke="#FFFFFF" stroke-width="1"/>
+          <text x="364" y="214" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#0F6E56">0</text>
+          <rect x="382" y="192" width="36" height="36" fill="#E1F5EE" stroke="#FFFFFF" stroke-width="1"/>
+          <text x="400" y="214" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#0F6E56">0</text>
+          <rect x="418" y="192" width="36" height="36" fill="#E1F5EE" stroke="#FFFFFF" stroke-width="1"/>
+          <text x="436" y="214" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#0F6E56">0</text>
+          <rect x="454" y="192" width="36" height="36" fill="#E1F5EE" stroke="#FFFFFF" stroke-width="1"/>
+          <text x="472" y="214" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#0F6E56">0</text>
+
+          <!-- Equals sign -->
+          <text x="522" y="155" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="20" font-weight="600" fill="#5C5B56">=</text>
+
+          <!-- Panel 3: After Softmax -->
+          <text x="668" y="30" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#5C5B56">After Softmax</text>
+
+          <!-- Lower-triangular result - all within safe zone (x: 578 to 758) -->
+          <rect x="578" y="48" width="36" height="36" fill="#534AB7" stroke="#FFFFFF" stroke-width="1"/>
+          <text x="596" y="70" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="500" fill="#FFFFFF">1.0</text>
+          <rect x="614" y="48" width="36" height="36" fill="#F1EFE8" stroke="#FFFFFF" stroke-width="1"/>
+          <text x="632" y="70" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#9C9A94">0</text>
+          <rect x="650" y="48" width="36" height="36" fill="#F1EFE8" stroke="#FFFFFF" stroke-width="1"/>
+          <text x="668" y="70" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#9C9A94">0</text>
+          <rect x="686" y="48" width="36" height="36" fill="#F1EFE8" stroke="#FFFFFF" stroke-width="1"/>
+          <text x="704" y="70" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#9C9A94">0</text>
+          <rect x="722" y="48" width="36" height="36" fill="#F1EFE8" stroke="#FFFFFF" stroke-width="1"/>
+          <text x="740" y="70" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#9C9A94">0</text>
+
+          <rect x="578" y="84" width="36" height="36" fill="#AFA9EC" stroke="#FFFFFF" stroke-width="1"/>
+          <text x="596" y="106" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#534AB7">.6</text>
+          <rect x="614" y="84" width="36" height="36" fill="#EEEDFE" stroke="#FFFFFF" stroke-width="1"/>
+          <text x="632" y="106" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#534AB7">.4</text>
+          <rect x="650" y="84" width="36" height="36" fill="#F1EFE8" stroke="#FFFFFF" stroke-width="1"/>
+          <text x="668" y="106" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#9C9A94">0</text>
+          <rect x="686" y="84" width="36" height="36" fill="#F1EFE8" stroke="#FFFFFF" stroke-width="1"/>
+          <text x="704" y="106" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#9C9A94">0</text>
+          <rect x="722" y="84" width="36" height="36" fill="#F1EFE8" stroke="#FFFFFF" stroke-width="1"/>
+          <text x="740" y="106" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#9C9A94">0</text>
+
+          <rect x="578" y="120" width="36" height="36" fill="#EEEDFE" stroke="#FFFFFF" stroke-width="1"/>
+          <text x="596" y="142" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#534AB7">.3</text>
+          <rect x="614" y="120" width="36" height="36" fill="#EEEDFE" stroke="#FFFFFF" stroke-width="1"/>
+          <text x="632" y="142" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#534AB7">.2</text>
+          <rect x="650" y="120" width="36" height="36" fill="#AFA9EC" stroke="#FFFFFF" stroke-width="1"/>
+          <text x="668" y="142" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#534AB7">.5</text>
+          <rect x="686" y="120" width="36" height="36" fill="#F1EFE8" stroke="#FFFFFF" stroke-width="1"/>
+          <text x="704" y="142" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#9C9A94">0</text>
+          <rect x="722" y="120" width="36" height="36" fill="#F1EFE8" stroke="#FFFFFF" stroke-width="1"/>
+          <text x="740" y="142" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#9C9A94">0</text>
+
+          <rect x="578" y="156" width="36" height="36" fill="#EEEDFE" stroke="#FFFFFF" stroke-width="1"/>
+          <text x="596" y="178" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#534AB7">.2</text>
+          <rect x="614" y="156" width="36" height="36" fill="#EEEDFE" stroke="#FFFFFF" stroke-width="1"/>
+          <text x="632" y="178" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#534AB7">.1</text>
+          <rect x="650" y="156" width="36" height="36" fill="#EEEDFE" stroke="#FFFFFF" stroke-width="1"/>
+          <text x="668" y="178" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#534AB7">.2</text>
+          <rect x="686" y="156" width="36" height="36" fill="#AFA9EC" stroke="#FFFFFF" stroke-width="1"/>
+          <text x="704" y="178" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#534AB7">.5</text>
+          <rect x="722" y="156" width="36" height="36" fill="#F1EFE8" stroke="#FFFFFF" stroke-width="1"/>
+          <text x="740" y="178" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#9C9A94">0</text>
+
+          <rect x="578" y="192" width="36" height="36" fill="#EEEDFE" stroke="#FFFFFF" stroke-width="1"/>
+          <text x="596" y="214" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#534AB7">.1</text>
+          <rect x="614" y="192" width="36" height="36" fill="#EEEDFE" stroke="#FFFFFF" stroke-width="1"/>
+          <text x="632" y="214" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#534AB7">.2</text>
+          <rect x="650" y="192" width="36" height="36" fill="#EEEDFE" stroke="#FFFFFF" stroke-width="1"/>
+          <text x="668" y="214" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#534AB7">.1</text>
+          <rect x="686" y="192" width="36" height="36" fill="#EEEDFE" stroke="#FFFFFF" stroke-width="1"/>
+          <text x="704" y="214" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#534AB7">.2</text>
+          <rect x="722" y="192" width="36" height="36" fill="#AFA9EC" stroke="#FFFFFF" stroke-width="1"/>
+          <text x="740" y="214" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#534AB7">.4</text>
+
+          <!-- Row labels on far left -->
+          <text x="30" y="70" text-anchor="end" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">t₁</text>
+          <text x="30" y="106" text-anchor="end" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">t₂</text>
+          <text x="30" y="142" text-anchor="end" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">t₃</text>
+          <text x="30" y="178" text-anchor="end" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">t₄</text>
+          <text x="30" y="214" text-anchor="end" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">t₅</text>
+
+          <!-- Legend -->
+          <rect x="310" y="260" width="14" height="14" rx="2" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="330" y="272" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#5C5B56">Allowed (0)</text>
+          <rect x="430" y="260" width="14" height="14" rx="2" fill="#FAECE7" stroke="#F0997B" stroke-width="1"/>
+          <text x="450" y="272" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#5C5B56">Masked (-∞)</text>
+          <rect x="560" y="260" width="14" height="14" rx="2" fill="#AFA9EC" stroke="#534AB7" stroke-width="1"/>
+          <text x="580" y="272" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#5C5B56">High weight</text>
+        </svg>
+        <figcaption>Figure 3.2 &mdash; Causal masking in the decoder. Raw attention scores (left) are added to a mask matrix (center) where future positions are set to $-\infty$. After softmax (right), the lower-triangular pattern emerges: each token can only attend to itself and earlier tokens. Color intensity in the right panel encodes attention weight magnitude.</figcaption>
+      </figure>
+
+      <h3>Cross-Attention: Decoder Attends to Encoder Output</h3>
+
+      <p>After masked self-attention, each decoder layer has a second attention sublayer called <strong>cross-attention</strong> (sometimes called encoder-decoder attention). This is where the decoder asks: "which parts of the source sentence are most relevant to what I am about to generate?" The mechanism is the same scaled dot-product attention, but with a crucial asymmetry: the queries come from the decoder's previous sublayer output, while the keys and values come from the encoder's final output.</p>
+
+      <div class="math-block">
+        $$\text{CrossAttention}(Q_\text{dec}, K_\text{enc}, V_\text{enc}) = \text{softmax}\!\left(\frac{Q_\text{dec} K_\text{enc}^\top}{\sqrt{d_k}}\right) V_\text{enc}$$
+      </div>
+
+      <p>Here $Q_\text{dec}\,K_\text{enc}^\top$ is a matrix multiply ($\mathbb{R}^{m \times d_k} \times \mathbb{R}^{d_k \times n} \to \mathbb{R}^{m \times n}$), and the result is then matrix-multiplied by $V_\text{enc}$. The attention matrix in cross-attention is therefore *not* square &mdash; it has shape $(m \times n)$ where $m$ is the target sequence length and $n$ is the source sequence length. Each target position computes a weighted average over all source positions, effectively performing a soft alignment between source and target languages. The encoder output stays the same across all decoder layers, providing a stable reference that the decoder can query repeatedly at different levels of abstraction.</p>
+
+      <!-- Figure 3.3: Cross-Attention Mechanism -->
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 350" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="ch03-arr2" viewBox="0 0 10 10" refX="9" refY="5"
+              markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+              <path d="M1 1L9 5L1 9" fill="none" stroke="context-stroke"
+                stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </marker>
+          </defs>
+
+          <!-- Encoder tokens (source) -->
+          <text x="160" y="30" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#0F6E56">Encoder Output (Source)</text>
+          <rect x="40" y="45" width="70" height="34" rx="6" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1.5"/>
+          <text x="75" y="66" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#0F6E56">The</text>
+          <rect x="118" y="45" width="70" height="34" rx="6" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1.5"/>
+          <text x="153" y="66" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#0F6E56">cat</text>
+          <rect x="196" y="45" width="70" height="34" rx="6" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1.5"/>
+          <text x="231" y="66" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#0F6E56">sat</text>
+          <rect x="274" y="45" width="70" height="34" rx="6" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1.5"/>
+          <text x="309" y="66" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#0F6E56">.</text>
+
+          <!-- K, V labels -->
+          <text x="75" y="100" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#534AB7">K, V</text>
+          <text x="153" y="100" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#534AB7">K, V</text>
+          <text x="231" y="100" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#534AB7">K, V</text>
+          <text x="309" y="100" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#534AB7">K, V</text>
+
+          <!-- Attention matrix (non-square: 3 decoder x 4 encoder) -->
+          <text x="530" y="30" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#534AB7">Cross-Attention Matrix (m × n)</text>
+
+          <!-- Column labels -->
+          <text x="448" y="58" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#0F6E56">The</text>
+          <text x="498" y="58" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#0F6E56">cat</text>
+          <text x="548" y="58" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#0F6E56">sat</text>
+          <text x="598" y="58" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#0F6E56">.</text>
+
+          <!-- Row labels -->
+          <text x="418" y="87" text-anchor="end" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#993C1D">Die</text>
+          <text x="418" y="127" text-anchor="end" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#993C1D">Katze</text>
+          <text x="418" y="167" text-anchor="end" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#993C1D">saß</text>
+
+          <!-- 3x4 attention grid -->
+          <rect x="428" y="68" width="40" height="30" fill="#EEEDFE" stroke="#FFFFFF" stroke-width="1"/>
+          <text x="448" y="87" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#534AB7">.7</text>
+          <rect x="478" y="68" width="40" height="30" fill="#F1EFE8" stroke="#FFFFFF" stroke-width="1"/>
+          <text x="498" y="87" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">.1</text>
+          <rect x="528" y="68" width="40" height="30" fill="#F1EFE8" stroke="#FFFFFF" stroke-width="1"/>
+          <text x="548" y="87" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">.1</text>
+          <rect x="578" y="68" width="40" height="30" fill="#F1EFE8" stroke="#FFFFFF" stroke-width="1"/>
+          <text x="598" y="87" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">.1</text>
+
+          <rect x="428" y="108" width="40" height="30" fill="#F1EFE8" stroke="#FFFFFF" stroke-width="1"/>
+          <text x="448" y="127" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">.1</text>
+          <rect x="478" y="108" width="40" height="30" fill="#534AB7" stroke="#FFFFFF" stroke-width="1"/>
+          <text x="498" y="127" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#FFFFFF">.8</text>
+          <rect x="528" y="108" width="40" height="30" fill="#F1EFE8" stroke="#FFFFFF" stroke-width="1"/>
+          <text x="548" y="127" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">.05</text>
+          <rect x="578" y="108" width="40" height="30" fill="#F1EFE8" stroke="#FFFFFF" stroke-width="1"/>
+          <text x="598" y="127" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">.05</text>
+
+          <rect x="428" y="148" width="40" height="30" fill="#F1EFE8" stroke="#FFFFFF" stroke-width="1"/>
+          <text x="448" y="167" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">.05</text>
+          <rect x="478" y="148" width="40" height="30" fill="#F1EFE8" stroke="#FFFFFF" stroke-width="1"/>
+          <text x="498" y="167" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">.1</text>
+          <rect x="528" y="148" width="40" height="30" fill="#534AB7" stroke="#FFFFFF" stroke-width="1"/>
+          <text x="548" y="167" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#FFFFFF">.75</text>
+          <rect x="578" y="148" width="40" height="30" fill="#F1EFE8" stroke="#FFFFFF" stroke-width="1"/>
+          <text x="598" y="167" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">.1</text>
+
+          <!-- Dimension labels -->
+          <text x="530" y="200" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">n = 4 source tokens →</text>
+          <text x="640" y="127" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">← m = 3</text>
+          <text x="640" y="142" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">   target</text>
+
+          <!-- Decoder tokens -->
+          <text x="570" y="245" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#993C1D">Decoder (Target)</text>
+          <rect x="455" y="260" width="70" height="34" rx="6" fill="#FAECE7" stroke="#F0997B" stroke-width="1.5"/>
+          <text x="490" y="281" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#993C1D">Die</text>
+          <rect x="533" y="260" width="70" height="34" rx="6" fill="#FAECE7" stroke="#F0997B" stroke-width="1.5"/>
+          <text x="568" y="281" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#993C1D">Katze</text>
+          <rect x="611" y="260" width="70" height="34" rx="6" fill="#FAECE7" stroke="#F0997B" stroke-width="1.5"/>
+          <text x="646" y="281" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#993C1D">saß</text>
+
+          <!-- Q label -->
+          <text x="490" y="310" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#534AB7">Q</text>
+          <text x="568" y="310" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#534AB7">Q</text>
+          <text x="646" y="310" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#534AB7">Q</text>
+        </svg>
+        <figcaption>Figure 3.3 &mdash; Cross-attention between decoder and encoder. The decoder tokens (bottom, coral) generate queries, while the encoder tokens (top, teal) provide keys and values. The resulting attention matrix is non-square ($m \times n$), implementing a soft alignment between source and target languages. Here "Katze" attends most strongly to "cat" (weight 0.8), performing word-level translation alignment.</figcaption>
+      </figure>
+
+      <p>The following implementation separates the query and key/value projections, matching the asymmetry of cross-attention where queries originate from the decoder and keys/values from the encoder.</p>
+
+<pre><code class="language-python">
+class CrossAttention(nn.Module):
+    """Cross-attention: queries from decoder, keys/values from encoder."""
+    def __init__(self, d_model, n_heads):
+        super().__init__()
+        self.n_heads = n_heads
+        self.d_k = d_model // n_heads
+        self.W_Q = nn.Linear(d_model, d_model, bias=False)
+        self.W_KV = nn.Linear(d_model, 2 * d_model, bias=False)
+        self.W_O = nn.Linear(d_model, d_model, bias=False)
+
+    def forward(self, x_dec, x_enc):
+        """x_dec: (B, T, D) decoder states; x_enc: (B, S, D) encoder output."""
+        B, T, _ = x_dec.shape
+        S = x_enc.size(1)
+
+        # Queries from decoder, keys+values from encoder
+        q = self.W_Q(x_dec).view(B, T, self.n_heads, self.d_k).transpose(1, 2)
+        kv = self.W_KV(x_enc).view(B, S, 2, self.n_heads, self.d_k).permute(2, 0, 3, 1, 4)
+        k, v = kv[0], kv[1]  # each: (B, h, S, d_k)
+
+        # Attention: decoder queries attend to encoder keys
+        scores = (q @ k.transpose(-2, -1)) / (self.d_k ** 0.5)  # (B, h, T, S)
+        attn = F.softmax(scores, dim=-1)
+        out = (attn @ v).transpose(1, 2).reshape(B, T, -1)      # (B, T, D)
+        return self.W_O(out)
+</code></pre>
+
+      <h3>Output Linear Layer and Softmax</h3>
+
+      <p>After the final decoder layer, the output at each position passes through a linear projection layer that maps from $d_\text{model}$ to the vocabulary size $V$, producing <strong>logits</strong> &mdash; one score per vocabulary token. A softmax over these logits produces a probability distribution over the vocabulary. During training, the cross-entropy loss compares this distribution against the one-hot ground truth target token. During inference, the model picks the highest-probability token (greedy decoding) or samples from the distribution (with temperature).</p>
+
+      <p>The linear projection shares its weight matrix with the input embedding matrix, transposed &mdash; this is called <strong>tied embeddings</strong>. Tying the input and output embedding matrices halves the number of parameters associated with the vocabulary and provides a useful inductive bias: tokens with similar embeddings should have similar logits.</p>
+
+      <h3>Why the Decoder Is Causal</h3>
+
+      <p>The causal constraint exists to prevent a train-test mismatch. At inference time, the model generates tokens one at a time &mdash; when predicting token $t$, token $t+1$ does not exist yet. If training allowed the model to see future tokens, the model would learn to rely on information that is unavailable at test time, leading to poor generalization. The causal mask enforces the same information constraint during training as exists naturally at inference time. This is why decoder-only models (like GPT) use causal masking throughout, while encoder-only models (like BERT) do not: BERT is never used for left-to-right generation.</p>
+    </section>
+
+    <!-- ================================================================== -->
+    <!-- SECTION 4: MULTI-HEAD ATTENTION                                    -->
+    <!-- ================================================================== -->
+    <section class="chapter-section" id="multi-head-attention">
+      <h2>Multi-Head Attention</h2>
+
+      <p>A single attention function computes one set of attention weights, which forces the model to make a single compromise about what to focus on. Multi-head attention solves this by running multiple attention operations in parallel, each with its own learned projections, allowing the model to simultaneously attend to information from different representation subspaces at different positions.</p>
+
+      <h3>Motivation: Different Subspaces for Different Relationships</h3>
+
+      <p>Consider translating the sentence "The animal didn't cross the street because it was too tired." The pronoun "it" refers to "animal" &mdash; but recognizing this requires attending to syntactic structure, semantic plausibility, and positional proximity simultaneously. A single attention head would need to encode all these signals in one set of weights. Multi-head attention allows different heads to specialize: one head might learn to track syntactic subject-verb relationships, another might track coreference, and a third might attend to local positional patterns.</p>
+
+      <h3>Splitting into h Heads</h3>
+
+      <p>The input $X$ of shape $(n \times d_\text{model})$ is projected through three separate weight matrices for each head $i$:</p>
+
+      <div class="math-block">
+        $$Q_i = XW_i^Q, \quad K_i = XW_i^K, \quad V_i = XW_i^V$$
+      </div>
+
+      <p>where $W_i^Q, W_i^K \in \mathbb{R}^{d_\text{model} \times d_k}$ and $W_i^V \in \mathbb{R}^{d_\text{model} \times d_v}$, with $d_k = d_v = d_\text{model} / h$. The original Transformer uses $h = 8$ heads with $d_\text{model} = 512$, giving $d_k = 64$ per head. Each head independently computes attention:</p>
+
+      <div class="math-block">
+        $$\text{head}_i = \text{Attention}(Q_i, K_i, V_i) = \text{softmax}\!\left(\frac{Q_i K_i^\top}{\sqrt{d_k}}\right) V_i$$
+      </div>
+
+      <h3>Concatenation and Final Projection</h3>
+
+      <p>The outputs from all $h$ heads are concatenated and projected through a final weight matrix:</p>
+
+      <div class="math-block">
+        $$\text{MultiHead}(Q, K, V) = \text{Concat}(\text{head}_1, \ldots, \text{head}_h) W^O$$
+      </div>
+
+      <p>where $W^O \in \mathbb{R}^{hd_v \times d_\text{model}}$. The total computation cost is similar to single-head attention with full dimensionality: we run $h$ smaller attention operations (each on $d_k$ dimensions) instead of one large operation (on $d_\text{model}$ dimensions). The final projection $W^O$ mixes the information from all heads, allowing downstream layers to see a combined representation.</p>
+
+      <!-- Figure 3.4: Multi-Head Attention Split -->
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 380" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="ch03-arr3" viewBox="0 0 10 10" refX="9" refY="5"
+              markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+              <path d="M1 1L9 5L1 9" fill="none" stroke="context-stroke"
+                stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </marker>
+          </defs>
+
+          <!-- Input -->
+          <rect x="280" y="320" width="240" height="40" rx="6" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="1"/>
+          <text x="400" y="345" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="500" fill="#5C5B56">Input X ∈ ℝⁿˣ⁵¹²</text>
+
+          <!-- Split arrows -->
+          <line x1="310" y1="320" x2="110" y2="270" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch03-arr3)"/>
+          <line x1="370" y1="320" x2="280" y2="270" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch03-arr3)"/>
+          <line x1="430" y1="320" x2="450" y2="270" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch03-arr3)"/>
+          <text x="560" y="290" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="400" fill="#9C9A94">...</text>
+          <line x1="490" y1="320" x2="690" y2="270" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch03-arr3)"/>
+
+          <!-- Head boxes -->
+          <rect x="50" y="220" width="120" height="50" rx="6" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <text x="110" y="242" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#534AB7">Head 1</text>
+          <text x="110" y="260" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">d_k = 64</text>
+
+          <rect x="220" y="220" width="120" height="50" rx="6" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <text x="280" y="242" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#534AB7">Head 2</text>
+          <text x="280" y="260" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">d_k = 64</text>
+
+          <rect x="390" y="220" width="120" height="50" rx="6" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <text x="450" y="242" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#534AB7">Head 3</text>
+          <text x="450" y="260" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">d_k = 64</text>
+
+          <rect x="630" y="220" width="120" height="50" rx="6" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <text x="690" y="242" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#534AB7">Head 8</text>
+          <text x="690" y="260" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">d_k = 64</text>
+
+          <text x="560" y="250" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="400" fill="#9C9A94">...</text>
+
+          <!-- Concatenation -->
+          <line x1="110" y1="220" x2="110" y2="170" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch03-arr3)"/>
+          <line x1="280" y1="220" x2="280" y2="170" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch03-arr3)"/>
+          <line x1="450" y1="220" x2="450" y2="170" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch03-arr3)"/>
+          <line x1="690" y1="220" x2="690" y2="170" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch03-arr3)"/>
+
+          <rect x="50" y="120" width="700" height="50" rx="6" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1.5"/>
+          <text x="400" y="150" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="500" fill="#0F6E56">Concat(head₁, ..., head₈) ∈ ℝⁿˣ⁵¹²</text>
+
+          <!-- Final projection -->
+          <line x1="400" y1="120" x2="400" y2="90" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch03-arr3)"/>
+
+          <rect x="250" y="40" width="300" height="50" rx="6" fill="#FAECE7" stroke="#F0997B" stroke-width="1.5"/>
+          <text x="400" y="62" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="500" fill="#993C1D">Linear Projection W^O</text>
+          <text x="400" y="80" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">Output ∈ ℝⁿˣ⁵¹²</text>
+        </svg>
+        <figcaption>Figure 3.4 &mdash; Multi-head attention. The input $X$ is projected into 8 separate heads, each operating on 64-dimensional subspaces. Each head independently computes scaled dot-product attention. The head outputs are concatenated back to 512 dimensions and projected through $W^O$ to produce the final output.</figcaption>
+      </figure>
+
+      <h3>Practical Implementation: Reshaping and Parallel Computation</h3>
+
+      <p>In practice, the $h$ separate projections are not implemented as $h$ separate matrix multiplications. Instead, we use a single large projection matrix $W^{QKV} \in \mathbb{R}^{d_\text{model} \times 3d_\text{model}}$ (or three separate matrices of size $d_\text{model} \times d_\text{model}$), then reshape the output to split the last dimension into $h$ heads. The attention computation becomes a batched matrix multiplication over the head dimension:</p>
+
+<pre><code class="language-python">
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+class MultiHeadAttention(nn.Module):
+    def __init__(self, d_model=512, n_heads=8):
+        super().__init__()
+        self.d_model = d_model
+        self.n_heads = n_heads
+        self.d_k = d_model // n_heads  # 64
+
+        # Fused QKV projection: one matmul instead of three
+        self.qkv = nn.Linear(d_model, 3 * d_model, bias=False)
+        self.out = nn.Linear(d_model, d_model, bias=False)
+
+    def forward(self, x: torch.Tensor, mask: torch.Tensor | None = None):
+        B, N, _ = x.shape
+
+        # Project and reshape: (B, N, 3*d_model) -> 3 x (B, h, N, d_k)
+        qkv = self.qkv(x).reshape(B, N, 3, self.n_heads, self.d_k)
+        qkv = qkv.permute(2, 0, 3, 1, 4)  # (3, B, h, N, d_k)
+        q, k, v = qkv.unbind(0)            # each: (B, h, N, d_k)
+
+        # Scaled dot-product attention (batched over B and h)
+        # torch.matmul(q, k.T) is equivalent to einsum('bhid,bhjd->bhij', q, k)
+        scores = torch.matmul(q, k.transpose(-2, -1)) / (self.d_k ** 0.5)
+        if mask is not None:
+            scores = scores.masked_fill(mask == 0, float('-inf'))
+        attn = F.softmax(scores, dim=-1)
+
+        # Weighted sum of values, then reshape back
+        out = torch.matmul(attn, v)                    # (B, h, N, d_k)
+        out = out.transpose(1, 2).reshape(B, N, -1)    # (B, N, d_model)
+        return self.out(out)
+</code></pre>
+
+      <p>The key insight is that the batch dimension $B$ and the head dimension $h$ are both "embarrassingly parallel" &mdash; the attention for every head in every batch element can be computed simultaneously on a GPU with a single batched matrix multiplication. The einsum equivalent <code>torch.einsum('bhid,bhjd->bhij', q, k)</code> makes this parallelism explicit: the $b$ and $h$ indices are batched, meaning all heads and all batch elements compute their attention scores in a single CUDA kernel call. This is why multi-head attention does not cost more wall-clock time than single-head attention of the same total dimension.</p>
+
+      <h3>What Different Heads Learn</h3>
+
+      <p>Analysis of trained Transformers reveals striking head specialization. Clark et al. (2019) found that certain BERT heads consistently attend to specific syntactic relations: one head tracks direct objects, another tracks possessive pronouns, and another forms a "bag of words" attention that spreads weight uniformly across the sentence. Voita et al. (2019) showed that many heads can be pruned without loss, suggesting that only a subset of heads carry essential functions. The specialization is not explicitly encouraged &mdash; it emerges from the training signal alone. Typical patterns include <strong>positional heads</strong> (attend to the previous or next token), <strong>syntactic heads</strong> (attend along dependency parse edges), and <strong>semantic heads</strong> (attend to tokens with related meanings regardless of position).</p>
+    </section>
+
+    <!-- ================================================================== -->
+    <!-- SECTION 5: POSITIONAL ENCODINGS                                    -->
+    <!-- ================================================================== -->
+    <section class="chapter-section" id="positional-encodings">
+      <h2>Positional Encodings (Original)</h2>
+
+      <p>Self-attention is permutation-equivariant: if you shuffle the input tokens, the output tokens shuffle in exactly the same way. The attention weights do not change. This means that without some explicit signal about position, the model cannot distinguish "the dog bit the man" from "the man bit the dog." Position information must be injected somehow.</p>
+
+      <h3>The Permutation-Equivariance Problem</h3>
+
+      <p>Formally, let $\pi$ be a permutation of the input positions. For self-attention, $\text{Attn}(\pi(X)) = \pi(\text{Attn}(X))$. This is a feature for set-processing tasks but a bug for sequence modeling, where order carries meaning. RNNs avoid this problem because their sequential processing inherently encodes position. Convolutions partially avoid it through their local receptive fields. The Transformer needs an explicit fix.</p>
+
+      <h3>Sinusoidal Encoding</h3>
+
+      <p>Vaswani et al. proposed adding sinusoidal functions of different frequencies to the input embeddings:</p>
+
+      <div class="math-block">
+        $$\text{PE}(pos, 2i) = \sin\!\left(\frac{pos}{10000^{2i/d_\text{model}}}\right), \quad \text{PE}(pos, 2i+1) = \cos\!\left(\frac{pos}{10000^{2i/d_\text{model}}}\right)$$
+      </div>
+
+      <p>Each dimension $i$ oscillates at a different frequency, from high frequency (period $2\pi$) at dimension 0 to very low frequency (period $10000 \cdot 2\pi$) at the last dimension. The result is a unique "fingerprint" for each position &mdash; no two positions share the same encoding vector.</p>
+
+      <p>The formula translates directly into a compact PyTorch implementation that precomputes the entire encoding table at initialization.</p>
+
+<pre><code class="language-python">
+import torch
+import math
+
+def sinusoidal_positional_encoding(max_len, d_model):
+    """Compute fixed sinusoidal positional encodings (Vaswani et al., 2017)."""
+    pe = torch.zeros(max_len, d_model)
+    position = torch.arange(max_len).unsqueeze(1).float()       # (max_len, 1)
+    # Geometric progression of wavelengths from 2π to 10000·2π
+    div_term = torch.exp(
+        torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model)
+    )                                                            # (d_model/2,)
+
+    pe[:, 0::2] = torch.sin(position * div_term)                # even dimensions
+    pe[:, 1::2] = torch.cos(position * div_term)                # odd dimensions
+    return pe  # (max_len, d_model) — add to token embeddings
+
+# Each row is a position vector; nearby positions have similar vectors
+pe = sinusoidal_positional_encoding(max_len=512, d_model=512)
+# pe[0] and pe[1] are similar; pe[0] and pe[500] are very different
+</code></pre>
+
+      <h3>Why Sinusoidal Encodings Work</h3>
+
+      <p>The sinusoidal choice was not arbitrary. The key property is that the encoding for position $pos + k$ can be expressed as a linear transformation of the encoding for position $pos$, for any fixed offset $k$. This is because $\sin(a + b)$ and $\cos(a + b)$ are linear combinations of $\sin(a)$, $\cos(a)$, $\sin(b)$, and $\cos(b)$. This means the model can learn to attend to "the token 3 positions to the left" using a simple linear operation on the encodings &mdash; relative position is baked into the geometry of the encoding space. Additionally, sinusoidal encodings can extrapolate to sequence lengths longer than those seen during training, since the functions are defined for all positive integers.</p>
+
+      <!-- Figure 3.5: Interactive Positional Encoding Heatmap -->
+      <figure class="diagram-figure diagram-interactive">
+        <div class="widget-container" id="widget-ch03-posenc">
+          <style>
+            #widget-ch03-posenc .controls {
+              display: flex; gap: 1.5rem; padding: 0.5rem 0;
+              font-family: system-ui, -apple-system, sans-serif; font-size: 13px; color: #5C5B56;
+            }
+            #widget-ch03-posenc .controls label {
+              display: flex; align-items: center; gap: 8px;
+            }
+          </style>
+
+          <div class="controls">
+            <label>Positions <span id="ch03-pos-val" style="font-weight:500; min-width:24px;">32</span>
+              <input type="range" min="8" max="128" step="8" value="32"
+                style="width:140px; accent-color:#534AB7;"
+                oninput="updateCh03PosEnc(this.value, document.getElementById('ch03-dim-slider').value)">
+            </label>
+            <label>Dimensions <span id="ch03-dim-val" style="font-weight:500; min-width:24px;">64</span>
+              <input type="range" id="ch03-dim-slider" min="16" max="512" step="16" value="64"
+                style="width:140px; accent-color:#534AB7;"
+                oninput="updateCh03PosEnc(document.querySelector('#widget-ch03-posenc input').value, this.value)">
+            </label>
+          </div>
+
+          <canvas id="ch03-posenc-canvas" width="760" height="240" style="width:100%; border-radius: 6px;"></canvas>
+
+          <p style="font-family:system-ui; font-size:13px; color:#9C9A94; font-style:italic; padding:0.5rem 0 0.5rem;" id="ch03-posenc-obs">
+            Showing 32 positions × 64 dimensions. Low-index dimensions oscillate rapidly (high frequency), high-index dimensions change slowly (low frequency).
+          </p>
+        </div>
+
+        <script>
+          function updateCh03PosEnc(positions, dimensions) {
+            positions = parseInt(positions);
+            dimensions = parseInt(dimensions);
+            document.getElementById('ch03-pos-val').textContent = positions;
+            document.getElementById('ch03-dim-val').textContent = dimensions;
+
+            var canvas = document.getElementById('ch03-posenc-canvas');
+            var ctx = canvas.getContext('2d');
+            var W = canvas.width, H = canvas.height;
+            ctx.clearRect(0, 0, W, H);
+
+            var cellW = W / dimensions;
+            var cellH = H / positions;
+
+            for (var pos = 0; pos < positions; pos++) {
+              for (var d = 0; d < dimensions; d++) {
+                var i = Math.floor(d / 2);
+                var freq = 1.0 / Math.pow(10000, 2 * i / dimensions);
+                var val = (d % 2 === 0) ? Math.sin(pos * freq) : Math.cos(pos * freq);
+
+                if (val >= 0) {
+                  var r = Math.round(83 + (250 - 83) * (1 - val));
+                  var g = Math.round(74 + (250 - 74) * (1 - val));
+                  var b = Math.round(183 + (250 - 183) * (1 - val));
+                  ctx.fillStyle = 'rgb(' + r + ',' + g + ',' + b + ')';
+                } else {
+                  var a = -val;
+                  var r2 = Math.round(15 + (250 - 15) * (1 - a));
+                  var g2 = Math.round(110 + (250 - 110) * (1 - a));
+                  var b2 = Math.round(86 + (250 - 86) * (1 - a));
+                  ctx.fillStyle = 'rgb(' + r2 + ',' + g2 + ',' + b2 + ')';
+                }
+                ctx.fillRect(d * cellW, pos * cellH, Math.ceil(cellW), Math.ceil(cellH));
+              }
+            }
+
+            var obs = document.getElementById('ch03-posenc-obs');
+            if (dimensions <= 32) {
+              obs.textContent = 'With only ' + dimensions + ' dimensions, the frequency range is narrow. Nearby positions are hard to distinguish at high dimensions.';
+            } else if (positions > 64) {
+              obs.textContent = 'At ' + positions + ' positions, notice how the rightmost (low-frequency) dimensions barely change. Only high-frequency dimensions differentiate nearby positions.';
+            } else {
+              obs.textContent = 'Showing ' + positions + ' positions × ' + dimensions + ' dimensions. Low-index dimensions oscillate rapidly (high frequency), high-index dimensions change slowly (low frequency).';
+            }
+          }
+          updateCh03PosEnc(32, 64);
+        </script>
+
+        <figcaption>Figure 3.5 &mdash; Interactive: Sinusoidal positional encoding heatmap. Each row is a position, each column is a dimension. Purple = positive values, teal = negative. Left dimensions oscillate at high frequency (fast stripes), right dimensions at low frequency (slow gradients). Adjust sliders to explore how sequence length and encoding dimension affect the pattern.</figcaption>
+      </figure>
+
+      <h3>Learned Positional Embeddings</h3>
+
+      <p>The paper also tested <strong>learned positional embeddings</strong>, where each position gets a trainable vector (like a second embedding table indexed by position). Results were nearly identical to sinusoidal encodings on their benchmarks. The practical difference: sinusoidal encodings generalize to positions beyond the training length (since the function is defined for all integers), while learned embeddings cannot &mdash; position 513 has no trained vector if training only saw lengths up to 512. Modern models overwhelmingly use learned positional embeddings despite this limitation, because typical sequence lengths are set at training time and the slight flexibility of learned representations seems to help. Newer approaches like RoPE (Rotary Position Embeddings) combine the best of both: they are deterministic like sinusoidal encodings but encode relative rather than absolute position.</p>
+    </section>
+
+    <!-- ================================================================== -->
+    <!-- SECTION 6: TRAINING DETAILS                                        -->
+    <!-- ================================================================== -->
+    <section class="chapter-section" id="training-details">
+      <h2>Training Details in the Original Paper</h2>
+
+      <p>The architecture alone was only half the story. The paper introduced several training techniques that were essential for making the Transformer work at all. Many of these choices &mdash; learning rate warm-up, label smoothing, specific dropout patterns &mdash; became standard practice across the field.</p>
+
+      <h3>Adam Optimizer with Warm-Up and Decay</h3>
+
+      <p>The Transformer used the Adam optimizer with $\beta_1 = 0.9$, $\beta_2 = 0.98$, and $\epsilon = 10^{-9}$. The learning rate followed a custom schedule now known as the "Noam schedule" (named after Noam Shazeer, the second author who implemented it):</p>
+
+      <div class="math-block">
+        $$lr = d_\text{model}^{-0.5} \cdot \min(step^{-0.5}, \; step \cdot warmup\_steps^{-1.5})$$
+      </div>
+
+      <p>This produces a learning rate that increases linearly during the first $warmup\_steps$ steps (4,000 in the paper), then decays proportionally to the inverse square root of the step number. The warm-up phase is critical: without it, the model's early, random gradients are too large and training diverges. The peak learning rate is reached at exactly $step = warmup\_steps$, and subsequent decay ensures the model converges to a stable solution.</p>
+
+      <!-- Figure 3.6: Learning Rate Schedule -->
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 300" xmlns="http://www.w3.org/2000/svg">
+          <!-- Axes -->
+          <line x1="80" y1="240" x2="750" y2="240" stroke="#C8C6BE" stroke-width="1"/>
+          <line x1="80" y1="240" x2="80" y2="40" stroke="#C8C6BE" stroke-width="1"/>
+
+          <!-- X-axis labels -->
+          <text x="80" y="260" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">0</text>
+          <text x="200" y="260" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">4k</text>
+          <text x="350" y="260" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">20k</text>
+          <text x="500" y="260" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">50k</text>
+          <text x="650" y="260" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">100k</text>
+          <text x="415" y="285" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#5C5B56">Training Steps</text>
+
+          <!-- Y-axis label -->
+          <text x="35" y="140" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#5C5B56" transform="rotate(-90, 35, 140)">Learning Rate</text>
+
+          <!-- Warm-up region shading -->
+          <rect x="80" y="40" width="120" height="200" fill="#EEEDFE" opacity="0.3"/>
+          <text x="140" y="55" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#534AB7">warm-up</text>
+
+          <!-- LR curve -->
+          <polyline points="80,240 120,180 160,100 200,60 250,72 300,82 350,92 400,100 450,108 500,115 550,120 600,125 650,130 700,134 750,137"
+            fill="none" stroke="#534AB7" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+
+          <!-- Peak marker -->
+          <circle cx="200" cy="60" r="4" fill="#534AB7"/>
+          <text x="218" y="52" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#534AB7">peak at step 4000</text>
+
+          <!-- Dashed line at warmup boundary -->
+          <line x1="200" y1="240" x2="200" y2="60" stroke="#AFA9EC" stroke-width="1" stroke-dasharray="4 3"/>
+        </svg>
+        <figcaption>Figure 3.6 &mdash; The "Noam" learning rate schedule. Learning rate increases linearly during the warm-up phase (first 4,000 steps, purple shaded region), then decays proportionally to $\text{step}^{-0.5}$. The warm-up prevents early divergence caused by large random gradients.</figcaption>
+      </figure>
+
+      <h3>Label Smoothing</h3>
+
+      <p><strong>Label smoothing</strong> with $\epsilon = 0.1$ replaces the hard one-hot target distribution with a soft distribution that assigns probability $1 - \epsilon$ to the correct token and distributes the remaining $\epsilon$ uniformly across all other vocabulary tokens. Instead of forcing the model to be 100% confident in its predictions, label smoothing says "be 90% confident in the right answer and spread 10% of probability mass across alternatives." This hurts perplexity (which measures confidence) but improves BLEU and accuracy, because it prevents the model from becoming overconfident and makes the probability distributions smoother and more calibrated.</p>
+
+      <!-- Figure 3.7: Label Smoothing -->
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 250" xmlns="http://www.w3.org/2000/svg">
+          <!-- Panel headers -->
+          <rect x="40" y="16" width="330" height="30" rx="5" fill="#FAECE7" stroke="#F0997B" stroke-width="1"/>
+          <text x="205" y="36" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#993C1D">Hard Target (one-hot)</text>
+
+          <rect x="430" y="16" width="330" height="30" rx="5" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="595" y="36" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#0F6E56">Smoothed Target (ε = 0.1)</text>
+
+          <!-- Divider -->
+          <line x1="400" y1="10" x2="400" y2="220" stroke="#E5E3DC" stroke-width="1" stroke-dasharray="5 4"/>
+
+          <!-- Left panel: Hard target bars -->
+          <!-- Baseline -->
+          <line x1="60" y1="200" x2="350" y2="200" stroke="#E5E3DC" stroke-width="1"/>
+
+          <!-- Bars: "cat"=1.0, others=0 -->
+          <rect x="80" y="185" width="40" height="15" rx="3" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="1"/>
+          <text x="100" y="220" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">the</text>
+
+          <rect x="140" y="60" width="40" height="140" rx="3" fill="#993C1D"/>
+          <text x="160" y="55" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#993C1D">1.0</text>
+          <text x="160" y="220" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#993C1D">cat</text>
+
+          <rect x="200" y="185" width="40" height="15" rx="3" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="1"/>
+          <text x="220" y="220" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">sat</text>
+
+          <rect x="260" y="185" width="40" height="15" rx="3" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="1"/>
+          <text x="280" y="220" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">dog</text>
+
+          <rect x="320" y="185" width="40" height="15" rx="3" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="1"/>
+          <text x="340" y="220" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">...</text>
+
+          <!-- Right panel: Smoothed target bars -->
+          <line x1="450" y1="200" x2="740" y2="200" stroke="#E5E3DC" stroke-width="1"/>
+
+          <rect x="470" y="178" width="40" height="22" rx="3" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="490" y="220" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">the</text>
+
+          <rect x="530" y="72" width="40" height="128" rx="3" fill="#0F6E56"/>
+          <text x="550" y="67" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#0F6E56">0.9</text>
+          <text x="550" y="220" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#0F6E56">cat</text>
+
+          <rect x="590" y="178" width="40" height="22" rx="3" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="610" y="220" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">sat</text>
+
+          <rect x="650" y="178" width="40" height="22" rx="3" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="670" y="220" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">dog</text>
+
+          <rect x="710" y="178" width="40" height="22" rx="3" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="730" y="220" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">...</text>
+
+          <!-- Annotation -->
+          <text x="550" y="240" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">ε / (V-1) spread uniformly</text>
+        </svg>
+        <figcaption>Figure 3.7 &mdash; Label smoothing comparison. Hard targets (left) place all probability mass on the correct token. Smoothed targets (right, $\epsilon = 0.1$) reserve 90% for the correct token and spread 10% across the vocabulary, preventing overconfidence and improving generalization.</figcaption>
+      </figure>
+
+      <h3>Dropout</h3>
+
+      <p>The original Transformer applies dropout at three points: (1) to the output of each sublayer before the residual addition, (2) to the attention weights after softmax, and (3) to the sum of token embeddings and positional encodings. All three use a dropout rate of $P_{drop} = 0.1$ for the base model and $P_{drop} = 0.3$ for the big model. Attention dropout is particularly interesting: it randomly zeros out attention connections during training, forcing each token to build redundant pathways and preventing the model from relying too heavily on a single position.</p>
+
+      <h3>Multi-GPU Training</h3>
+
+      <p>The base model ($d_\text{model} = 512$, $N = 6$, $h = 8$, 65M parameters) was trained on 8 NVIDIA P100 GPUs for 12 hours (100,000 steps). The big model ($d_\text{model} = 1024$, $N = 6$, $h = 16$, 213M parameters) took 3.5 days on the same hardware (300,000 steps). Each training step processed approximately 25,000 source tokens and 25,000 target tokens, batched across multiple sentences and distributed across GPUs using data parallelism. This was remarkably fast for the time &mdash; competitive LSTM models took weeks to train on similar hardware. The parallelism inherent in self-attention was already paying dividends in the very first paper.</p>
+
+      <h3>BLEU Scores and Comparison with Prior Work</h3>
+
+      <table>
+        <thead>
+          <tr>
+            <th>Model</th>
+            <th>EN-DE BLEU</th>
+            <th>EN-FR BLEU</th>
+            <th>Training Cost (FLOPs)</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>GNMT (Wu et al., 2016)</td>
+            <td>26.30</td>
+            <td>39.92</td>
+            <td>2.3 × 10¹⁹</td>
+          </tr>
+          <tr>
+            <td>ConvS2S (Gehring et al., 2017)</td>
+            <td>25.16</td>
+            <td>40.46</td>
+            <td>1.5 × 10²⁰</td>
+          </tr>
+          <tr>
+            <td>Transformer (base)</td>
+            <td>27.3</td>
+            <td>38.1</td>
+            <td>3.3 × 10¹⁸</td>
+          </tr>
+          <tr>
+            <td>Transformer (big)</td>
+            <td><strong>28.4</strong></td>
+            <td><strong>41.0</strong></td>
+            <td>2.3 × 10¹⁹</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <p>The results were decisive. The Transformer (big) set new state-of-the-art BLEU scores on both benchmarks while using comparable or less compute than GNMT. The base model achieved competitive results at one-seventh the FLOPs of ConvS2S. The message was clear: not only did self-attention work as a standalone mechanism, it was more efficient and more effective than the approaches it replaced.</p>
+
+      <div class="callout callout-insight">
+        <div class="callout-title">Key Insight</div>
+        <p>The Transformer's true contribution was not any single mechanism &mdash; attention, residual connections, layer normalization, and positional encoding all existed before 2017. The breakthrough was proving that these components, combined in the right way and *without* any recurrence or convolution, could surpass all existing sequence models. The architecture unlocked parallelism during training, which in turn unlocked scale, which in turn unlocked capabilities that no one anticipated.</p>
+      </div>
+    </section>
+
+  </article>
+
+  <footer class="chapter-footer">
+    <div class="footer-nav">
+      <a href="ch02.html">&larr; Previous: Mathematical Prerequisites</a>
+      <a href="ch04.html">Next: Inside the Transformer Block &rarr;</a>
+    </div>
+  </footer>
+
+</body>
+</html>

@@ -1,0 +1,838 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Chapter 01: Why Transformers? A Historical Arc — Transformer Research Book</title>
+  <link rel="stylesheet" href="../assets/style.css">
+  <link rel="stylesheet" href="../assets/math.css">
+  <link rel="stylesheet" href="../assets/prism.css">
+  <!-- KaTeX for math rendering -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"
+    onload="renderMathInElement(document.body, {
+      delimiters: [
+        {left: '$$', right: '$$', display: true},
+        {left: '$', right: '$', display: false}
+      ]
+    })">
+  </script>
+  <!-- Prism for code blocks -->
+  <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/prism.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-python.min.js"></script>
+</head>
+<body>
+  <nav class="chapter-nav">
+    <a href="../index.html" class="nav-home">&larr; Table of Contents</a>
+    <span class="nav-chapter">Chapter 01</span>
+    <div style="display:flex; align-items:center; gap:1rem;">
+      <button class="theme-toggle" onclick="toggleTheme()" aria-label="Toggle dark mode">
+        <span class="icon-moon">&#9789;</span><span class="icon-sun">&#9788;</span>
+      </button>
+      <a href="ch02.html" class="nav-next">Next Chapter &rarr;</a>
+    </div>
+  </nav>
+  <script>
+    function toggleTheme() {
+      document.documentElement.classList.toggle('dark');
+      localStorage.setItem('theme', document.documentElement.classList.contains('dark') ? 'dark' : 'light');
+    }
+    if (localStorage.getItem('theme') === 'dark') document.documentElement.classList.add('dark');
+  </script>
+
+  <article class="chapter">
+
+    <header class="chapter-header">
+      <div class="chapter-number">Chapter 01</div>
+      <h1 class="chapter-title">Why Transformers? A Historical Arc</h1>
+      <p class="chapter-lead">For three decades, the dominant approach to processing sequences &mdash; translating a sentence, transcribing speech, predicting the next word &mdash; forced models to read one token at a time, chaining hidden states like a bucket brigade where every worker must wait for the one before. This sequential bottleneck capped training speed on parallel hardware, strangled long-range memory, and made gradients either vanish or explode over long distances. The Transformer demolished that constraint. By the end of this chapter you will understand exactly what was broken in the pre-Transformer world, how early attention mechanisms pointed the way out, and why the specific combination of ideas in "Attention Is All You Need" triggered the most consequential architectural shift in the history of deep learning.</p>
+    </header>
+
+    <!-- ================================================================== -->
+    <!-- SECTION 1: THE PROBLEM WITH SEQUENTIAL MODELS                      -->
+    <!-- ================================================================== -->
+    <section class="chapter-section" id="the-problem-with-sequential-models">
+      <h2>The Problem with Sequential Models</h2>
+
+      <p>Every sequence model before the Transformer shared a single structural assumption: to understand position $t$, you must first process positions $1$ through $t-1$. This sounds reasonable &mdash; language unfolds left to right, audio unfolds sample by sample. But this assumption has devastating consequences for training speed, gradient health, and the ability to relate distant tokens.</p>
+
+      <h3>Recurrent Neural Networks: Hidden State and Its Limits</h3>
+
+      <p>A <strong>Recurrent Neural Network (RNN)</strong> maintains a hidden state vector $h_t$ that is updated at every time step by combining the current input $x_t$ with the previous hidden state $h_{t-1}$. The update rule is deceptively simple:</p>
+
+      $$h_t = \tanh(W_{hh}\, h_{t-1} + W_{xh}\, x_t + b)$$
+
+      <p>The hidden state $h_t$ is meant to be a running summary of everything the network has seen so far. The products $W_{hh}\, h_{t-1}$ and $W_{xh}\, x_t$ are matrix-vector multiplications (matrix multiply, $\mathbb{R}^{d \times d} \times \mathbb{R}^{d} \to \mathbb{R}^{d}$): $W_{hh}$ governs how the previous summary is transformed, $W_{xh}$ governs how the new input is folded in, and the $\tanh$ squashes the result into $[-1, 1]$. The final hidden state (or each intermediate one) is then used for prediction.</p>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 260" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="ch01-arr" viewBox="0 0 10 10" refX="9" refY="5"
+              markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+              <path d="M1 1L9 5L1 9" fill="none" stroke="context-stroke"
+                stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </marker>
+          </defs>
+
+          <!-- Title -->
+          <text x="400" y="24" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="500" fill="#5C5B56">RNN: Sequential hidden state propagation</text>
+
+          <!-- Time step boxes -->
+          <!-- t=1 -->
+          <rect x="60" y="80" width="100" height="60" rx="6" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <text x="110" y="107" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="500" fill="#534AB7">RNN</text>
+          <text x="110" y="127" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">t = 1</text>
+
+          <!-- t=2 -->
+          <rect x="230" y="80" width="100" height="60" rx="6" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <text x="280" y="107" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="500" fill="#534AB7">RNN</text>
+          <text x="280" y="127" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">t = 2</text>
+
+          <!-- t=3 -->
+          <rect x="400" y="80" width="100" height="60" rx="6" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <text x="450" y="107" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="500" fill="#534AB7">RNN</text>
+          <text x="450" y="127" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">t = 3</text>
+
+          <!-- t=4 (dimmer — waiting) -->
+          <rect x="570" y="80" width="100" height="60" rx="6" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="1" stroke-dasharray="5 4"/>
+          <text x="620" y="107" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="500" fill="#B4B2A9">RNN</text>
+          <text x="620" y="127" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#B4B2A9">t = 4</text>
+          <text x="620" y="165" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#B4B2A9">waiting...</text>
+
+          <!-- Horizontal arrows: h_t passed forward -->
+          <line x1="160" y1="110" x2="228" y2="110" stroke="#534AB7" stroke-width="2" marker-end="url(#ch01-arr)"/>
+          <text x="194" y="100" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#534AB7">h&#x2081;</text>
+
+          <line x1="330" y1="110" x2="398" y2="110" stroke="#534AB7" stroke-width="2" marker-end="url(#ch01-arr)"/>
+          <text x="364" y="100" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#534AB7">h&#x2082;</text>
+
+          <line x1="500" y1="110" x2="568" y2="110" stroke="#B4B2A9" stroke-width="1.5" stroke-dasharray="5 4" marker-end="url(#ch01-arr)"/>
+          <text x="534" y="100" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#B4B2A9">h&#x2083;</text>
+
+          <!-- Input arrows (from below) -->
+          <line x1="110" y1="185" x2="110" y2="142" stroke="#0F6E56" stroke-width="1.5" marker-end="url(#ch01-arr)"/>
+          <rect x="70" y="190" width="80" height="32" rx="6" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="110" y="211" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="400" fill="#0F6E56">x&#x2081;</text>
+
+          <line x1="280" y1="185" x2="280" y2="142" stroke="#0F6E56" stroke-width="1.5" marker-end="url(#ch01-arr)"/>
+          <rect x="240" y="190" width="80" height="32" rx="6" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="280" y="211" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="400" fill="#0F6E56">x&#x2082;</text>
+
+          <line x1="450" y1="185" x2="450" y2="142" stroke="#0F6E56" stroke-width="1.5" marker-end="url(#ch01-arr)"/>
+          <rect x="410" y="190" width="80" height="32" rx="6" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="450" y="211" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="400" fill="#0F6E56">x&#x2083;</text>
+
+          <line x1="620" y1="185" x2="620" y2="142" stroke="#B4B2A9" stroke-width="1" stroke-dasharray="5 4" marker-end="url(#ch01-arr)"/>
+          <rect x="580" y="190" width="80" height="32" rx="6" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="1" stroke-dasharray="5 4"/>
+          <text x="620" y="211" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="400" fill="#B4B2A9">x&#x2084;</text>
+
+          <!-- Bottleneck annotation -->
+          <text x="400" y="250" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#993C1D">Each step must wait for the previous &mdash; no parallelism possible</text>
+        </svg>
+        <figcaption>Figure 1.1 &mdash; An RNN processes tokens strictly left to right. The hidden state $h_t$ at each step depends on the completed computation of $h_{t-1}$. Step $t{=}4$ cannot begin until step $t{=}3$ finishes (shown dashed). This sequential dependency is the fundamental bottleneck.</figcaption>
+      </figure>
+
+      <p>The critical problem is <strong>backpropagation through time (BPTT)</strong>. To compute the gradient of the loss with respect to early parameters, we must multiply Jacobians across every time step. If the sequence has $T$ tokens, the gradient flowing back to step 1 passes through $T-1$ matrix multiplications. When the dominant eigenvalue of $W_{hh}$ is less than 1, these products shrink exponentially &mdash; the <strong>vanishing gradient problem</strong>. When it exceeds 1, they grow exponentially &mdash; the <strong>exploding gradient problem</strong>. Gradient clipping mitigates explosions, but vanishing gradients silently erase long-range dependencies: the model simply cannot learn that a word 50 steps ago matters to the current prediction.</p>
+
+      <h3>Long Short-Term Memory (LSTM)</h3>
+
+      <p>Hochreiter and Schmidhuber (1997) proposed the <strong>LSTM</strong> as a direct answer to vanishing gradients. The core idea is elegant: instead of forcing all information through a single nonlinear transformation at every step, add a separate <strong>cell state</strong> $c_t$ that flows forward with only linear, gated modifications. Information can persist along this linear highway without being crushed by repeated nonlinearities.</p>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 455" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="ch01-arr2" viewBox="0 0 10 10" refX="9" refY="5"
+              markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+              <path d="M1 1L9 5L1 9" fill="none" stroke="context-stroke"
+                stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </marker>
+          </defs>
+
+          <text x="400" y="24" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="500" fill="#5C5B56">LSTM Cell: Three gates controlling information flow</text>
+
+          <!-- Main cell container -->
+          <rect x="120" y="40" width="560" height="340" rx="10" fill="none" stroke="#B4B2A9" stroke-width="1" stroke-dasharray="5 4"/>
+
+          <!-- Cell state highway (top) -->
+          <line x1="40" y1="80" x2="170" y2="80" stroke="#854F0B" stroke-width="2.5" marker-end="url(#ch01-arr2)"/>
+          <text x="105" y="70" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#854F0B">c&#x209C;&#x208B;&#x2081;</text>
+
+          <line x1="630" y1="80" x2="770" y2="80" stroke="#854F0B" stroke-width="2.5" marker-end="url(#ch01-arr2)"/>
+          <text x="700" y="70" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#854F0B">c&#x209C;</text>
+
+          <!-- Cell state line through the cell -->
+          <line x1="170" y1="80" x2="630" y2="80" stroke="#854F0B" stroke-width="2.5"/>
+
+          <!-- Hidden state input (left) -->
+          <line x1="40" y1="280" x2="140" y2="280" stroke="#534AB7" stroke-width="2" marker-end="url(#ch01-arr2)"/>
+          <text x="90" y="270" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#534AB7">h&#x209C;&#x208B;&#x2081;</text>
+
+          <!-- Hidden state output (right) -->
+          <line x1="660" y1="280" x2="770" y2="280" stroke="#534AB7" stroke-width="2" marker-end="url(#ch01-arr2)"/>
+          <text x="720" y="270" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#534AB7">h&#x209C;</text>
+
+          <!-- Input from below -->
+          <line x1="400" y1="400" x2="400" y2="350" stroke="#0F6E56" stroke-width="1.5" marker-end="url(#ch01-arr2)"/>
+          <rect x="355" y="395" width="90" height="28" rx="6" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="400" y="414" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="400" fill="#0F6E56">x&#x209C;</text>
+
+          <!-- Forget gate -->
+          <rect x="180" y="120" width="120" height="48" rx="6" fill="#FAECE7" stroke="#F0997B" stroke-width="1.5"/>
+          <text x="240" y="142" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="500" fill="#993C1D">Forget</text>
+          <text x="240" y="158" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">f&#x209C; = &#x3C3;(...)</text>
+          <!-- Forget gate connection to cell state -->
+          <line x1="240" y1="120" x2="240" y2="86" stroke="#993C1D" stroke-width="1.5" marker-end="url(#ch01-arr2)"/>
+          <circle cx="240" cy="80" r="10" fill="#FFFFFF" stroke="#993C1D" stroke-width="1.5"/>
+          <text x="240" y="84" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#993C1D">&times;</text>
+
+          <!-- Input gate -->
+          <rect x="340" y="120" width="120" height="48" rx="6" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1.5"/>
+          <text x="400" y="142" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="500" fill="#0F6E56">Input</text>
+          <text x="400" y="158" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">i&#x209C; = &#x3C3;(...)</text>
+          <!-- Input gate connection to cell state -->
+          <line x1="400" y1="120" x2="400" y2="86" stroke="#0F6E56" stroke-width="1.5" marker-end="url(#ch01-arr2)"/>
+          <circle cx="400" cy="80" r="10" fill="#FFFFFF" stroke="#0F6E56" stroke-width="1.5"/>
+          <text x="400" y="84" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#0F6E56">+</text>
+
+          <!-- Candidate value -->
+          <rect x="340" y="200" width="120" height="40" rx="6" fill="#FAEEDA" stroke="#EF9F27" stroke-width="1.5"/>
+          <text x="400" y="225" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#854F0B">&#x109;&#x209C; = tanh(...)</text>
+          <line x1="400" y1="200" x2="400" y2="170" stroke="#854F0B" stroke-width="1" stroke-dasharray="4 3"/>
+
+          <!-- Output gate -->
+          <rect x="500" y="120" width="120" height="48" rx="6" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <text x="560" y="142" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="500" fill="#534AB7">Output</text>
+          <text x="560" y="158" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">o&#x209C; = &#x3C3;(...)</text>
+
+          <!-- Output gate to hidden state -->
+          <line x1="560" y1="168" x2="560" y2="240" stroke="#534AB7" stroke-width="1.5"/>
+          <!-- tanh of cell state -->
+          <rect x="490" y="240" width="140" height="32" rx="6" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1"/>
+          <text x="560" y="261" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#534AB7">h&#x209C; = o&#x209C; &#x2299; tanh(c&#x209C;)</text>
+
+          <!-- Connection from cell state to output computation -->
+          <line x1="560" y1="80" x2="560" y2="118" stroke="#854F0B" stroke-width="1" stroke-dasharray="4 3"/>
+
+          <!-- Annotation: gradient highway -->
+          <rect x="155" y="45" width="155" height="22" rx="4" fill="#FAEEDA" stroke="none"/>
+          <text x="232" y="60" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#854F0B">&#x2190; Gradient highway (linear) &#x2192;</text>
+        </svg>
+        <figcaption>Figure 1.2 &mdash; The LSTM cell. The horizontal cell state line (amber) acts as a gradient highway: information flows through it with only element-wise multiply (&times;) and add (+) operations, avoiding the repeated nonlinear squashing that causes vanishing gradients in vanilla RNNs. The forget gate (coral) decides what to erase, the input gate (teal) decides what to write, and the output gate (purple) decides what to expose as the hidden state.</figcaption>
+      </figure>
+
+      <p>The LSTM update equations formalize this gating:</p>
+
+      $$\begin{aligned}
+      f_t &= \sigma(W_f [h_{t-1}, x_t] + b_f) \\
+      i_t &= \sigma(W_i [h_{t-1}, x_t] + b_i) \\
+      \tilde{c}_t &= \tanh(W_c [h_{t-1}, x_t] + b_c) \\
+      c_t &= f_t \odot c_{t-1} + i_t \odot \tilde{c}_t \\
+      o_t &= \sigma(W_o [h_{t-1}, x_t] + b_o) \\
+      h_t &= o_t \odot \tanh(c_t)
+      \end{aligned}$$
+
+      <p>The forget gate $f_t$ is a sigmoid that outputs values between 0 and 1 &mdash; a soft erase signal for each dimension of the cell state. The input gate $i_t$ controls how much of the candidate update $\tilde{c}_t$ gets written. The cell state update $c_t = f_t \odot c_{t-1} + i_t \odot \tilde{c}_t$ is the key line: each $\odot$ is the Hadamard product (element-wise, both operands $\in \mathbb{R}^{d}$), so this is a *linear* interpolation, not a matrix multiply followed by a nonlinearity. Gradients can flow through this path with much less attenuation.</p>
+
+      <p>LSTMs dramatically improved performance on tasks requiring 50&ndash;200 step dependencies. But they did *not* solve the parallelism problem. Each $h_t$ still depends on $h_{t-1}$. A 512-token sequence requires 512 sequential steps during training &mdash; those steps cannot be parallelized across the GPU's thousands of cores.</p>
+
+      <h3>Gated Recurrent Units (GRU)</h3>
+
+      <p>Cho et al. (2014) introduced the <strong>Gated Recurrent Unit (GRU)</strong> as a simplified alternative to the LSTM. The GRU merges the forget and input gates into a single <strong>update gate</strong> $z_t$ and eliminates the separate cell state entirely:</p>
+
+      $$\begin{aligned}
+      z_t &= \sigma(W_z [h_{t-1}, x_t]) \\
+      r_t &= \sigma(W_r [h_{t-1}, x_t]) \\
+      \tilde{h}_t &= \tanh(W [r_t \odot h_{t-1}, x_t]) \\
+      h_t &= (1 - z_t) \odot h_{t-1} + z_t \odot \tilde{h}_t
+      \end{aligned}$$
+
+      <p>The update gate $z_t$ directly interpolates between the old hidden state and the candidate. When $z_t \approx 0$, the hidden state is copied unchanged &mdash; information persists. The reset gate $r_t$ controls how much of the old state is visible when computing the candidate. Fewer parameters mean faster training per step, and empirical results show GRUs match LSTM performance on many benchmarks. But the sequential bottleneck remains identical.</p>
+
+      <h3>The Fundamental Bottleneck: Sequential Computation Prevents Parallelism</h3>
+
+      <p>GPUs are massively parallel processors. An NVIDIA A100 has 6,912 CUDA cores that can execute matrix operations simultaneously. But an RNN, LSTM, or GRU with sequence length $T$ forces a chain of $T$ *dependent* operations. The GPU utilization during the sequential pass is abysmal &mdash; most cores sit idle, waiting for the previous step to complete before the next can begin.</p>
+
+      <p>Training time scales linearly with sequence length: doubling your context window doubles your wall-clock training time. This is not a constant factor problem &mdash; it is an architectural constraint that no amount of hardware can overcome. A 4096-token context would require 4096 sequential steps per training example, making it impractical with recurrent architectures.</p>
+
+      <h3>CNNs for Sequences: Temporal Convolutions</h3>
+
+      <p>Convolutions offered an alternative. <strong>Temporal convolutions</strong> slide a kernel across the sequence, and because each kernel application is independent of the others, the entire layer can be computed in parallel. WaveNet (van den Oord et al., 2016) stacked dilated causal convolutions to achieve large receptive fields without excessive parameter counts: a dilation pattern of $1, 2, 4, 8, \ldots$ means that $k$ layers give a receptive field of $2^k$ positions.</p>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 310" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="ch01-arr3" viewBox="0 0 10 10" refX="9" refY="5"
+              markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+              <path d="M1 1L9 5L1 9" fill="none" stroke="context-stroke"
+                stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </marker>
+          </defs>
+
+          <!-- Panel headers -->
+          <rect x="20" y="10" width="360" height="30" rx="5" fill="#FAECE7" stroke="#F0997B" stroke-width="1"/>
+          <text x="200" y="30" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="600" fill="#993C1D">RNN &mdash; Sequential, Global Memory</text>
+
+          <rect x="420" y="10" width="360" height="30" rx="5" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="600" y="30" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="600" fill="#0F6E56">CNN &mdash; Parallel, Local Receptive Field</text>
+
+          <!-- Vertical divider -->
+          <line x1="400" y1="5" x2="400" y2="300" stroke="#E5E3DC" stroke-width="1" stroke-dasharray="5 4"/>
+
+          <!-- LEFT: RNN chain -->
+          <!-- 6 tokens in a chain -->
+          <rect x="40" y="140" width="48" height="36" rx="4" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1"/>
+          <text x="64" y="163" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#534AB7">h&#x2081;</text>
+
+          <line x1="88" y1="158" x2="100" y2="158" stroke="#534AB7" stroke-width="1.5" marker-end="url(#ch01-arr3)"/>
+
+          <rect x="102" y="140" width="48" height="36" rx="4" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1"/>
+          <text x="126" y="163" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#534AB7">h&#x2082;</text>
+
+          <line x1="150" y1="158" x2="162" y2="158" stroke="#534AB7" stroke-width="1.5" marker-end="url(#ch01-arr3)"/>
+
+          <rect x="164" y="140" width="48" height="36" rx="4" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1"/>
+          <text x="188" y="163" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#534AB7">h&#x2083;</text>
+
+          <line x1="212" y1="158" x2="224" y2="158" stroke="#534AB7" stroke-width="1.5" marker-end="url(#ch01-arr3)"/>
+
+          <rect x="226" y="140" width="48" height="36" rx="4" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1"/>
+          <text x="250" y="163" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#534AB7">h&#x2084;</text>
+
+          <line x1="274" y1="158" x2="286" y2="158" stroke="#534AB7" stroke-width="1.5" marker-end="url(#ch01-arr3)"/>
+
+          <rect x="288" y="140" width="48" height="36" rx="4" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1"/>
+          <text x="312" y="163" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#534AB7">h&#x2085;</text>
+
+          <line x1="336" y1="158" x2="348" y2="158" stroke="#534AB7" stroke-width="1.5" marker-end="url(#ch01-arr3)"/>
+
+          <rect x="350" y="140" width="48" height="36" rx="4" fill="#534AB7" stroke="#534AB7"/>
+          <text x="374" y="163" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#FFFFFF">h&#x2086;</text>
+
+          <!-- Left annotations -->
+          <text x="200" y="200" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#993C1D">6 sequential steps</text>
+          <text x="200" y="218" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#5C5B56">h&#x2086; sees all tokens (through chain)</text>
+
+          <!-- Receptive field bracket for RNN -->
+          <line x1="40" y1="130" x2="398" y2="130" stroke="#993C1D" stroke-width="1"/>
+          <line x1="40" y1="126" x2="40" y2="134" stroke="#993C1D" stroke-width="1"/>
+          <line x1="398" y1="126" x2="398" y2="134" stroke="#993C1D" stroke-width="1"/>
+          <text x="219" y="122" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#993C1D">global receptive field</text>
+
+          <!-- RIGHT: CNN parallel -->
+          <!-- Bottom row: 6 tokens -->
+          <rect x="440" y="220" width="44" height="32" rx="4" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="462" y="241" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#0F6E56">x&#x2081;</text>
+
+          <rect x="496" y="220" width="44" height="32" rx="4" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="518" y="241" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#0F6E56">x&#x2082;</text>
+
+          <rect x="552" y="220" width="44" height="32" rx="4" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="574" y="241" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#0F6E56">x&#x2083;</text>
+
+          <rect x="608" y="220" width="44" height="32" rx="4" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="630" y="241" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#0F6E56">x&#x2084;</text>
+
+          <rect x="664" y="220" width="44" height="32" rx="4" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="686" y="241" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#0F6E56">x&#x2085;</text>
+
+          <rect x="720" y="220" width="44" height="32" rx="4" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="742" y="241" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#0F6E56">x&#x2086;</text>
+
+          <!-- Conv layer 1 (kernel size 3) -->
+          <rect x="468" y="160" width="44" height="28" rx="4" fill="#FFFFFF" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="490" y="179" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#0F6E56">conv</text>
+          <rect x="524" y="160" width="44" height="28" rx="4" fill="#FFFFFF" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="546" y="179" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#0F6E56">conv</text>
+          <rect x="580" y="160" width="44" height="28" rx="4" fill="#FFFFFF" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="602" y="179" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#0F6E56">conv</text>
+          <rect x="636" y="160" width="44" height="28" rx="4" fill="#FFFFFF" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="658" y="179" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#0F6E56">conv</text>
+          <rect x="692" y="160" width="44" height="28" rx="4" fill="#FFFFFF" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="714" y="179" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#0F6E56">conv</text>
+
+          <!-- Connections layer 1 -->
+          <line x1="462" y1="220" x2="490" y2="188" stroke="#5DCAA5" stroke-width="0.8"/>
+          <line x1="518" y1="220" x2="490" y2="188" stroke="#5DCAA5" stroke-width="0.8"/>
+          <line x1="574" y1="220" x2="546" y2="188" stroke="#5DCAA5" stroke-width="0.8"/>
+          <line x1="518" y1="220" x2="546" y2="188" stroke="#5DCAA5" stroke-width="0.8"/>
+
+          <!-- Conv layer 2 (fewer outputs) -->
+          <rect x="524" y="100" width="44" height="28" rx="4" fill="#FFFFFF" stroke="#0F6E56" stroke-width="1.5"/>
+          <text x="546" y="119" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#0F6E56">conv</text>
+          <rect x="636" y="100" width="44" height="28" rx="4" fill="#FFFFFF" stroke="#0F6E56" stroke-width="1.5"/>
+          <text x="658" y="119" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#0F6E56">conv</text>
+
+          <line x1="490" y1="160" x2="546" y2="128" stroke="#0F6E56" stroke-width="0.8"/>
+          <line x1="546" y1="160" x2="546" y2="128" stroke="#0F6E56" stroke-width="0.8"/>
+          <line x1="602" y1="160" x2="546" y2="128" stroke="#0F6E56" stroke-width="0.8"/>
+          <line x1="602" y1="160" x2="658" y2="128" stroke="#0F6E56" stroke-width="0.8"/>
+          <line x1="658" y1="160" x2="658" y2="128" stroke="#0F6E56" stroke-width="0.8"/>
+          <line x1="714" y1="160" x2="658" y2="128" stroke="#0F6E56" stroke-width="0.8"/>
+
+          <!-- Receptive field bracket (limited) -->
+          <line x1="440" y1="90" x2="618" y2="90" stroke="#0F6E56" stroke-width="1"/>
+          <line x1="440" y1="86" x2="440" y2="94" stroke="#0F6E56" stroke-width="1"/>
+          <line x1="618" y1="86" x2="618" y2="94" stroke="#0F6E56" stroke-width="1"/>
+          <text x="529" y="82" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#0F6E56">local receptive field</text>
+
+          <!-- Right annotations -->
+          <text x="600" y="272" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#0F6E56">All convolutions run in parallel</text>
+          <text x="600" y="290" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#5C5B56">But layer 2 only sees 5 of 6 tokens</text>
+        </svg>
+        <figcaption>Figure 1.3 &mdash; RNNs (left) process tokens sequentially but have a global receptive field: $h_6$ has seen all tokens. CNNs (right) process all positions in parallel but each layer has a limited receptive field determined by kernel size. Reaching distant tokens requires stacking many layers, and the effective path between distant positions grows logarithmically with depth.</figcaption>
+      </figure>
+
+      <p>ConvS2S (Gehring et al., 2017) demonstrated that deep convolutional networks with residual connections and attention could match LSTM-based seq2seq models on machine translation while training significantly faster. But the fundamental limitation persists: the receptive field is *fixed* by architecture depth and kernel size. Relating token 1 to token 500 requires information to propagate through many layers, and each layer can only look at a local window. The signal degrades with distance.</p>
+
+      <p>So the pre-Transformer world offered a painful tradeoff: RNNs and LSTMs gave global context but no parallelism; CNNs gave parallelism but only local context. What was needed was a mechanism that is *both* parallel and global &mdash; that can relate any two positions in a single operation, regardless of their distance.</p>
+
+    </section>
+
+    <!-- ================================================================== -->
+    <!-- SECTION 2: ATTENTION AS A PRIMITIVE                                -->
+    <!-- ================================================================== -->
+    <section class="chapter-section" id="attention-as-a-primitive">
+      <h2>Attention as a Primitive</h2>
+
+      <p>The mechanism that would eventually break the sequential bottleneck was not invented for the Transformer. Attention appeared years earlier as a patch for a specific failure in sequence-to-sequence models: the inability of a single fixed-size vector to carry all the information needed for translation.</p>
+
+      <h3>Bahdanau Attention (2014): The First Soft Attention for Seq2Seq</h3>
+
+      <p>In the standard encoder-decoder architecture for machine translation, the encoder reads the source sentence and compresses it into a single context vector &mdash; the final hidden state $h_T$. The decoder then generates the target sentence conditioned on this vector. The problem is obvious once stated: a 50-word source sentence must be squeezed through the same-size bottleneck as a 5-word sentence. Critical information gets lost.</p>
+
+      <p>Bahdanau, Cho, and Bengio (2014) proposed a direct fix. Instead of using only the final encoder hidden state, let the decoder *look back* at every encoder hidden state $(h_1, h_2, \ldots, h_T)$ at every decoding step. The decoder learns to assign a weight to each encoder state, producing a weighted combination &mdash; a <strong>context vector</strong> &mdash; that is specific to the current decoding position.</p>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 380" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="ch01-arr4" viewBox="0 0 10 10" refX="9" refY="5"
+              markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+              <path d="M1 1L9 5L1 9" fill="none" stroke="context-stroke"
+                stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </marker>
+          </defs>
+
+          <text x="400" y="22" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="500" fill="#5C5B56">Bahdanau Attention: Decoder attends to all encoder states</text>
+
+          <!-- Encoder states (bottom row) -->
+          <text x="400" y="330" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#0F6E56">Encoder Hidden States</text>
+
+          <rect x="80" y="250" width="90" height="44" rx="6" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1.5"/>
+          <text x="125" y="277" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="400" fill="#0F6E56">h&#x2081;</text>
+
+          <rect x="200" y="250" width="90" height="44" rx="6" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1.5"/>
+          <text x="245" y="277" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="400" fill="#0F6E56">h&#x2082;</text>
+
+          <rect x="320" y="250" width="90" height="44" rx="6" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1.5"/>
+          <text x="365" y="277" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="400" fill="#0F6E56">h&#x2083;</text>
+
+          <rect x="440" y="250" width="90" height="44" rx="6" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1.5"/>
+          <text x="485" y="277" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="400" fill="#0F6E56">h&#x2084;</text>
+
+          <rect x="560" y="250" width="90" height="44" rx="6" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1.5"/>
+          <text x="605" y="277" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="400" fill="#0F6E56">h&#x2085;</text>
+
+          <!-- Decoder state (top) -->
+          <rect x="265" y="50" width="120" height="52" rx="6" fill="#534AB7" stroke="#534AB7"/>
+          <text x="325" y="74" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="500" fill="#FFFFFF">Decoder</text>
+          <text x="325" y="92" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#AFA9EC">s&#x2082; (step 2)</text>
+
+          <!-- Attention lines with varying thickness -->
+          <line x1="325" y1="102" x2="125" y2="248" stroke="#AFA9EC" stroke-width="0.8" opacity="0.5"/>
+          <line x1="325" y1="102" x2="245" y2="248" stroke="#534AB7" stroke-width="3.5" opacity="0.9"/>
+          <line x1="325" y1="102" x2="365" y2="248" stroke="#534AB7" stroke-width="2.2" opacity="0.8"/>
+          <line x1="325" y1="102" x2="485" y2="248" stroke="#AFA9EC" stroke-width="1.0" opacity="0.5"/>
+          <line x1="325" y1="102" x2="605" y2="248" stroke="#AFA9EC" stroke-width="0.5" opacity="0.4"/>
+
+          <!-- Weight labels -->
+          <text x="125" y="240" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">0.05</text>
+          <text x="245" y="240" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#534AB7">0.52</text>
+          <text x="365" y="240" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#5C5B56">0.30</text>
+          <text x="485" y="240" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">0.08</text>
+          <text x="605" y="240" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">0.05</text>
+
+          <!-- Context vector -->
+          <rect x="460" y="60" width="180" height="40" rx="6" fill="#FAEEDA" stroke="#EF9F27" stroke-width="1.5"/>
+          <text x="550" y="85" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#854F0B">context c&#x2082; = &#x2211; &#x3B1; h</text>
+          <line x1="386" y1="76" x2="458" y2="76" stroke="#854F0B" stroke-width="1.5" marker-end="url(#ch01-arr4)"/>
+
+          <!-- Source words below encoder -->
+          <text x="125" y="360" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#9C9A94">Die</text>
+          <text x="245" y="360" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#9C9A94">Katze</text>
+          <text x="365" y="360" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#9C9A94">sa&szlig;</text>
+          <text x="485" y="360" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#9C9A94">auf</text>
+          <text x="605" y="360" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#9C9A94">der</text>
+        </svg>
+        <figcaption>Figure 1.4 &mdash; Bahdanau attention during decoding step 2. The decoder state $s_2$ computes an alignment score with every encoder hidden state. Line thickness encodes attention weight: "Katze" (cat) receives the strongest attention, which makes sense if the decoder is currently producing the English word "cat". The weighted sum produces a position-specific context vector $c_2$.</figcaption>
+      </figure>
+
+      <p>The alignment score in Bahdanau attention is computed by a small feedforward network:</p>
+
+      $$e_{ij} = v_a^\top \tanh(W_a\, s_{i-1} + U_a\, h_j)$$
+
+      <p>Here $s_{i-1}$ is the decoder hidden state at the previous step and $h_j$ is the $j$-th encoder hidden state. The score $e_{ij}$ measures how well the input around position $j$ matches the output at position $i$. These scores are normalized with softmax to produce weights $\alpha_{ij} = \text{softmax}_j(e_{ij})$, and the context vector is the weighted sum $c_i = \sum_j \alpha_{ij}\, h_j$.</p>
+
+      <p>This was a breakthrough: the model could now "look" at relevant source positions for each target word. Machine translation quality improved dramatically, particularly on longer sentences where the fixed-vector bottleneck was most severe.</p>
+
+      <h3>Luong Attention: Dot-Product and General Forms</h3>
+
+      <p>Luong et al. (2015) proposed simpler alignment functions. Instead of a learned feedforward network, the <strong>dot-product</strong> form computes:</p>
+
+      $$e_{ij} = s_i^\top h_j$$
+
+      <p>Here $s_i^\top h_j$ is the dot product of two vectors (dot product, yields a scalar), which is cheaper to compute and has no additional parameters. The <strong>general</strong> form adds a learnable weight matrix:</p>
+
+      $$e_{ij} = s_i^\top W_a\, h_j$$
+
+      <p>Luong attention also introduced the distinction between <strong>global attention</strong> (attend to all source positions) and <strong>local attention</strong> (attend to a window around a predicted alignment point). The dot-product form would become the basis for the Transformer's attention mechanism, though scaled by $1/\sqrt{d_k}$ to prevent softmax saturation in high dimensions &mdash; a detail we will examine in Chapter 2.</p>
+
+      <h3>The Attention Equation Before Transformers</h3>
+
+      <p>By 2016, the general pattern of attention had crystallized into a common framework. Given a set of <strong>key-value pairs</strong> $(K, V)$ and a <strong>query</strong> $q$, attention computes:</p>
+
+      $$\text{Attention}(q, K, V) = \sum_j \frac{\exp(q^\top k_j)}{\sum_{j'} \exp(q^\top k_{j'})}\, v_j$$
+
+      <p>The query asks a question. The keys advertise what information each position holds. The dot product $q^\top k_j$ measures relevance. The softmax converts these raw scores into a probability distribution. The values carry the actual content. The output is a weighted blend of values &mdash; a soft dictionary lookup.</p>
+
+      <div class="callout callout-insight">
+        <div class="callout-title">Key Insight</div>
+        <p>Attention is fundamentally a soft dictionary lookup. The query searches for matching keys; the values are the retrieved content. Unlike a hash table, the lookup is differentiable and returns a weighted mixture of all values rather than a single exact match.</p>
+      </div>
+
+      <h3>Why Attention Alone Was Not Sufficient</h3>
+
+      <p>Pre-Transformer attention had two critical limitations. First, it was <strong>positionally blind</strong>: the attention function $q^\top k_j$ depends only on the *content* of the query and key vectors, not on their *positions*. The sentence "the cat sat on the mat" and "mat the on sat cat the" would produce identical attention patterns if the embedding vectors were the same. Sequence order is invisible.</p>
+
+      <p>Second, the attention mechanism requires computing a score between every query and every key. For a sequence of length $n$, this produces an $n \times n$ attention matrix, consuming $O(n^2)$ memory. In 2014&ndash;2016, attention was used only at the decoder-to-encoder interface (cross-attention), where the two sequences were of manageable length. Using attention *within* a sequence (self-attention) at scale was considered impractical.</p>
+
+      <p>These were not insurmountable obstacles &mdash; just obstacles that nobody had yet assembled solutions for. Positional encodings would solve the first problem. Hardware improvements and careful engineering would tame the second. What was missing was the insight that attention could replace recurrence *entirely*, rather than merely supplementing it.</p>
+
+    </section>
+
+    <!-- ================================================================== -->
+    <!-- SECTION 3: TRANSFORMERS ARRIVE                                     -->
+    <!-- ================================================================== -->
+    <section class="chapter-section" id="transformers-arrive">
+      <h2>Transformers Arrive</h2>
+
+      <h3>"Attention Is All You Need" (Vaswani et al., 2017): The Paradigm Shift</h3>
+
+      <p>The paper that launched the era has a title that doubles as its thesis. Vaswani, Shazeer, Parmar, Uszkoreit, Jones, Gomez, Kaiser, and Polosukhin presented the <strong>Transformer</strong> at NeurIPS 2017, demonstrating that a model built *entirely* from attention mechanisms &mdash; with no recurrence and no convolutions &mdash; could achieve state-of-the-art results on machine translation while training dramatically faster than any existing architecture.</p>
+
+      <p>The key innovations were not individually new. Self-attention, positional encodings, layer normalization, residual connections, multi-head decomposition &mdash; each had precedent. The breakthrough was the *specific combination* and the proof that this combination scaled. Let us trace the core ideas.</p>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 440" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="ch01-arr5" viewBox="0 0 10 10" refX="9" refY="5"
+              markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+              <path d="M1 1L9 5L1 9" fill="none" stroke="context-stroke"
+                stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </marker>
+          </defs>
+
+          <text x="400" y="22" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="500" fill="#5C5B56">The Transformer Block (simplified)</text>
+
+          <!-- Input -->
+          <rect x="220" y="380" width="360" height="40" rx="6" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1.5"/>
+          <text x="400" y="405" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="500" fill="#0F6E56">Input Embeddings + Positional Encoding</text>
+
+          <line x1="400" y1="380" x2="400" y2="360" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch01-arr5)"/>
+
+          <!-- Layer Norm 1 -->
+          <rect x="270" y="320" width="260" height="36" rx="6" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="1"/>
+          <text x="400" y="343" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#5C5B56">Layer Normalization</text>
+
+          <line x1="400" y1="320" x2="400" y2="300" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch01-arr5)"/>
+
+          <!-- Multi-Head Self-Attention -->
+          <rect x="220" y="240" width="360" height="56" rx="6" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <text x="400" y="265" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="500" fill="#534AB7">Multi-Head Self-Attention</text>
+          <text x="400" y="283" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">All tokens attend to all tokens in parallel</text>
+
+          <!-- Residual connection 1 -->
+          <line x1="190" y1="400" x2="190" y2="220" stroke="#B4B2A9" stroke-width="1" stroke-dasharray="4 3"/>
+          <line x1="190" y1="220" x2="390" y2="220" stroke="#B4B2A9" stroke-width="1" stroke-dasharray="4 3" marker-end="url(#ch01-arr5)"/>
+          <circle cx="400" cy="220" r="10" fill="#FFFFFF" stroke="#B4B2A9" stroke-width="1"/>
+          <text x="400" y="224" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#B4B2A9">+</text>
+          <text x="175" y="310" text-anchor="end" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">residual</text>
+
+          <line x1="400" y1="210" x2="400" y2="196" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch01-arr5)"/>
+
+          <!-- Layer Norm 2 -->
+          <rect x="270" y="158" width="260" height="36" rx="6" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="1"/>
+          <text x="400" y="181" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#5C5B56">Layer Normalization</text>
+
+          <line x1="400" y1="158" x2="400" y2="138" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch01-arr5)"/>
+
+          <!-- FFN -->
+          <rect x="220" y="82" width="360" height="52" rx="6" fill="#FAEEDA" stroke="#EF9F27" stroke-width="1.5"/>
+          <text x="400" y="106" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="500" fill="#854F0B">Feed-Forward Network</text>
+          <text x="400" y="123" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">Two linear layers with nonlinearity</text>
+
+          <!-- Residual connection 2 -->
+          <line x1="610" y1="220" x2="610" y2="62" stroke="#B4B2A9" stroke-width="1" stroke-dasharray="4 3"/>
+          <line x1="610" y1="62" x2="410" y2="62" stroke="#B4B2A9" stroke-width="1" stroke-dasharray="4 3" marker-end="url(#ch01-arr5)"/>
+          <circle cx="400" cy="62" r="10" fill="#FFFFFF" stroke="#B4B2A9" stroke-width="1"/>
+          <text x="400" y="66" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#B4B2A9">+</text>
+          <text x="625" y="142" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">residual</text>
+
+          <!-- Output arrow -->
+          <line x1="400" y1="52" x2="400" y2="38" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch01-arr5)"/>
+
+          <!-- ×N label -->
+          <line x1="700" y1="82" x2="700" y2="370" stroke="#C8C6BE" stroke-width="1" stroke-dasharray="4 3"/>
+          <line x1="694" y1="82" x2="700" y2="82" stroke="#C8C6BE" stroke-width="1"/>
+          <line x1="694" y1="370" x2="700" y2="370" stroke="#C8C6BE" stroke-width="1"/>
+          <text x="718" y="230" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#9C9A94">&times; N</text>
+        </svg>
+        <figcaption>Figure 1.5 &mdash; A single Transformer block (pre-norm variant). The input flows through layer normalization, multi-head self-attention, a residual addition, another layer normalization, a position-wise feed-forward network, and a second residual addition. N of these blocks are stacked. Every operation processes all positions simultaneously &mdash; there is no sequential dependency between tokens within a layer.</figcaption>
+      </figure>
+
+      <p><strong>Self-attention</strong> is the mechanism at the heart of the Transformer. Unlike Bahdanau attention, which connects an encoder and decoder, self-attention connects a sequence to *itself*. Every token computes queries, keys, and values from its own representation, then attends to every other token in the same sequence. Token 47 can directly attend to token 1 in a single operation &mdash; no information needs to propagate through 46 intermediate hidden states.</p>
+
+      <p><strong>Positional encoding</strong> solves the position-blindness problem. Since self-attention treats inputs as a set (not a sequence), position information must be explicitly injected. The original paper used sinusoidal encodings: each position gets a unique signature made of sine and cosine functions at different frequencies, added directly to the token embedding.</p>
+
+      <p><strong>Multi-head attention</strong> splits the representation into $h$ independent "heads," each with its own learned projections. Different heads can learn different types of relationships &mdash; one head might focus on syntactic dependencies, another on semantic similarity, another on positional proximity. The outputs are concatenated and projected back to the model dimension.</p>
+
+      <p>The <strong>feed-forward network</strong> is a simple two-layer MLP applied independently to each position. Despite its simplicity, recent research suggests it acts as a key-value memory store where the model stores factual knowledge learned during training.</p>
+
+      <p><strong>Residual connections</strong> and <strong>layer normalization</strong> ensure gradient health: the residual connections create a direct path for gradients to flow through the entire stack without attenuation, and layer normalization stabilizes the activation magnitudes at each layer.</p>
+
+      <h3>Why the Transformer Won</h3>
+
+      <p>Three properties distinguished the Transformer from every prior sequence architecture:</p>
+
+      <p><strong>Full parallelism.</strong> Every token in the sequence is processed simultaneously within each layer. A 512-token sequence in a Transformer requires the same number of serial computation steps as a 1-token sequence &mdash; just one forward pass per layer. Compare this to 512 sequential steps in an RNN. On GPU hardware designed for massive parallelism, this difference translates directly into wall-clock speedups of 10&ndash;100&times; for training.</p>
+
+      <p><strong>Global receptive field in a single layer.</strong> Every token attends to every other token through self-attention. Token 1 and token 500 interact directly, with no degradation from propagation through intermediate states. The path length between any two positions is $O(1)$ &mdash; compared to $O(n)$ for RNNs and $O(\log_k n)$ for dilated convolutions with kernel size $k$.</p>
+
+      <p><strong>Scalability.</strong> The Transformer architecture scales gracefully with both data and compute. Making the model larger (wider $d_\text{model}$, more layers, more heads) yields predictable improvements in performance. This property would later be quantified as "scaling laws" (Kaplan et al., 2020), showing that loss decreases as a power law with respect to model size, dataset size, and compute.</p>
+
+      <figure class="diagram-figure diagram-interactive">
+        <div class="widget-container" id="widget-ch01-pathlen">
+          <style>
+            #widget-ch01-pathlen .controls {
+              display: flex; gap: 1.5rem; padding: 0.8rem 0 0.5rem;
+              flex-wrap: wrap;
+            }
+            #widget-ch01-pathlen .controls label {
+              font-family: system-ui, -apple-system, sans-serif;
+              font-size: 13px; color: #5C5B56;
+              display: flex; align-items: center; gap: 8px;
+            }
+          </style>
+
+          <div class="controls">
+            <label>
+              Sequence length: <span id="ch01-seqlen-display" style="font-weight:600; color:#534AB7; min-width:36px;">64</span>
+              <input type="range" min="8" max="512" step="8" value="64"
+                style="width:160px; accent-color:#534AB7;"
+                oninput="updateCh01PathLen(this.value)">
+            </label>
+          </div>
+
+          <svg id="ch01-pathlen-svg" width="100%" viewBox="0 0 800 230">
+            <!-- Static: bar chart frame -->
+            <text x="400" y="22" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="500" fill="#5C5B56">Maximum path length between any two tokens</text>
+
+            <!-- Y axis -->
+            <line x1="100" y1="40" x2="100" y2="190" stroke="#E5E3DC" stroke-width="1"/>
+
+            <!-- Bar labels -->
+            <text x="220" y="210" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#993C1D">RNN</text>
+            <text x="390" y="210" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#0F6E56">Dilated CNN</text>
+            <text x="570" y="210" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#534AB7">Transformer</text>
+
+            <!-- Bars (updated by JS) -->
+            <rect id="ch01-bar-rnn" x="170" y="60" width="100" height="130" rx="4" fill="#FAECE7" stroke="#F0997B" stroke-width="1.5"/>
+            <text id="ch01-val-rnn" x="220" y="55" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#993C1D">64</text>
+
+            <rect id="ch01-bar-cnn" x="340" y="120" width="100" height="70" rx="4" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1.5"/>
+            <text id="ch01-val-cnn" x="390" y="115" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#0F6E56">6</text>
+
+            <rect id="ch01-bar-tf" x="520" y="180" width="100" height="10" rx="4" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+            <text id="ch01-val-tf" x="570" y="175" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#534AB7">1</text>
+
+            <!-- Baseline -->
+            <line x1="100" y1="190" x2="680" y2="190" stroke="#E5E3DC" stroke-width="1"/>
+          </svg>
+
+          <p style="font-family:system-ui, -apple-system, sans-serif; font-size:13px; color:#9C9A94; font-style:italic;
+                    padding:0.5rem 0 0.8rem;" id="ch01-pathlen-observation">
+            At sequence length 64: RNN needs 64 steps, dilated CNN needs 6 layers, Transformer needs just 1 layer.
+          </p>
+        </div>
+
+        <script>
+          function updateCh01PathLen(value) {
+            var n = parseInt(value);
+            document.getElementById('ch01-seqlen-display').textContent = n;
+
+            var rnnPath = n;
+            var cnnPath = Math.ceil(Math.log2(n));
+            var tfPath = 1;
+
+            var maxVal = rnnPath;
+            var barBase = 190;
+            var barMaxH = 140;
+
+            var rnnH = (rnnPath / maxVal) * barMaxH;
+            var cnnH = Math.max((cnnPath / maxVal) * barMaxH, 6);
+            var tfH = Math.max((tfPath / maxVal) * barMaxH, 6);
+
+            var rnnBar = document.getElementById('ch01-bar-rnn');
+            rnnBar.setAttribute('y', barBase - rnnH);
+            rnnBar.setAttribute('height', rnnH);
+            document.getElementById('ch01-val-rnn').textContent = rnnPath;
+            document.getElementById('ch01-val-rnn').setAttribute('y', barBase - rnnH - 5);
+
+            var cnnBar = document.getElementById('ch01-bar-cnn');
+            cnnBar.setAttribute('y', barBase - cnnH);
+            cnnBar.setAttribute('height', cnnH);
+            document.getElementById('ch01-val-cnn').textContent = cnnPath;
+            document.getElementById('ch01-val-cnn').setAttribute('y', barBase - cnnH - 5);
+
+            var tfBar = document.getElementById('ch01-bar-tf');
+            tfBar.setAttribute('y', barBase - tfH);
+            tfBar.setAttribute('height', tfH);
+            document.getElementById('ch01-val-tf').textContent = tfPath;
+            document.getElementById('ch01-val-tf').setAttribute('y', barBase - tfH - 5);
+
+            document.getElementById('ch01-pathlen-observation').textContent =
+              'At sequence length ' + n + ': RNN needs ' + rnnPath +
+              ' steps, dilated CNN needs ' + cnnPath + ' layers, Transformer needs just ' +
+              tfPath + ' layer.';
+          }
+          updateCh01PathLen(64);
+        </script>
+
+        <figcaption>Figure 1.6 &mdash; Interactive: Maximum path length between any two tokens as a function of sequence length. Drag the slider to see how the RNN path grows linearly, the dilated CNN grows logarithmically, and the Transformer remains constant at 1. This single-layer connectivity is why Transformers learn long-range dependencies so effectively.</figcaption>
+      </figure>
+
+      <p>The original paper demonstrated these advantages on WMT 2014 English-to-German and English-to-French translation. The "big" Transformer achieved 28.4 BLEU on English-to-German (surpassing all previous single models and ensembles) while requiring only 3.5 days of training on 8 P100 GPUs. The previous best system required weeks of training. The Transformer did not just win on quality &mdash; it made state-of-the-art training *affordable*.</p>
+
+      <h3>The 2018&ndash;2019 Explosion: BERT, GPT, and the Pre-Training Era</h3>
+
+      <p>What happened next was not gradual adoption. It was an explosion. Within 18 months of the original paper, the Transformer became the dominant architecture across NLP, and the paradigm of <strong>pre-training</strong> &mdash; training a large model on massive unsupervised text, then fine-tuning it on specific tasks &mdash; became the default approach to nearly every language task.</p>
+
+      <p><strong>GPT</strong> (Radford et al., June 2018) used a decoder-only Transformer trained with a left-to-right language modeling objective: predict the next token given all previous tokens. It demonstrated that unsupervised pre-training on a large corpus (BooksCorpus, ~7,000 books) followed by supervised fine-tuning could match or beat specialized models on a range of NLP benchmarks. The key insight: the pre-trained representations already encode deep linguistic structure; fine-tuning merely steers them toward specific tasks.</p>
+
+      <p><strong>BERT</strong> (Devlin et al., October 2018) used an encoder-only Transformer trained with a <strong>masked language model (MLM)</strong> objective: randomly mask 15% of tokens and predict them from the surrounding context. Because masking allows the model to see both left and right context, BERT learned bidirectional representations &mdash; a decisive advantage for tasks like question answering and named entity recognition. BERT set new records on 11 NLP benchmarks simultaneously and became the dominant baseline for years.</p>
+
+      <p><strong>XLNet</strong> (Yang et al., 2019) introduced permutation-based training that captured bidirectional context without masking artifacts. <strong>T5</strong> (Raffel et al., 2019) reframed every NLP task as text-to-text, using a full encoder-decoder Transformer. <strong>RoBERTa</strong> (Liu et al., 2019) showed that BERT's performance could be significantly improved simply by training longer on more data with better hyperparameters. <strong>GPT-2</strong> (Radford et al., 2019) demonstrated that a 1.5 billion parameter Transformer could generate remarkably coherent text.</p>
+
+      <p>By the end of 2019, the research landscape had fundamentally changed. Recurrent models were no longer competitive on any major benchmark. The question shifted from "should we use a Transformer?" to "how should we use a Transformer?"</p>
+
+      <h3>Timeline of Major Transformer Milestones: 2017 to 2025</h3>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 510" xmlns="http://www.w3.org/2000/svg">
+          <!-- Vertical timeline -->
+          <line x1="120" y1="30" x2="120" y2="480" stroke="#C8C6BE" stroke-width="2"/>
+
+          <!-- 2017 -->
+          <circle cx="120" cy="45" r="7" fill="#534AB7" stroke="#EEEDFE" stroke-width="2"/>
+          <text x="90" y="50" text-anchor="end" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#534AB7">2017</text>
+          <rect x="145" y="30" width="340" height="28" rx="5" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1"/>
+          <text x="155" y="49" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#534AB7">Transformer</text>
+          <text x="268" y="49" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">&mdash; Vaswani et al., "Attention Is All You Need"</text>
+
+          <!-- 2018 -->
+          <circle cx="120" cy="90" r="7" fill="#534AB7" stroke="#EEEDFE" stroke-width="2"/>
+          <text x="90" y="95" text-anchor="end" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#534AB7">2018</text>
+          <rect x="145" y="75" width="240" height="28" rx="5" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1"/>
+          <text x="155" y="94" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#534AB7">GPT-1</text>
+          <text x="200" y="94" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">&mdash; Decoder-only pre-training</text>
+
+          <circle cx="120" cy="120" r="5" fill="#534AB7" stroke="#EEEDFE" stroke-width="2"/>
+          <rect x="145" y="107" width="310" height="28" rx="5" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1"/>
+          <text x="155" y="126" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#534AB7">BERT</text>
+          <text x="197" y="126" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">&mdash; Bidirectional encoder, masked LM</text>
+
+          <!-- 2019 -->
+          <circle cx="120" cy="160" r="7" fill="#0F6E56" stroke="#E1F5EE" stroke-width="2"/>
+          <text x="90" y="165" text-anchor="end" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#0F6E56">2019</text>
+          <rect x="145" y="147" width="220" height="28" rx="5" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="155" y="166" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#0F6E56">GPT-2</text>
+          <text x="203" y="166" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">&mdash; 1.5B params, zero-shot</text>
+
+          <circle cx="120" cy="190" r="5" fill="#0F6E56" stroke="#E1F5EE" stroke-width="2"/>
+          <rect x="145" y="177" width="280" height="28" rx="5" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="155" y="196" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#0F6E56">T5, XLNet, RoBERTa</text>
+          <text x="310" y="196" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">&mdash; Rapid iteration</text>
+
+          <!-- 2020 -->
+          <circle cx="120" cy="230" r="7" fill="#854F0B" stroke="#FAEEDA" stroke-width="2"/>
+          <text x="90" y="235" text-anchor="end" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#854F0B">2020</text>
+          <rect x="145" y="217" width="310" height="28" rx="5" fill="#FAEEDA" stroke="#EF9F27" stroke-width="1"/>
+          <text x="155" y="236" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#854F0B">GPT-3</text>
+          <text x="200" y="236" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">&mdash; 175B params, in-context learning</text>
+
+          <circle cx="120" cy="260" r="5" fill="#854F0B" stroke="#FAEEDA" stroke-width="2"/>
+          <rect x="145" y="247" width="330" height="28" rx="5" fill="#FAEEDA" stroke="#EF9F27" stroke-width="1"/>
+          <text x="155" y="266" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#854F0B">ViT</text>
+          <text x="182" y="266" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">&mdash; Vision Transformer, images as patches</text>
+
+          <!-- 2021 -->
+          <circle cx="120" cy="300" r="5" fill="#185FA5" stroke="#E6F1FB" stroke-width="2"/>
+          <text x="90" y="305" text-anchor="end" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#185FA5">2021</text>
+          <rect x="145" y="287" width="360" height="28" rx="5" fill="#E6F1FB" stroke="#85B7EB" stroke-width="1"/>
+          <text x="155" y="306" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#185FA5">DALL-E, Codex, AlphaFold2</text>
+          <text x="355" y="306" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">&mdash; Beyond text</text>
+
+          <!-- 2022 -->
+          <circle cx="120" cy="340" r="7" fill="#993C1D" stroke="#FAECE7" stroke-width="2"/>
+          <text x="90" y="345" text-anchor="end" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#993C1D">2022</text>
+          <rect x="145" y="327" width="400" height="28" rx="5" fill="#FAECE7" stroke="#F0997B" stroke-width="1"/>
+          <text x="155" y="346" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#993C1D">ChatGPT, InstructGPT</text>
+          <text x="315" y="346" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">&mdash; RLHF, conversational AI goes public</text>
+
+          <!-- 2023 -->
+          <circle cx="120" cy="380" r="5" fill="#993C1D" stroke="#FAECE7" stroke-width="2"/>
+          <text x="90" y="385" text-anchor="end" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#993C1D">2023</text>
+          <rect x="145" y="367" width="460" height="28" rx="5" fill="#FAECE7" stroke="#F0997B" stroke-width="1"/>
+          <text x="155" y="386" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#993C1D">GPT-4, LLaMA, Gemini, Claude, Mistral</text>
+          <text x="445" y="386" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">&mdash; Scaling + open weights</text>
+
+          <!-- 2024-2025 -->
+          <circle cx="120" cy="420" r="5" fill="#534AB7" stroke="#EEEDFE" stroke-width="2"/>
+          <text x="90" y="425" text-anchor="end" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#534AB7">2024</text>
+          <rect x="145" y="407" width="510" height="28" rx="5" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1"/>
+          <text x="155" y="426" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#534AB7">Mamba, Mixtral MoE, long-context (1M+ tokens)</text>
+          <text x="490" y="426" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">&mdash; Efficiency frontier</text>
+
+          <circle cx="120" cy="460" r="7" fill="#534AB7" stroke="#EEEDFE" stroke-width="2"/>
+          <text x="90" y="465" text-anchor="end" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#534AB7">2025</text>
+          <rect x="145" y="447" width="530" height="28" rx="5" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1"/>
+          <text x="155" y="466" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#534AB7">Hybrid architectures, reasoning models, agentic systems</text>
+          <text x="530" y="466" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">&mdash; Post-Transformer?</text>
+        </svg>
+        <figcaption>Figure 1.7 &mdash; Timeline of major Transformer milestones from 2017 to 2025. Purple marks the foundational architecture and language modeling breakthroughs. Teal marks the rapid iteration phase (2019). Amber marks the scaling era. Coral marks the public impact era. The pace of innovation has only accelerated: each year sees more milestones than the last.</figcaption>
+      </figure>
+
+      <p>The timeline reveals a striking pattern. The Transformer started as a machine translation model and, within eight years, became the backbone of systems that generate text, images, video, audio, code, protein structures, and robot control policies. No single architecture in the history of deep learning has demonstrated such breadth of applicability.</p>
+
+      <p>This breadth is not coincidence &mdash; it is a direct consequence of the Transformer's core properties. Parallelism makes training feasible at massive scale. The global receptive field means the model can learn arbitrary dependencies in the data without architectural constraints. And the scaling behavior &mdash; smooth, predictable improvement with more compute &mdash; makes investment in larger models a reliable bet rather than a gamble.</p>
+
+      <div class="callout callout-warning">
+        <div class="callout-title">Looking Forward</div>
+        <p>The Transformer is not the final word. Chapters 65&ndash;74 of this book cover state-space models, Mamba, RWKV, and hybrid architectures that aim to preserve the Transformer's strengths while eliminating its $O(n^2)$ attention cost. But to understand where the field is going, you first need to deeply understand where it is &mdash; and the Transformer remains the reference architecture against which every alternative is measured.</p>
+      </div>
+
+      <p>The rest of Part I builds this understanding from the ground up. Chapter 2 establishes the mathematical prerequisites. Chapter 3 dissects the original "Attention Is All You Need" paper component by component. Chapter 4 covers embeddings and positional encoding. Chapter 5 addresses tokenization. Chapter 6 covers the pre-training and fine-tuning paradigm. By the end of Part I, you will not merely know *what* a Transformer is &mdash; you will understand *why* each piece exists, what breaks when it is removed, and what the alternatives are.</p>
+
+    </section>
+
+  </article>
+
+  <footer class="chapter-footer">
+    <div class="footer-nav">
+      <a href="../index.html">&larr; Table of Contents</a>
+      <a href="ch02.html">Next: Mathematical Prerequisites &rarr;</a>
+    </div>
+  </footer>
+
+</body>
+</html>
