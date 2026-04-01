@@ -1,0 +1,1251 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Chapter 15: Evaluating Language Models — Transformer Research Book</title>
+  <link rel="stylesheet" href="../assets/style.css">
+  <link rel="stylesheet" href="../assets/math.css">
+  <link rel="stylesheet" href="../assets/prism.css">
+  <!-- KaTeX for math rendering -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"
+    onload="renderMathInElement(document.body, {
+      delimiters: [
+        {left: '$$', right: '$$', display: true},
+        {left: '$', right: '$', display: false}
+      ]
+    })">
+  </script>
+  <!-- Prism for code blocks -->
+  <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/prism.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-python.min.js"></script>
+</head>
+<body>
+  <nav class="chapter-nav">
+    <a href="../index.html" class="nav-home">← Table of Contents</a>
+    <span class="nav-chapter">Chapter 15</span>
+    <div style="display:flex; align-items:center; gap:1rem;">
+      <button class="theme-toggle" onclick="toggleTheme()" aria-label="Toggle dark mode">
+        <span class="icon-moon">&#9789;</span><span class="icon-sun">&#9788;</span>
+      </button>
+      <a href="ch16.html" class="nav-next">Next Chapter →</a>
+    </div>
+  </nav>
+  <script>
+    function toggleTheme() {
+      document.documentElement.classList.toggle('dark');
+      localStorage.setItem('theme', document.documentElement.classList.contains('dark') ? 'dark' : 'light');
+    }
+    if (localStorage.getItem('theme') === 'dark') document.documentElement.classList.add('dark');
+  </script>
+
+  <article class="chapter">
+
+    <header class="chapter-header">
+      <div class="chapter-number">Chapter 15</div>
+      <h1 class="chapter-title">Evaluating Language Models</h1>
+      <p class="chapter-lead">A model that scores 93% on MMLU in 2026 tells you almost nothing — a dozen frontier models crowd the same narrow band, and the benchmark has appeared in countless pre-training corpora. The real question is not "how good is this model?" but "how do we know?" This chapter maps the full evaluation landscape: from perplexity, through the wave of saturated-and-replaced benchmarks, to the newest frontiers of agentic evaluation, reasoning-model assessment, and contamination-resistant dynamic benchmarks. By the end you will understand not just what each benchmark measures, but why the community keeps building new ones and how to choose the right evaluation for your specific question about a model.</p>
+    </header>
+
+    <!-- ================================================================== -->
+    <!-- SECTION 1: INTRINSIC METRICS -->
+    <!-- ================================================================== -->
+    <section class="chapter-section" id="intrinsic-metrics">
+      <h2>Intrinsic Metrics</h2>
+
+      <p>Before benchmarks, before leaderboards, the simplest question you can ask a language model is: how surprised are you by this text? Intrinsic metrics answer exactly that question — they measure how well the model's probability distribution matches the actual distribution of tokens in a held-out corpus. No downstream task, no human judges, just raw predictive quality.</p>
+
+      <h3>Perplexity</h3>
+
+      <p>Perplexity is the exponential of the average negative log-likelihood per token. Given a sequence of $T$ tokens $x_1, x_2, \ldots, x_T$, the model assigns a probability $P(x_t \mid x_{&lt;t})$ to each token conditioned on its predecessors. Perplexity is:</p>
+
+      $$\text{PPL} = \exp\!\left(-\frac{1}{T}\sum_{t=1}^{T} \log P(x_t \mid x_{&lt;t})\right)$$
+
+      <p>The $\log P(x_t \mid x_{&lt;t})$ term is the log-probability the model assigns to the correct next token (a scalar). The sum accumulates these across all $T$ positions, and dividing by $T$ gives the average per-token log-likelihood. Exponentiating converts this back to an interpretable scale: a perplexity of 20 means the model is, on average, as uncertain as if it were choosing uniformly among 20 equally likely tokens at each step.</p>
+
+      <p>Lower perplexity is better. A perfect model that assigns probability 1 to every correct token achieves perplexity 1. A model choosing uniformly from a vocabulary of 50,000 tokens would have perplexity 50,000. In practice, GPT-2 achieved perplexity ~22 on WikiText-103; GPT-3 brought this below 10; modern frontier models push it below 5 on clean English text.</p>
+
+      <p>The following code computes perplexity from model logits over a token sequence.</p>
+
+<pre><code class="language-python">
+import torch
+import torch.nn.functional as F
+
+def compute_perplexity(logits, target_ids):
+    """
+    Compute perplexity from model output logits.
+
+    Args:
+        logits: (batch, seq_len, vocab_size) — raw model output
+        target_ids: (batch, seq_len) — ground-truth token ids
+    Returns:
+        Scalar perplexity value.
+    """
+    # Shift: predict token t+1 from position t
+    shift_logits = logits[:, :-1, :]        # (batch, seq_len-1, vocab_size)
+    shift_targets = target_ids[:, 1:]       # (batch, seq_len-1)
+
+    # Cross-entropy per token (no reduction — we need the per-token values)
+    log_probs = F.log_softmax(shift_logits, dim=-1)  # (batch, seq_len-1, vocab_size)
+    token_log_probs = log_probs.gather(
+        dim=-1,
+        index=shift_targets.unsqueeze(-1)            # (batch, seq_len-1, 1)
+    ).squeeze(-1)                                     # (batch, seq_len-1)
+
+    # Average negative log-likelihood across all tokens
+    avg_nll = -token_log_probs.mean()  # scalar
+    perplexity = torch.exp(avg_nll)    # scalar
+    return perplexity.item()
+
+# Example: random logits over a 10-token sequence, vocab size 1000
+torch.manual_seed(42)
+logits = torch.randn(1, 10, 1000)     # (1, 10, 1000)
+targets = torch.randint(0, 1000, (1, 10))  # (1, 10)
+ppl = compute_perplexity(logits, targets)
+print(f"Perplexity: {ppl:.1f}")        # ~1000 for random logits (uniform over vocab)
+</code></pre>
+
+      <h3>Bits-per-character and bits-per-byte</h3>
+
+      <p>Perplexity depends on the tokenizer. A model with a 32,000-token vocabulary and a model with a 128,000-token vocabulary are playing different games — the second model's tokens carry more information each, so its perplexity will be lower even if its underlying language understanding is identical. To compare across tokenizers, we convert to <strong>bits-per-character</strong> (BPC) or <strong>bits-per-byte</strong> (BPB):</p>
+
+      $$\text{BPC} = \frac{1}{C} \sum_{t=1}^{T} \left(-\log_2 P(x_t \mid x_{&lt;t})\right)$$
+
+      <p>where $C$ is the total character count in the sequence (a scalar count, not a tensor). BPB replaces $C$ with the byte count $B$. Both are tokenizer-agnostic because they normalize by the actual content length rather than the number of tokens. A model achieving 0.9 BPB on English text is compressing each byte to less than one bit of information — a strong signal of linguistic understanding.</p>
+
+      <h3>Why low perplexity does not guarantee good generation</h3>
+
+      <p>Perplexity measures how well a model predicts text from a held-out corpus. It does not measure whether the model can <em>produce</em> useful, coherent, or safe text when generating freely. A model can achieve excellent perplexity by memorizing common patterns while still generating repetitive loops, hallucinating facts, or ignoring instructions. The gap between "predicts well" and "generates well" is real and widening: instruction-tuned models often have slightly <em>worse</em> perplexity on raw web text than their base counterparts, yet are dramatically better at following human intent. Perplexity is necessary but not sufficient — the rest of this chapter covers what else you need.</p>
+    </section>
+
+    <!-- ================================================================== -->
+    <!-- SECTION 2: KNOWLEDGE AND REASONING BENCHMARKS -->
+    <!-- ================================================================== -->
+    <section class="chapter-section" id="knowledge-reasoning-benchmarks">
+      <h2>Knowledge and Reasoning Benchmarks</h2>
+
+      <p>The history of LLM benchmarks is a history of rapid saturation. Each generation of benchmarks is designed to be hard, dominates evaluation for a few years, then collapses into irrelevance as models surpass expert-level performance and the benchmark loses its ability to discriminate. Understanding this cycle is essential for interpreting any leaderboard.</p>
+
+      <h3>The saturation cycle</h3>
+
+      <p><strong>GLUE</strong> (2018) tested basic natural language understanding: sentiment analysis, textual entailment, paraphrase detection. It was saturated within a year. <strong>SuperGLUE</strong> (2019) raised the bar with harder tasks and was itself surpassed by 2021. <strong>MMLU</strong> (2021) — 57 academic subjects, 15,908 multiple-choice questions evaluated in zero-shot or 5-shot settings — held up longer, but by 2025 frontier models exceeded 90%, compressing the entire useful range into a few percentage points where noise dominates signal.</p>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 260" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="ch15-arr" viewBox="0 0 10 10" refX="9" refY="5"
+              markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+              <path d="M1 1L9 5L1 9" fill="none" stroke="context-stroke"
+                stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </marker>
+          </defs>
+
+          <!-- Horizontal time axis -->
+          <line x1="60" y1="180" x2="760" y2="180" stroke="#C8C6BE" stroke-width="1.5"/>
+          <line x1="750" y1="180" x2="760" y2="180" stroke="#C8C6BE" stroke-width="1.5" marker-end="url(#ch15-arr)"/>
+
+          <!-- Year labels -->
+          <text x="120" y="200" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">2018</text>
+          <text x="230" y="200" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">2019</text>
+          <text x="340" y="200" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">2021</text>
+          <text x="450" y="200" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">2023</text>
+          <text x="560" y="200" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">2024</text>
+          <text x="670" y="200" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">2025</text>
+
+          <!-- GLUE node -->
+          <circle cx="120" cy="180" r="7" fill="#9C9A94" stroke="#F1EFE8" stroke-width="2"/>
+          <text x="120" y="166" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#9C9A94">GLUE</text>
+          <text x="120" y="153" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#C8C6BE">saturated 2019</text>
+
+          <!-- SuperGLUE node -->
+          <circle cx="230" cy="180" r="7" fill="#9C9A94" stroke="#F1EFE8" stroke-width="2"/>
+          <text x="230" y="166" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#9C9A94">SuperGLUE</text>
+          <text x="230" y="153" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#C8C6BE">saturated 2021</text>
+
+          <!-- MMLU node -->
+          <circle cx="340" cy="180" r="7" fill="#854F0B" stroke="#FAEEDA" stroke-width="2"/>
+          <text x="340" y="166" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#854F0B">MMLU</text>
+          <text x="340" y="153" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#C8C6BE">saturated 2025</text>
+
+          <!-- GPQA node -->
+          <circle cx="450" cy="180" r="7" fill="#534AB7" stroke="#EEEDFE" stroke-width="2"/>
+          <text x="450" y="166" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#534AB7">GPQA</text>
+          <text x="450" y="153" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#C8C6BE">PhD-level</text>
+
+          <!-- MMLU-Pro node -->
+          <circle cx="560" cy="180" r="7" fill="#534AB7" stroke="#EEEDFE" stroke-width="2"/>
+          <text x="560" y="166" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#534AB7">MMLU-Pro</text>
+          <text x="560" y="153" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#C8C6BE">10-choice</text>
+
+          <!-- HLE node -->
+          <circle cx="670" cy="180" r="7" fill="#0F6E56" stroke="#E1F5EE" stroke-width="2"/>
+          <text x="670" y="166" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#0F6E56">HLE</text>
+          <text x="670" y="153" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#C8C6BE">best ~45%</text>
+
+          <!-- Difficulty arrow -->
+          <line x1="100" y1="228" x2="700" y2="228" stroke="#AFA9EC" stroke-width="1" stroke-dasharray="4 3"/>
+          <text x="400" y="248" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#534AB7">Increasing difficulty and contamination resistance →</text>
+
+          <!-- Legend: gray = saturated, purple = active, green = frontier -->
+          <circle cx="100" cy="30" r="5" fill="#9C9A94"/>
+          <text x="114" y="34" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#5C5B56">Saturated</text>
+          <circle cx="200" cy="30" r="5" fill="#534AB7"/>
+          <text x="214" y="34" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#5C5B56">Approaching ceiling</text>
+          <circle cx="360" cy="30" r="5" fill="#0F6E56"/>
+          <text x="374" y="34" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#5C5B56">Still discriminative</text>
+        </svg>
+        <figcaption>Figure 15.1 — The benchmark saturation timeline. Gray nodes mark benchmarks that no longer differentiate frontier models. Purple nodes are approaching their ceiling. Green marks benchmarks that still have significant headroom as of early 2026.</figcaption>
+      </figure>
+
+      <p>The pattern is clear: each benchmark buys the community 2-4 years of useful signal before saturation makes it a checkbox rather than a measurement. This drives the design of every benchmark discussed below.</p>
+
+      <h3>MMLU-Pro</h3>
+
+      <p>TIGER-AI-Lab released MMLU-Pro at NeurIPS 2024 as a direct response to MMLU's collapse. The key changes: 12,000 graduate-level questions with 10 answer choices instead of 4, dramatically reducing the chance of guessing correctly (from 25% to 10%). Accuracy drops 16-33% compared to MMLU across the same models. A revealing finding: chain-of-thought prompting now <em>helps</em> significantly on MMLU-Pro, unlike on original MMLU where it made little difference — the questions genuinely require multi-step reasoning. Prompt sensitivity also drops from 4-5% on MMLU to about 2% on MMLU-Pro, making scores more reproducible. Even so, frontier models are already approaching 90% on MMLU-Pro by early 2026.</p>
+
+      <h3>GPQA-Diamond</h3>
+
+      <p><strong>GPQA</strong> (Graduate-Level Google-Proof Q&A) takes a different approach to hardness. Rather than more choices, it uses expert-written questions in biology, physics, and chemistry that are deliberately "Google-proof" — meaning that a skilled non-expert with unrestricted internet access scores only 34%, while domain PhD experts score 65-74%. The Diamond subset (198 questions) has become a standard benchmark for frontier models. The design principle is powerful: if web search cannot help a smart generalist answer the question, then a model must possess genuine domain reasoning to get it right.</p>
+
+      <h3>Humanity's Last Exam</h3>
+
+      <p>In January 2025, the Center for AI Safety and Scale AI released what they called the final closed-ended academic benchmark. <strong>Humanity's Last Exam</strong> (HLE) comprises 2,500 questions across 100+ subjects, contributed by roughly 1,000 experts from 500+ institutions in 50 countries. When released, the best model (o1) scored just 8%. Published in <em>Nature</em> in 2025, HLE was designed to remain challenging for years rather than months. As of early 2026, the top score sits around 45% — still far from human expert performance of ~90% within their domains. The 14% of questions requiring diagram comprehension expose another weakness: many models struggle when visual reasoning intersects domain knowledge.</p>
+
+      <h3>SimpleQA</h3>
+
+      <p>OpenAI's SimpleQA (November 2024) attacks the problem from a different angle: instead of asking hard questions, it asks easy ones — 4,326 short, fact-seeking questions with single indisputable answers — and measures whether the model hallucinates or says "I don't know." GPT-4o scored below 40%. SimpleQA directly targets the trust problem: if a model confidently answers "What year did X happen?" incorrectly, users cannot trust it on harder questions. The benchmark also measures <strong>calibration</strong> — whether the model knows what it knows.</p>
+
+      <h3>Commonsense reasoning suite</h3>
+
+      <p><strong>HellaSwag</strong> (sentence completion), <strong>ARC</strong> (grade-school science), and <strong>WinoGrande</strong> (coreference resolution) remain widely reported but are largely saturated at the frontier (all above 95%). They still serve a purpose for evaluating smaller or open-source models where performance gaps remain meaningful. <strong>BIG-Bench Hard</strong> — the 23 most challenging tasks from the original 200+ task BIG-Bench suite — retains some discriminative power, particularly on tasks involving logical deduction and multi-step reasoning.</p>
+    </section>
+
+    <!-- ================================================================== -->
+    <!-- SECTION 3: MATH AND FORMAL REASONING BENCHMARKS -->
+    <!-- ================================================================== -->
+    <section class="chapter-section" id="math-formal-reasoning">
+      <h2>Mathematics and Formal Reasoning Benchmarks</h2>
+
+      <p>Mathematical reasoning occupies a privileged position in LLM evaluation: answers are unambiguously correct or incorrect, problems scale in difficulty from arithmetic to open research questions, and chain-of-thought reasoning is both visible and verifiable. The saturation pattern has played out here too, but faster — and the replacements are more dramatic.</p>
+
+      <h3>MATH and MATH-500</h3>
+
+      <p>The MATH benchmark (Hendrycks et al., 2021) contains 12,500 competition-level problems across algebra, number theory, geometry, and more. When released, the best model scored 7%. By 2025, frontier reasoning models exceed 90%. MATH-500, a curated 500-problem subset, is now commonly used for efficiency but suffers from the same ceiling compression.</p>
+
+      <h3>AIME 2025</h3>
+
+      <p>The American Invitational Mathematics Examination provides fresh problems annually — 30 problems from the 2025 AIME I and II editions, each requiring an integer answer between 000 and 999. AIME problems demand multi-step algebraic and combinatorial reasoning beyond simple pattern matching. By early 2026, the best model achieves a perfect 100% on AIME 2025, and over 105 models have been evaluated on this benchmark. The average score across all models is 78.3%, showing it still differentiates across the broader model landscape even as the frontier has saturated it.</p>
+
+      <h3>FrontierMath</h3>
+
+      <p>Epoch AI released FrontierMath in November 2024: 350 original problems across four difficulty tiers, developed with 60+ mathematicians including Fields Medalists Terence Tao, Timothy Gowers, and Richard Borcherds. Tier 1 problems are challenging undergraduate exercises; Tier 4 problems connect to active research and typically require hours or days for expert mathematicians to solve. When released, no AI model solved more than 2% of problems. By March 2026, the best model scores around 50% on Tiers 1-3 and 38% on Tier 4 — a remarkable pace of improvement, but substantial headroom remains. In January 2026, Epoch AI added an Open Problems component containing unsolved research mathematics questions; none have been solved by AI.</p>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 340" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="ch15-arr2" viewBox="0 0 10 10" refX="9" refY="5"
+              markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+              <path d="M1 1L9 5L1 9" fill="none" stroke="context-stroke"
+                stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </marker>
+          </defs>
+
+          <!-- Title -->
+          <text x="400" y="28" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="600" fill="#1A1A18">Frontier Model Scores Across Key Benchmarks (early 2026)</text>
+
+          <!-- Y-axis -->
+          <line x1="120" y1="50" x2="120" y2="290" stroke="#C8C6BE" stroke-width="1"/>
+          <text x="108" y="58" text-anchor="end" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">100%</text>
+          <line x1="115" y1="50" x2="120" y2="50" stroke="#C8C6BE" stroke-width="1"/>
+          <text x="108" y="98" text-anchor="end" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">80%</text>
+          <line x1="115" y1="90" x2="760" y2="90" stroke="#E5E3DC" stroke-width="0.5" stroke-dasharray="3 3"/>
+          <text x="108" y="138" text-anchor="end" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">60%</text>
+          <line x1="115" y1="130" x2="760" y2="130" stroke="#E5E3DC" stroke-width="0.5" stroke-dasharray="3 3"/>
+          <text x="108" y="178" text-anchor="end" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">40%</text>
+          <line x1="115" y1="170" x2="760" y2="170" stroke="#E5E3DC" stroke-width="0.5" stroke-dasharray="3 3"/>
+          <text x="108" y="218" text-anchor="end" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">20%</text>
+          <line x1="115" y1="210" x2="760" y2="210" stroke="#E5E3DC" stroke-width="0.5" stroke-dasharray="3 3"/>
+          <text x="108" y="258" text-anchor="end" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">0%</text>
+
+          <!-- X-axis (baseline) -->
+          <line x1="120" y1="250" x2="760" y2="250" stroke="#C8C6BE" stroke-width="1"/>
+
+          <!-- Bar group spacing: 6 bars, each width 80, gap 25. Total = 6*80 + 5*25 = 605. Start at x=155 -->
+
+          <!-- MMLU-Pro: ~90% → bar height = 180px (from y=70 to y=250) -->
+          <rect x="155" y="70" width="80" height="180" rx="4" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1"/>
+          <text x="195" y="64" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#534AB7">~90%</text>
+          <text x="195" y="272" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#5C5B56">MMLU-Pro</text>
+
+          <!-- GPQA-Diamond: ~94% → bar height = 188px -->
+          <rect x="260" y="62" width="80" height="188" rx="4" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1"/>
+          <text x="300" y="56" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#534AB7">~94%</text>
+          <text x="300" y="272" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#5C5B56">GPQA</text>
+
+          <!-- HLE: ~45% → bar height = 90px -->
+          <rect x="365" y="160" width="80" height="90" rx="4" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1.5"/>
+          <text x="405" y="154" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#0F6E56">~45%</text>
+          <text x="405" y="272" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#5C5B56">HLE</text>
+
+          <!-- AIME 2025: ~100% → bar height = 200px -->
+          <rect x="470" y="50" width="80" height="200" rx="4" fill="#FAEEDA" stroke="#EF9F27" stroke-width="1"/>
+          <text x="510" y="44" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#854F0B">100%</text>
+          <text x="510" y="272" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#5C5B56">AIME</text>
+
+          <!-- FrontierMath T1-3: ~50% → bar height = 100px -->
+          <rect x="575" y="150" width="80" height="100" rx="4" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1.5"/>
+          <text x="615" y="144" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#0F6E56">~50%</text>
+          <text x="615" y="272" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#5C5B56">Frontier</text>
+          <text x="615" y="284" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">Math T1-3</text>
+
+          <!-- SWE-bench Verified: ~81% → bar height = 162px -->
+          <rect x="680" y="88" width="80" height="162" rx="4" fill="#FAECE7" stroke="#F0997B" stroke-width="1"/>
+          <text x="720" y="82" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#993C1D">~81%</text>
+          <text x="720" y="272" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#5C5B56">SWE-bench</text>
+
+          <!-- Color legend -->
+          <rect x="155" y="305" width="12" height="12" rx="2" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1"/>
+          <text x="172" y="315" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#5C5B56">Near ceiling</text>
+          <rect x="295" y="305" width="12" height="12" rx="2" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="312" y="315" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#5C5B56">Significant headroom</text>
+          <rect x="475" y="305" width="12" height="12" rx="2" fill="#FAEEDA" stroke="#EF9F27" stroke-width="1"/>
+          <text x="492" y="315" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#5C5B56">Saturated</text>
+          <rect x="600" y="305" width="12" height="12" rx="2" fill="#FAECE7" stroke="#F0997B" stroke-width="1"/>
+          <text x="617" y="315" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#5C5B56">Code/Engineering</text>
+        </svg>
+        <figcaption>Figure 15.2 — Best frontier model scores across key benchmarks as of early 2026. HLE and FrontierMath still have substantial headroom; MMLU-Pro and GPQA are approaching their ceilings; AIME 2025 has been fully solved.</figcaption>
+      </figure>
+
+      <h3>ARC-AGI</h3>
+
+      <p><strong>ARC-AGI</strong> (Abstraction and Reasoning Corpus) tests something fundamentally different from knowledge benchmarks: the ability to infer abstract visual patterns from just a few examples. Each task shows 2-3 input-output grid pairs, and the model must predict the output for a new input — requiring genuine abstraction rather than pattern matching from training data. ARC-AGI-2 (2025) saw top Kaggle scores of only 24% despite 1,455 teams competing. ARC-AGI-3 (released early 2026) raises the stakes further by requiring interactive reasoning — exploration, planning, memory, and goal acquisition. Humans solve 100% of ARC-AGI-3 environments; frontier AI systems score below 1%. This benchmark represents the clearest gap between current LLMs and human-like general intelligence.</p>
+    </section>
+
+    <!-- ================================================================== -->
+    <!-- SECTION 4: CODE AND SOFTWARE ENGINEERING BENCHMARKS -->
+    <!-- ================================================================== -->
+    <section class="chapter-section" id="code-benchmarks">
+      <h2>Code and Software Engineering Benchmarks</h2>
+
+      <p>Code evaluation is uniquely tractable: unlike open-ended text, code can be tested against automated test suites. A function either passes its tests or it does not. This has made code benchmarks among the most reliable — and among the most gamed.</p>
+
+      <h3>HumanEval and MBPP: historical baselines</h3>
+
+      <p><strong>HumanEval</strong> (OpenAI, 2021) provides 164 Python programming problems with unit tests. <strong>MBPP</strong> (Google, 2021) adds 974 crowd-sourced problems. Both benchmarks now have documented training data contamination: their problems have appeared in countless code-training corpora, making scores unreliable for comparing frontier models. They remain useful only as a very rough filter for basic code generation ability.</p>
+
+      <h3>SWE-bench Verified</h3>
+
+      <p><strong>SWE-bench</strong> (Princeton NLP) tests a far more realistic task: given a real GitHub issue description, produce a code patch that passes the repository's test suite. The Verified subset filters for high-quality, unambiguous issues. This is closer to actual software engineering — the model must navigate large codebases, understand context, and produce patches that integrate correctly. As of early 2026, top scores hover around 81%. SWE-bench Pro, a harder variant with more complex multi-file issues, shows best-model scores of only ~23%, revealing how much headroom remains for real-world software engineering.</p>
+
+      <h3>LiveCodeBench</h3>
+
+      <p><strong>LiveCodeBench</strong> (ICLR 2025 Spotlight) continuously collects new competitive programming problems from LeetCode, AtCoder, and Codeforces. Its key innovation is <strong>temporal segmentation</strong>: problems are dated, so evaluators can test only on problems released after a model's training cutoff. This has proven effective at detecting contamination — LiveCodeBench analysis confirmed contamination artifacts in GPT-4o, Claude, DeepSeek, and Codestral, where performance on pre-cutoff problems significantly exceeds post-cutoff problems.</p>
+
+      <h3>MLE-bench</h3>
+
+      <p><strong>MLE-bench</strong> (OpenAI, ICLR 2025 Oral) evaluates a different dimension of coding ability: ML engineering. It presents 75 Kaggle machine learning competitions — training models, preparing datasets, running experiments, optimizing submissions. The best setup (o1-preview with AIDE scaffolding) achieves Kaggle bronze medal level in 16.9% of competitions, reaching 34.1% with 8 attempts. This benchmark tests not just code generation but experimental design and iterative refinement.</p>
+
+      <h3>The pass@k metric</h3>
+
+      <p>Code benchmarks typically report <strong>pass@k</strong>: the probability that at least one of $k$ generated solutions passes all tests. The naive estimator (generate $k$ samples, check if any passes) has high variance. The standard unbiased estimator, used across HumanEval, SWE-bench, and LiveCodeBench, computes pass@k from $n$ total samples where $c$ are correct:</p>
+
+      $$\text{pass@}k = 1 - \frac{\binom{n-c}{k}}{\binom{n}{k}}$$
+
+      <p>Here $\binom{n-c}{k}$ counts the ways to choose $k$ samples that are all incorrect (a combinatorial count, yielding a scalar), and $\binom{n}{k}$ counts all ways to choose $k$ from $n$. Their ratio is the probability that all $k$ chosen samples are wrong; subtracting from 1 gives the probability that at least one is correct.</p>
+
+      <p>The following implementation computes this metric numerically.</p>
+
+<pre><code class="language-python">
+import torch
+from math import comb
+
+def pass_at_k(n: int, c: int, k: int) -> float:
+    """
+    Unbiased estimator for pass@k.
+
+    Args:
+        n: total number of generated samples per problem
+        c: number of correct samples (passing all tests)
+        k: the k in pass@k (how many attempts the user gets)
+    Returns:
+        Probability that at least one of k samples is correct.
+    """
+    if n - c < k:
+        # Fewer wrong answers than k — guaranteed to include a correct one
+        return 1.0
+    return 1.0 - comb(n - c, k) / comb(n, k)
+
+def pass_at_k_batch(n_samples: int, num_correct: torch.Tensor, k: int) -> float:
+    """
+    Average pass@k across a batch of problems.
+
+    Args:
+        n_samples: number of samples generated per problem (same for all)
+        num_correct: (num_problems,) — count of passing samples per problem
+        k: the k in pass@k
+    Returns:
+        Mean pass@k across all problems.
+    """
+    scores = [pass_at_k(n_samples, c.item(), k) for c in num_correct]
+    return sum(scores) / len(scores)
+
+# Example: 5 problems, 20 samples each, varying correctness
+num_correct = torch.tensor([1, 5, 0, 12, 3])
+for k in [1, 5, 10]:
+    score = pass_at_k_batch(n_samples=20, num_correct=num_correct, k=k)
+    print(f"pass@{k}: {score:.3f}")
+# pass@1: 0.210, pass@5: 0.662, pass@10: 0.879
+</code></pre>
+    </section>
+
+    <!-- ================================================================== -->
+    <!-- SECTION 5: OPEN-ENDED GENERATION AND HUMAN PREFERENCE -->
+    <!-- ================================================================== -->
+    <section class="chapter-section" id="open-ended-generation">
+      <h2>Open-Ended Generation and Human Preference</h2>
+
+      <p>Multiple-choice benchmarks test knowledge and reasoning, but most real-world uses of language models involve open-ended generation: writing, conversation, instruction following, creative tasks. Evaluating these requires fundamentally different methods — there is no single correct answer to "write me a marketing email" or "explain quantum computing to a 10-year-old."</p>
+
+      <h3>MT-Bench and AlpacaEval</h3>
+
+      <p><strong>MT-Bench</strong> provides 80 multi-turn questions across 8 categories (writing, roleplay, coding, math, etc.) and uses an LLM judge (originally GPT-4) to score responses on a 1-10 scale. Its multi-turn design captures something single-turn benchmarks miss: whether a model can maintain coherence and follow up on previous context. <strong>AlpacaEval</strong> tests single-turn instruction following with a simpler metric: win rate against a reference model (originally GPT-4). AlpacaEval 2.0 introduced length-controlled win rates to penalize models that gain advantage through verbosity rather than quality.</p>
+
+      <h3>Chatbot Arena / LMArena</h3>
+
+      <p>The most influential open-ended evaluation is <strong>Chatbot Arena</strong>, rebranded as <strong>LMArena</strong> in January 2026. Users submit any prompt; two anonymous models generate responses; the user votes for the better one. Votes are aggregated into Elo ratings using the Bradley-Terry model. The system has collected millions of votes across thousands of users, making it the closest approximation to real-world model preference that exists.</p>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 330" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="ch15-arr3" viewBox="0 0 10 10" refX="9" refY="5"
+              markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+              <path d="M1 1L9 5L1 9" fill="none" stroke="context-stroke"
+                stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </marker>
+          </defs>
+
+          <!-- Title -->
+          <text x="400" y="28" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="600" fill="#1A1A18">How Chatbot Arena / LMArena Works</text>
+
+          <!-- Step 1: User submits prompt -->
+          <rect x="60" y="55" width="160" height="50" rx="6" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1.5"/>
+          <text x="140" y="76" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="500" fill="#0F6E56">User Prompt</text>
+          <text x="140" y="93" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#5C5B56">"Explain dark matter"</text>
+
+          <!-- Arrow to split -->
+          <line x1="220" y1="80" x2="270" y2="80" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch15-arr3)"/>
+
+          <!-- Split: two anonymous models -->
+          <rect x="275" y="45" width="130" height="35" rx="6" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <text x="340" y="67" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#534AB7">Model A (blind)</text>
+
+          <rect x="275" y="90" width="130" height="35" rx="6" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <text x="340" y="112" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#534AB7">Model B (blind)</text>
+
+          <!-- Arrows from models to responses -->
+          <line x1="405" y1="62" x2="440" y2="62" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch15-arr3)"/>
+          <line x1="405" y1="107" x2="440" y2="107" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch15-arr3)"/>
+
+          <!-- Responses -->
+          <rect x="445" y="42" width="140" height="38" rx="6" fill="#FFFFFF" stroke="#E5E3DC" stroke-width="1"/>
+          <text x="515" y="65" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#5C5B56">Response A</text>
+
+          <rect x="445" y="88" width="140" height="38" rx="6" fill="#FFFFFF" stroke="#E5E3DC" stroke-width="1"/>
+          <text x="515" y="111" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#5C5B56">Response B</text>
+
+          <!-- Arrow to vote -->
+          <line x1="585" y1="80" x2="620" y2="80" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch15-arr3)"/>
+
+          <!-- User vote -->
+          <rect x="625" y="55" width="140" height="50" rx="6" fill="#FAEEDA" stroke="#EF9F27" stroke-width="1.5"/>
+          <text x="695" y="76" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="500" fill="#854F0B">User Vote</text>
+          <text x="695" y="93" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#5C5B56">A wins / B wins / tie</text>
+
+          <!-- Arrow down to Elo update -->
+          <line x1="695" y1="105" x2="695" y2="140" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch15-arr3)"/>
+
+          <!-- Elo Rating Box -->
+          <rect x="500" y="145" width="260" height="55" rx="6" fill="#534AB7" stroke="#534AB7"/>
+          <text x="630" y="168" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="500" fill="#FFFFFF">Elo Rating Update</text>
+          <text x="630" y="188" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#AFA9EC">Bradley-Terry model across all votes</text>
+
+          <!-- Elo formula section -->
+          <rect x="80" y="230" width="640" height="80" rx="8" fill="#FFFFFF" stroke="#E5E3DC" stroke-width="1"/>
+          <text x="400" y="252" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#534AB7">Elo Update Rule</text>
+          <text x="400" y="274" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="400" fill="#1A1A18">R'_A = R_A + K · (S_A − E_A)</text>
+          <text x="400" y="296" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">S_A = actual score (1, 0.5, 0) · E_A = expected score from current ratings · K = update magnitude</text>
+
+          <!-- Arrow from Elo box to formula -->
+          <line x1="630" y1="200" x2="630" y2="225" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch15-arr3)"/>
+        </svg>
+        <figcaption>Figure 15.3 — The Chatbot Arena (LMArena) pipeline. Users never see model identities until after voting. Elo ratings are computed from millions of pairwise comparisons using the Bradley-Terry model, producing the most widely cited measure of real-world model quality.</figcaption>
+      </figure>
+
+      <p>The Arena has expanded into domain-specific variants: <strong>SciArena</strong> (Allen AI, 2025) focuses on scientific literature tasks with votes from 20,000+ researchers, and <strong>BioMedArena</strong> (LMArena + NIH/DataTecnica, 2025) targets biomedical evaluation. These domain arenas often produce different rankings than the general arena — a model that excels at casual conversation may underperform on scientific reasoning.</p>
+
+      <h3>WildBench and GDPval</h3>
+
+      <p><strong>WildBench</strong> (Allen AI, ICLR 2025) extracts 1,024 tasks from real user-chatbot conversations and uses task-specific checklists with LLM-as-judge evaluation. Its WB-Reward score achieves a Pearson correlation of 0.98 with top-ranking models on Chatbot Arena — making it a highly reliable automated proxy for human preference that can be run without collecting live user votes.</p>
+
+      <p><strong>GDPval</strong> (OpenAI, October 2025) measures something more ambitious: how well models perform on real professional work. It presents 1,320 tasks across 44 occupations from the top 9 industries contributing to U.S. GDP — legal briefs, engineering blueprints, nursing care plans, financial analysis. Expert evaluators compare AI vs. human output. The benchmark found that frontier models perform certain professional tasks roughly 100x faster at a fraction of the cost, though quality varies significantly by domain.</p>
+
+      <h3>IFEval: instruction following</h3>
+
+      <p><strong>IFEval</strong> provides 500 prompts with 25 types of verifiable constraints: "write in more than 400 words," "mention keyword X at least 3 times," "respond entirely in Spanish." Unlike subjective quality judgments, these constraints are unambiguously checkable. IFEval has expanded into multilingual (M-IFEval: French, Japanese, Spanish), function calling (IFEval-FC), and speech variants, tracking how well instruction following transfers across modalities.</p>
+
+      <h3>HELM</h3>
+
+      <p>Stanford's <strong>HELM</strong> (Holistic Evaluation of Language Models) takes the most comprehensive approach: it evaluates models across dozens of scenarios, multiple metrics per scenario (accuracy, calibration, robustness, fairness, bias, toxicity, efficiency), and publishes all results in a standardized, reproducible format. HELM is less of a single benchmark and more of a meta-evaluation framework that aggregates many benchmarks under consistent methodology.</p>
+    </section>
+
+    <!-- ================================================================== -->
+    <!-- SECTION 6: LLM-AS-JUDGE -->
+    <!-- ================================================================== -->
+    <section class="chapter-section" id="llm-as-judge">
+      <h2>LLM-as-Judge</h2>
+
+      <p>Human evaluation is the gold standard for open-ended generation quality, but it is slow, expensive, and noisy. The pragmatic alternative — using one language model to evaluate another — has become the default approach for most open-ended benchmarks. MT-Bench, AlpacaEval, WildBench, and countless internal evaluation pipelines all rely on LLM judges. Understanding the methodology, biases, and recent improvements is essential for interpreting any result from these systems.</p>
+
+      <h3>Core methodology</h3>
+
+      <p>There are three main paradigms. <strong>Single-answer grading</strong> asks the judge to score one response on a rubric (e.g., 1-10). <strong>Pairwise comparison</strong> presents two responses and asks which is better — this is more reliable because relative judgments are easier than absolute ones. <strong>Reference-based grading</strong> provides a gold-standard answer and asks the judge to score the candidate against it. Pairwise comparison is the most widely used because it sidesteps the calibration problem of absolute scores.</p>
+
+      <h3>Known biases</h3>
+
+      <p>LLM judges have systematic biases that must be accounted for. <strong>Verbosity bias</strong>: judges tend to prefer longer responses even when shorter ones are more accurate — AlpacaEval 2.0 introduced length-controlled win rates specifically to counteract this. <strong>Self-preference bias</strong>: GPT-4 as a judge tends to rate GPT-4 outputs higher than equivalent outputs from other models. <strong>Position bias</strong>: the judge may prefer whichever response appears first (or last) in the prompt. Standard mitigations include swapping the order of responses and averaging, using multiple different judge models, and explicitly prompting the judge to ignore length.</p>
+
+      <h3>Recent improvements</h3>
+
+      <p>The LLM-as-judge methodology has matured rapidly since 2024. <strong>Chain-of-thought judging</strong> improves correlation with human judgments from 0.51 to 0.66 (Spearman $\rho$ on summarization tasks) by asking the judge to reason before scoring. <strong>Multi-agent debate</strong> (MAJ-Eval) automatically extracts personas and conducts group deliberation over outputs, achieving higher alignment with human ratings than single-judge approaches. <strong>Crowd Comparative Reasoning</strong> uses diverse LLM responses as a "synthetic crowd" for chain-of-thought critiques, improving accuracy by 6.7 percentage points. <strong>Mixture of Prompts (MoPs)</strong> dynamically selects specialized prompt modules based on input characteristics rather than using a one-size-fits-all judge prompt.</p>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 300" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="ch15-arr4" viewBox="0 0 10 10" refX="9" refY="5"
+              markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+              <path d="M1 1L9 5L1 9" fill="none" stroke="context-stroke"
+                stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </marker>
+          </defs>
+
+          <!-- Panel headers -->
+          <rect x="20" y="16" width="350" height="34" rx="5" fill="#FAECE7" stroke="#F0997B" stroke-width="1"/>
+          <text x="195" y="38" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="600" fill="#993C1D">Single-Judge (Biased)</text>
+
+          <rect x="430" y="16" width="350" height="34" rx="5" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="605" y="38" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="600" fill="#0F6E56">Multi-Judge with Debate (Improved)</text>
+
+          <!-- Vertical divider -->
+          <line x1="400" y1="10" x2="400" y2="285" stroke="#E5E3DC" stroke-width="1" stroke-dasharray="5 4"/>
+
+          <!-- Left panel: single judge -->
+          <rect x="60" y="70" width="120" height="36" rx="6" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1"/>
+          <text x="120" y="92" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#534AB7">Response A</text>
+
+          <rect x="200" y="70" width="120" height="36" rx="6" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1"/>
+          <text x="260" y="92" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#534AB7">Response B</text>
+
+          <line x1="120" y1="106" x2="190" y2="140" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch15-arr4)"/>
+          <line x1="260" y1="106" x2="190" y2="140" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch15-arr4)"/>
+
+          <rect x="130" y="140" width="120" height="40" rx="6" fill="#FAEEDA" stroke="#EF9F27" stroke-width="1.5"/>
+          <text x="190" y="157" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#854F0B">GPT-4 Judge</text>
+          <text x="190" y="172" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">single prompt</text>
+
+          <line x1="190" y1="180" x2="190" y2="210" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch15-arr4)"/>
+
+          <rect x="130" y="210" width="120" height="36" rx="6" fill="#FAECE7" stroke="#F0997B" stroke-width="1"/>
+          <text x="190" y="232" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#993C1D">Verdict</text>
+
+          <!-- Bias annotations on left panel -->
+          <text x="310" y="145" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#993C1D">← verbosity bias</text>
+          <text x="310" y="160" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#993C1D">← self-preference</text>
+          <text x="310" y="175" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#993C1D">← position bias</text>
+
+          <!-- Right panel: multi-judge with debate -->
+          <rect x="470" y="70" width="120" height="36" rx="6" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1"/>
+          <text x="530" y="92" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#534AB7">Response A</text>
+
+          <rect x="610" y="70" width="120" height="36" rx="6" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1"/>
+          <text x="670" y="92" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#534AB7">Response B</text>
+
+          <!-- Three judges -->
+          <rect x="450" y="130" width="80" height="36" rx="6" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="490" y="152" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#0F6E56">Judge 1</text>
+
+          <rect x="555" y="130" width="80" height="36" rx="6" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="595" y="152" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#0F6E56">Judge 2</text>
+
+          <rect x="660" y="130" width="80" height="36" rx="6" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="700" y="152" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#0F6E56">Judge 3</text>
+
+          <!-- Arrows from responses to judges -->
+          <line x1="530" y1="106" x2="490" y2="126" stroke="#9C9A94" stroke-width="1" marker-end="url(#ch15-arr4)"/>
+          <line x1="590" y1="106" x2="595" y2="126" stroke="#9C9A94" stroke-width="1" marker-end="url(#ch15-arr4)"/>
+          <line x1="670" y1="106" x2="700" y2="126" stroke="#9C9A94" stroke-width="1" marker-end="url(#ch15-arr4)"/>
+
+          <!-- Debate arrows (bidirectional) -->
+          <line x1="530" y1="148" x2="553" y2="148" stroke="#0F6E56" stroke-width="1" stroke-dasharray="3 2"/>
+          <line x1="637" y1="148" x2="658" y2="148" stroke="#0F6E56" stroke-width="1" stroke-dasharray="3 2"/>
+          <text x="595" y="185" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#0F6E56">deliberation + CoT</text>
+
+          <!-- Arrows down to consensus -->
+          <line x1="490" y1="166" x2="595" y2="200" stroke="#9C9A94" stroke-width="1" marker-end="url(#ch15-arr4)"/>
+          <line x1="595" y1="175" x2="595" y2="200" stroke="#9C9A94" stroke-width="1" marker-end="url(#ch15-arr4)"/>
+          <line x1="700" y1="166" x2="595" y2="200" stroke="#9C9A94" stroke-width="1" marker-end="url(#ch15-arr4)"/>
+
+          <!-- Consensus verdict -->
+          <rect x="535" y="205" width="120" height="36" rx="6" fill="#E1F5EE" stroke="#0F6E56" stroke-width="1.5"/>
+          <text x="595" y="227" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#0F6E56">Consensus</text>
+
+          <!-- Improvement note -->
+          <text x="595" y="265" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#0F6E56">↑ Higher correlation with human judgment</text>
+          <text x="595" y="280" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">Mitigates individual judge biases</text>
+        </svg>
+        <figcaption>Figure 15.4 — Single-judge evaluation (left) is fast but prone to systematic biases. Multi-judge debate (right) uses diverse judge models that deliberate with chain-of-thought reasoning before reaching consensus, significantly improving alignment with human preferences.</figcaption>
+      </figure>
+
+      <p>Despite these improvements, fundamental challenges remain. LLM judges cannot reliably evaluate factual correctness on topics outside their training data, they struggle with domain-specific quality (medical, legal, scientific), and they sometimes disagree with human experts in ways that are difficult to detect without human oversight. The best current practice is to combine automated LLM-as-judge with periodic human evaluation as a calibration check.</p>
+    </section>
+
+    <!-- ================================================================== -->
+    <!-- SECTION 7: AGENTIC EVALUATION -->
+    <!-- ================================================================== -->
+    <section class="chapter-section" id="agentic-evaluation">
+      <h2>Agentic Evaluation</h2>
+
+      <p>A language model that can answer questions is useful. A language model that can <em>act</em> — browse the web, call APIs, write and execute code, manage files, interact with databases — is transformative. But evaluating agents is fundamentally harder than evaluating chatbots: you must check not just the final answer but the entire trajectory of actions, and the environment may change state in response to those actions.</p>
+
+      <h3>Why agentic evaluation is different</h3>
+
+      <p>Standard benchmarks present a prompt and grade a response. Agent benchmarks present a <em>goal</em> and grade the <em>outcome</em> after the agent has taken multiple steps through an environment. This introduces several new dimensions: does the agent choose the right tools? Does it recover from errors? Does it avoid destructive side effects? Is it efficient, or does it take 50 steps where 5 would suffice?</p>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 280" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="ch15-arr5" viewBox="0 0 10 10" refX="9" refY="5"
+              markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+              <path d="M1 1L9 5L1 9" fill="none" stroke="context-stroke"
+                stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </marker>
+          </defs>
+
+          <!-- Task box -->
+          <rect x="40" y="100" width="120" height="55" rx="6" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1.5"/>
+          <text x="100" y="122" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="500" fill="#0F6E56">Task</text>
+          <text x="100" y="140" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#5C5B56">"Book cheapest</text>
+          <text x="100" y="152" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#5C5B56">flight to NYC"</text>
+
+          <line x1="160" y1="127" x2="195" y2="127" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch15-arr5)"/>
+
+          <!-- Agent loop -->
+          <rect x="200" y="60" width="360" height="135" rx="10" fill="none" stroke="#B4B2A9" stroke-width="1" stroke-dasharray="5 4"/>
+          <text x="380" y="52" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#9C9A94">AGENT LOOP</text>
+
+          <!-- Plan -->
+          <rect x="220" y="80" width="90" height="40" rx="6" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <text x="265" y="104" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#534AB7">Plan</text>
+
+          <line x1="310" y1="100" x2="335" y2="100" stroke="#534AB7" stroke-width="1.5" marker-end="url(#ch15-arr5)"/>
+
+          <!-- Action -->
+          <rect x="340" y="80" width="90" height="40" rx="6" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <text x="385" y="104" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#534AB7">Act</text>
+
+          <line x1="430" y1="100" x2="455" y2="100" stroke="#534AB7" stroke-width="1.5" marker-end="url(#ch15-arr5)"/>
+
+          <!-- Observe -->
+          <rect x="460" y="80" width="90" height="40" rx="6" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <text x="505" y="104" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#534AB7">Observe</text>
+
+          <!-- Loop-back arrow -->
+          <path d="M505 120 L505 160 L265 160 L265 123" fill="none" stroke="#AFA9EC" stroke-width="1.5" marker-end="url(#ch15-arr5)"/>
+          <text x="385" y="175" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">repeat until done or max steps</text>
+
+          <!-- Environment -->
+          <rect x="340" y="210" width="130" height="45" rx="6" fill="#FAEEDA" stroke="#EF9F27" stroke-width="1.5"/>
+          <text x="405" y="230" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#854F0B">Environment</text>
+          <text x="405" y="246" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">web, DB, APIs, files</text>
+
+          <!-- Bidirectional arrow between Act and Environment -->
+          <line x1="385" y1="120" x2="385" y2="207" stroke="#854F0B" stroke-width="1.5" marker-end="url(#ch15-arr5)"/>
+          <line x1="395" y1="207" x2="395" y2="120" stroke="#854F0B" stroke-width="1.5" marker-end="url(#ch15-arr5)"/>
+
+          <!-- Arrow from loop to scoring -->
+          <line x1="560" y1="127" x2="600" y2="127" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch15-arr5)"/>
+
+          <!-- Scoring -->
+          <rect x="605" y="85" width="155" height="85" rx="6" fill="#FAECE7" stroke="#F0997B" stroke-width="1.5"/>
+          <text x="682" y="108" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="500" fill="#993C1D">Evaluation</text>
+          <text x="682" y="126" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#5C5B56">✓ Goal achieved?</text>
+          <text x="682" y="140" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#5C5B56">✓ DB state correct?</text>
+          <text x="682" y="154" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#5C5B56">✓ Side effects safe?</text>
+          <text x="682" y="168" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#5C5B56">✓ Steps efficient?</text>
+        </svg>
+        <figcaption>Figure 15.5 — The agent evaluation pipeline. Unlike standard benchmarks, agent evaluation must check the final outcome, intermediate states (did the database change correctly?), and trajectory quality (was the agent efficient?). The environment provides real feedback, making each evaluation a small integration test.</figcaption>
+      </figure>
+
+      <h3>GAIA and GAIA-2</h3>
+
+      <p><strong>GAIA</strong> (Meta + HuggingFace) presents 466 questions requiring multi-step reasoning, web browsing, tool use, and multimodality across three difficulty levels. The original GAIA was substantially solved by late 2025, with top models reaching ~90%. <strong>GAIA-2</strong> raises the bar with dynamic, asynchronous environments that evolve independently of the agent's actions — the agent must handle temporal constraints and adapt to changing events. Best scores on GAIA-2 hover around 42%.</p>
+
+      <h3>WebArena</h3>
+
+      <p><strong>WebArena</strong> (CMU) tests autonomous web task completion across real web applications: e-commerce sites, social forums, code repositories, and content management systems. The agent must navigate, click, fill forms, and execute multi-page workflows. Success rates have climbed from 14% at launch to about 60% by early 2026, with IBM's CUGA agent setting a record at ~62%. The gap between "can navigate a single page" and "can complete a multi-step workflow reliably" remains substantial.</p>
+
+      <h3>Tau-bench</h3>
+
+      <p><strong>Tau-bench</strong> (Sierra Research, ICLR 2025) evaluates customer service agents across airline, retail, and telecom domains. Uniquely, it checks both the final answer <em>and</em> the resulting database state changes — did the agent correctly modify the booking, update the inventory, process the return? GPT-4o succeeds on less than 50% of tasks. More revealingly, consistency (pass@8) drops below 25% in retail, meaning that even when a model can sometimes complete a task, it cannot do so reliably. This gap between demo-quality and production-quality agent performance is the central challenge for deployment.</p>
+
+      <h3>BFCL V4: function calling</h3>
+
+      <p>The Berkeley Function Calling Leaderboard (UC Berkeley Gorilla project) evaluates a more atomic skill: can the model correctly format and execute function calls? Version 4 (2025) tests serial and parallel function calls across multiple programming languages, with new categories for web search, memory, and format sensitivity. Frontier models excel at single-turn calls but struggle with memory, dynamic decision-making, and long-horizon reasoning across many sequential function calls.</p>
+    </section>
+
+    <!-- ================================================================== -->
+    <!-- SECTION 8: EVALUATING REASONING MODELS -->
+    <!-- ================================================================== -->
+    <section class="chapter-section" id="evaluating-reasoning-models">
+      <h2>Evaluating Reasoning Models</h2>
+
+      <p>The release of OpenAI's o1 in September 2024 created a new category of model — one that spends variable compute "thinking" before answering. DeepSeek R1, o3, o4-mini, and Claude's extended thinking mode followed. These models perform dramatically better on hard reasoning tasks, but they also break assumptions that many evaluation protocols were built on.</p>
+
+      <h3>Why standard benchmarks undercount reasoning ability</h3>
+
+      <p>Many benchmarks were designed for models that produce answers in a single forward pass. Reasoning models that allocate additional thinking tokens can solve problems that standard models cannot — AIME 2025 jumps from ~60% for standard models to 100% for the best reasoning model. But this extra compute is not free: a reasoning model may use 10-100x more tokens (and therefore cost and latency) to answer. Simply comparing accuracy without accounting for compute is misleading — it is like comparing a student who gets 5 minutes per question to one who gets an hour.</p>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 260" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="ch15-arr6" viewBox="0 0 10 10" refX="9" refY="5"
+              markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+              <path d="M1 1L9 5L1 9" fill="none" stroke="context-stroke"
+                stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </marker>
+          </defs>
+
+          <!-- Panel headers -->
+          <rect x="20" y="16" width="350" height="34" rx="5" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="1"/>
+          <text x="195" y="38" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="600" fill="#5C5B56">Standard Model</text>
+
+          <rect x="430" y="16" width="350" height="34" rx="5" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1"/>
+          <text x="605" y="38" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="600" fill="#534AB7">Reasoning Model</text>
+
+          <!-- Vertical divider -->
+          <line x1="400" y1="10" x2="400" y2="245" stroke="#E5E3DC" stroke-width="1" stroke-dasharray="5 4"/>
+
+          <!-- Left: Standard model flow -->
+          <rect x="60" y="70" width="100" height="36" rx="6" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="110" y="92" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#0F6E56">Prompt</text>
+
+          <line x1="160" y1="88" x2="195" y2="88" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch15-arr6)"/>
+
+          <rect x="200" y="70" width="130" height="36" rx="6" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="1"/>
+          <text x="265" y="92" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#5C5B56">Single pass</text>
+
+          <line x1="265" y1="106" x2="265" y2="135" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch15-arr6)"/>
+
+          <rect x="200" y="140" width="130" height="36" rx="6" fill="#FAECE7" stroke="#F0997B" stroke-width="1"/>
+          <text x="265" y="162" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#993C1D">Answer</text>
+
+          <!-- Cost/tokens annotation -->
+          <text x="110" y="162" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">~200 tokens</text>
+          <text x="110" y="177" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">~$0.003</text>
+
+          <!-- Right: Reasoning model flow -->
+          <rect x="470" y="70" width="100" height="36" rx="6" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="520" y="92" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#0F6E56">Prompt</text>
+
+          <line x1="570" y1="88" x2="605" y2="88" stroke="#534AB7" stroke-width="1.5" marker-end="url(#ch15-arr6)"/>
+
+          <!-- Thinking block (larger, purple) -->
+          <rect x="610" y="60" width="145" height="80" rx="6" fill="#EEEDFE" stroke="#534AB7" stroke-width="1.5"/>
+          <text x="682" y="82" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#534AB7">Extended</text>
+          <text x="682" y="98" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#534AB7">Thinking</text>
+          <text x="682" y="118" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">planning, verifying,</text>
+          <text x="682" y="131" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">backtracking...</text>
+
+          <line x1="682" y1="140" x2="682" y2="165" stroke="#534AB7" stroke-width="1.5" marker-end="url(#ch15-arr6)"/>
+
+          <rect x="617" y="170" width="130" height="36" rx="6" fill="#FAECE7" stroke="#F0997B" stroke-width="1"/>
+          <text x="682" y="192" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#993C1D">Answer</text>
+
+          <!-- Cost/tokens annotation -->
+          <text x="520" y="162" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#534AB7">~10,000 tokens</text>
+          <text x="520" y="177" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#534AB7">~$0.15</text>
+
+          <!-- Bottom comparison bar -->
+          <rect x="60" y="215" width="700" height="30" rx="6" fill="#FFFFFF" stroke="#E5E3DC" stroke-width="1"/>
+          <text x="400" y="235" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#1A1A18">Fair comparison requires compute-normalized evaluation: accuracy per dollar or per token</text>
+        </svg>
+        <figcaption>Figure 15.6 — Standard models produce answers in a single forward pass with minimal token overhead. Reasoning models generate thousands of "thinking" tokens before answering, achieving higher accuracy at much higher cost. Comparing accuracy alone is misleading — compute-normalized evaluation is essential.</figcaption>
+      </figure>
+
+      <h3>Compute-optimal evaluation</h3>
+
+      <p>The emerging best practice is <strong>compute-normalized comparison</strong>: compare models at the same cost (or same token budget) rather than at arbitrary settings. This means plotting accuracy as a function of compute (tokens or dollars) and comparing the curves. A reasoning model that achieves 95% at $0.15 per question might be inferior to a standard model that achieves 90% at $0.003 — depending on the use case. Benchmarks like AIME and FrontierMath are beginning to report both raw accuracy and cost-normalized accuracy.</p>
+
+      <h3>Chain-of-thought monitorability</h3>
+
+      <p>An important 2025 finding from OpenAI: monitoring the hidden chain of thought (the internal reasoning trace) for misbehavior is far more effective than monitoring only the final actions and outputs. When reasoning models reason about deception, reward hacking, or policy circumvention in their chain of thought, this can be detected — but only if the chain of thought is inspectable. This has implications for evaluation: safety benchmarks for reasoning models should evaluate not just what the model <em>does</em> but what it <em>thinks about doing</em>. The tension between monitorability and the model's incentive to obscure its reasoning is an active area of alignment research.</p>
+
+      <div class="callout callout-insight">
+        <div class="callout-title">Key Insight</div>
+        <p>Reasoning models break the assumption that "more compute = better model." They introduce a new axis: how efficiently does the model use its thinking budget? Two models with the same accuracy on FrontierMath may differ by 10x in token cost. The evaluation frontier is no longer one-dimensional.</p>
+      </div>
+    </section>
+
+    <!-- ================================================================== -->
+    <!-- SECTION 9: SAFETY AND ALIGNMENT EVALUATION -->
+    <!-- ================================================================== -->
+    <section class="chapter-section" id="safety-alignment">
+      <h2>Safety and Alignment Evaluation</h2>
+
+      <p>A model that scores well on knowledge benchmarks but generates toxic content, fabricates facts, or exhibits social biases is not deployable. Safety evaluation has evolved from single-metric toxicity scores to comprehensive frameworks that test dozens of harm categories under diverse attack strategies.</p>
+
+      <h3>Hallucination benchmarks</h3>
+
+      <p><strong>TruthfulQA</strong> presents 817 questions that humans commonly answer incorrectly — questions where the model is likely to reproduce popular misconceptions. It remains the standard hallucination benchmark, though SimpleQA (discussed in Section 2) provides a complementary measure focused on factual accuracy on straightforward questions.</p>
+
+      <h3>Bias and toxicity</h3>
+
+      <p><strong>BBQ</strong> (Bias Benchmark for QA) tests bias across nine social dimensions — age, disability, gender, nationality, physical appearance, race, religion, sexual orientation, and socioeconomic status — using ambiguous and disambiguated question pairs. <strong>ToxiGen</strong> generates implicit hate speech to test whether models can both detect and avoid producing toxic content across 13 demographic groups. The <strong>Perspective API</strong> provides a continuous toxicity score (0-1) that can be applied to any model output.</p>
+
+      <h3>HarmBench</h3>
+
+      <p><strong>HarmBench</strong> standardizes red-teaming evaluation with a key innovation: it provides <strong>Attack Success Rate</strong> (ASR) classifiers that automate the scoring of whether a model's response constitutes a harmful completion. Rather than relying on human judges to decide "did the model comply with this harmful request?", HarmBench trains classifiers to make this determination reproducibly. It covers a broad taxonomy of harmful behaviors and provides standard train/test splits, enabling fair comparison of both attack methods and defense mechanisms.</p>
+
+      <h3>ALERT</h3>
+
+      <p><strong>ALERT</strong> (Babelscape, 2024) provides 45,000+ instructions across a fine-grained taxonomy of 6 macro categories and 32 micro safety risk categories. The extended version adds 30,000+ adversarial prompts with roughly 7,000 per attack strategy (jailbreaking, prompt injection, role-playing, etc.). This granularity matters: a model might be perfectly safe against direct harmful requests but vulnerable to role-playing attacks in a specific harm category. ALERT exposes these failure patterns.</p>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 340" xmlns="http://www.w3.org/2000/svg">
+          <!-- Title -->
+          <text x="400" y="28" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="600" fill="#1A1A18">Safety Evaluation Taxonomy</text>
+
+          <!-- Root node -->
+          <rect x="310" y="45" width="180" height="36" rx="6" fill="#534AB7" stroke="#534AB7"/>
+          <text x="400" y="67" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="500" fill="#FFFFFF">Safety Evaluation</text>
+
+          <!-- Level 1 branches -->
+          <!-- Factuality -->
+          <line x1="310" y1="63" x2="100" y2="120" stroke="#C8C6BE" stroke-width="1.5"/>
+          <rect x="30" y="105" width="140" height="36" rx="6" fill="#E6F1FB" stroke="#85B7EB" stroke-width="1.5"/>
+          <text x="100" y="127" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#185FA5">Factuality</text>
+
+          <!-- Bias -->
+          <line x1="350" y1="81" x2="280" y2="120" stroke="#C8C6BE" stroke-width="1.5"/>
+          <rect x="210" y="105" width="140" height="36" rx="6" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <text x="280" y="127" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#534AB7">Bias</text>
+
+          <!-- Toxicity -->
+          <line x1="450" y1="81" x2="520" y2="120" stroke="#C8C6BE" stroke-width="1.5"/>
+          <rect x="450" y="105" width="140" height="36" rx="6" fill="#FAEEDA" stroke="#EF9F27" stroke-width="1.5"/>
+          <text x="520" y="127" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#854F0B">Toxicity</text>
+
+          <!-- Harm -->
+          <line x1="490" y1="63" x2="700" y2="120" stroke="#C8C6BE" stroke-width="1.5"/>
+          <rect x="630" y="105" width="140" height="36" rx="6" fill="#FAECE7" stroke="#F0997B" stroke-width="1.5"/>
+          <text x="700" y="127" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#993C1D">Harmful Content</text>
+
+          <!-- Level 2: Factuality children -->
+          <line x1="70" y1="141" x2="50" y2="175" stroke="#E5E3DC" stroke-width="1"/>
+          <rect x="22" y="175" width="100" height="28" rx="4" fill="#FFFFFF" stroke="#E5E3DC" stroke-width="1"/>
+          <text x="72" y="193" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#5C5B56">TruthfulQA</text>
+
+          <line x1="130" y1="141" x2="150" y2="175" stroke="#E5E3DC" stroke-width="1"/>
+          <rect x="125" y="175" width="100" height="28" rx="4" fill="#FFFFFF" stroke="#E5E3DC" stroke-width="1"/>
+          <text x="175" y="193" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#5C5B56">SimpleQA</text>
+
+          <!-- Level 2: Bias children -->
+          <line x1="250" y1="141" x2="230" y2="175" stroke="#E5E3DC" stroke-width="1"/>
+          <rect x="180" y="175" width="100" height="28" rx="4" fill="#FFFFFF" stroke="#E5E3DC" stroke-width="1"/>
+          <text x="230" y="193" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#5C5B56">BBQ (9 dims)</text>
+
+          <line x1="310" y1="141" x2="330" y2="175" stroke="#E5E3DC" stroke-width="1"/>
+          <rect x="290" y="175" width="100" height="28" rx="4" fill="#FFFFFF" stroke="#E5E3DC" stroke-width="1"/>
+          <text x="340" y="193" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#5C5B56">FINBench</text>
+
+          <!-- Level 2: Toxicity children -->
+          <line x1="490" y1="141" x2="470" y2="175" stroke="#E5E3DC" stroke-width="1"/>
+          <rect x="415" y="175" width="110" height="28" rx="4" fill="#FFFFFF" stroke="#E5E3DC" stroke-width="1"/>
+          <text x="470" y="193" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#5C5B56">Perspective API</text>
+
+          <line x1="550" y1="141" x2="570" y2="175" stroke="#E5E3DC" stroke-width="1"/>
+          <rect x="535" y="175" width="100" height="28" rx="4" fill="#FFFFFF" stroke="#E5E3DC" stroke-width="1"/>
+          <text x="585" y="193" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#5C5B56">ToxiGen</text>
+
+          <!-- Level 2: Harm children -->
+          <line x1="670" y1="141" x2="650" y2="175" stroke="#E5E3DC" stroke-width="1"/>
+          <rect x="600" y="175" width="100" height="28" rx="4" fill="#FFFFFF" stroke="#E5E3DC" stroke-width="1"/>
+          <text x="650" y="193" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#5C5B56">HarmBench</text>
+
+          <line x1="730" y1="141" x2="750" y2="175" stroke="#E5E3DC" stroke-width="1"/>
+          <rect x="710" y="175" width="70" height="28" rx="4" fill="#FFFFFF" stroke="#E5E3DC" stroke-width="1"/>
+          <text x="745" y="193" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#5C5B56">ALERT</text>
+
+          <!-- Attack strategies row -->
+          <text x="400" y="235" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#1A1A18">Attack Strategies (applied across all categories)</text>
+
+          <rect x="60" y="250" width="120" height="28" rx="4" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="1"/>
+          <text x="120" y="268" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#5C5B56">Direct requests</text>
+
+          <rect x="200" y="250" width="120" height="28" rx="4" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="1"/>
+          <text x="260" y="268" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#5C5B56">Jailbreaking</text>
+
+          <rect x="340" y="250" width="120" height="28" rx="4" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="1"/>
+          <text x="400" y="268" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#5C5B56">Role-playing</text>
+
+          <rect x="480" y="250" width="120" height="28" rx="4" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="1"/>
+          <text x="540" y="268" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#5C5B56">Prompt injection</text>
+
+          <rect x="620" y="250" width="140" height="28" rx="4" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="1"/>
+          <text x="690" y="268" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#5C5B56">Encoding/obfuscation</text>
+
+          <!-- Annotation -->
+          <text x="400" y="310" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">ALERT tests all 32 micro-categories × all attack strategies = comprehensive safety matrix</text>
+        </svg>
+        <figcaption>Figure 15.7 — The safety evaluation taxonomy. Modern frameworks like ALERT and HarmBench test the full cross-product of harm categories and attack strategies, revealing that safety is not a single dimension but a high-dimensional surface with model-specific failure patterns.</figcaption>
+      </figure>
+
+      <h3>Red-teaming protocols</h3>
+
+      <p>Red-teaming — structured adversarial evaluation by humans or AI systems — has evolved from ad-hoc prompt engineering into standardized protocols. <strong>RedBench</strong> (2026) provides a universal dataset for comprehensive red teaming. Domain-specific variants have appeared: <strong>FINBench</strong> assesses regulatory risk concealment in financial LLMs, and <strong>SGToxicGuard</strong> tests safety in Singapore's multilingual context (Singlish, Chinese, Malay, Tamil). The trend is clear: generic safety benchmarks are giving way to domain-specific and culturally-specific evaluations that capture failure modes invisible to English-centric, general-purpose benchmarks.</p>
+
+      <h3>Constitutional AI self-critique scoring</h3>
+
+      <p>Anthropic's <strong>Constitutional AI</strong> (CAI) introduces a self-evaluation loop: the model generates a response, then critiques its own output against a set of written principles (the "constitution"), then revises. This can be scored by measuring how often the model's self-critique correctly identifies problematic content, how much the revised response improves, and whether the final output satisfies the constitutional principles. CAI self-critique scoring provides an automated, scalable measure of a model's alignment — essentially asking "does the model know when it is being harmful?" The critique accuracy (how often the model catches its own violations) and revision quality (how much harm is reduced after self-revision) together give a two-dimensional safety metric that complements external red-teaming evaluations.</p>
+    </section>
+
+    <!-- ================================================================== -->
+    <!-- SECTION 10: CONTAMINATION AND EVALUATION VALIDITY -->
+    <!-- ================================================================== -->
+    <section class="chapter-section" id="contamination-validity">
+      <h2>Contamination and Evaluation Validity</h2>
+
+      <p>Every benchmark discussed so far is vulnerable to the same fundamental threat: if the test questions appear in the model's training data, the benchmark measures memorization rather than capability. This is not a theoretical concern — contamination has been documented in multiple major benchmarks and has distorted leaderboard rankings.</p>
+
+      <h3>The contamination problem</h3>
+
+      <p>Modern language models train on trillions of tokens scraped from the internet. Benchmark datasets — MMLU questions, HumanEval code problems, TruthfulQA items — live on the internet. Unless extreme care is taken to exclude them, benchmarks end up in pre-training corpora. The result: inflated scores that reflect data memorization rather than genuine reasoning. HumanEval is now known to have widespread contamination, making pre-2024 code generation comparisons unreliable.</p>
+
+      <h3>Detection methods</h3>
+
+      <p><strong>N-gram overlap</strong> is the simplest approach: check if long sequences from benchmark items appear verbatim in the training corpus. This catches direct contamination but misses paraphrased or reformatted versions. <strong>Perplexity analysis</strong> is more subtle: if a model has unexpectedly low perplexity on benchmark items compared to similar items not in the benchmark, contamination is likely. LiveCodeBench uses <strong>temporal segmentation</strong> as both a detection and prevention mechanism: by testing only on problems released after a model's training cutoff, contaminated items are excluded by construction.</p>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 280" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="ch15-arr7" viewBox="0 0 10 10" refX="9" refY="5"
+              markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+              <path d="M1 1L9 5L1 9" fill="none" stroke="context-stroke"
+                stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </marker>
+          </defs>
+
+          <!-- Panel headers -->
+          <rect x="20" y="16" width="350" height="34" rx="5" fill="#FAECE7" stroke="#F0997B" stroke-width="1"/>
+          <text x="195" y="38" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="600" fill="#993C1D">Static Benchmark (Contamination Risk)</text>
+
+          <rect x="430" y="16" width="350" height="34" rx="5" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="605" y="38" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="600" fill="#0F6E56">Dynamic Benchmark (Resistant)</text>
+
+          <!-- Vertical divider -->
+          <line x1="400" y1="10" x2="400" y2="265" stroke="#E5E3DC" stroke-width="1" stroke-dasharray="5 4"/>
+
+          <!-- LEFT: Static benchmark -->
+          <rect x="50" y="70" width="130" height="36" rx="6" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="1"/>
+          <text x="115" y="92" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#5C5B56">Fixed questions</text>
+
+          <line x1="180" y1="88" x2="205" y2="88" stroke="#9C9A94" stroke-width="1" marker-end="url(#ch15-arr7)"/>
+
+          <rect x="210" y="65" width="150" height="46" rx="6" fill="#FAEEDA" stroke="#EF9F27" stroke-width="1.5"/>
+          <text x="285" y="84" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#854F0B">Training data</text>
+          <text x="285" y="100" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">internet scrape includes</text>
+          <text x="285" y="110" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#993C1D">benchmark items!</text>
+
+          <line x1="285" y1="111" x2="285" y2="140" stroke="#993C1D" stroke-width="1.5" marker-end="url(#ch15-arr7)"/>
+
+          <rect x="205" y="145" width="160" height="36" rx="6" fill="#FAECE7" stroke="#F0997B" stroke-width="1.5"/>
+          <text x="285" y="167" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#993C1D">Inflated score</text>
+
+          <text x="195" y="210" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#993C1D">Measures memorization,</text>
+          <text x="195" y="225" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#993C1D">not capability</text>
+
+          <!-- RIGHT: Dynamic benchmark -->
+          <rect x="450" y="70" width="130" height="36" rx="6" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1.5"/>
+          <text x="515" y="85" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#0F6E56">New problems</text>
+          <text x="515" y="99" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#5C5B56">monthly</text>
+
+          <rect x="600" y="70" width="150" height="36" rx="6" fill="#E6F1FB" stroke="#85B7EB" stroke-width="1.5"/>
+          <text x="675" y="85" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#185FA5">Temporal filter</text>
+          <text x="675" y="99" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#5C5B56">post-cutoff only</text>
+
+          <line x1="515" y1="106" x2="515" y2="135" stroke="#0F6E56" stroke-width="1.5" marker-end="url(#ch15-arr7)"/>
+          <line x1="675" y1="106" x2="675" y2="135" stroke="#185FA5" stroke-width="1.5" marker-end="url(#ch15-arr7)"/>
+
+          <rect x="460" y="140" width="290" height="36" rx="6" fill="#FFFFFF" stroke="#5DCAA5" stroke-width="1.5"/>
+          <text x="605" y="162" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#0F6E56">Contamination-free evaluation</text>
+
+          <text x="605" y="205" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#0F6E56">LiveBench: monthly update from arXiv, news, IMDb</text>
+          <text x="605" y="222" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#0F6E56">LiveCodeBench: new problems from LeetCode, Codeforces</text>
+          <text x="605" y="239" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#0F6E56">HLE: expert-written, never publicly released as training data</text>
+        </svg>
+        <figcaption>Figure 15.8 — Static benchmarks (left) are vulnerable to training data contamination — benchmark items leak into pre-training corpora, inflating scores. Dynamic benchmarks (right) resist contamination through continuous updates and temporal segmentation, ensuring test items post-date the model's training cutoff.</figcaption>
+      </figure>
+
+      <h3>Dynamic benchmarks</h3>
+
+      <p><strong>LiveBench</strong> (ICLR 2025 Spotlight) is the most ambitious dynamic benchmark: it updates monthly with questions drawn from recent arXiv papers, news articles, and IMDb synopses. Every question has an objective, automatically verifiable ground-truth answer — no LLM judge needed. It covers math, coding, reasoning, language, instruction following, and data analysis. Top models still achieve below 70%, and the continuous updates ensure that no model can benefit from memorizing past versions.</p>
+
+      <p><strong>LiveCodeBench</strong> applies the same philosophy to code: it continuously collects new competitive programming problems with temporal metadata. Its time-segmented evaluation has confirmed contamination patterns in multiple major models, where performance drops sharply on problems released after the model's training cutoff.</p>
+
+      <p><strong>EvoEval</strong> takes a complementary approach: instead of finding new problems, it algorithmically transforms existing benchmark problems — rephrasing, combining, decomposing, or inverting them — to generate novel variants that test the same skills but cannot be memorized. This lets researchers "resurrect" saturated benchmarks by generating fresh test instances from their structure, providing a middle ground between fully static and fully dynamic evaluation.</p>
+
+      <h3>Long-context evaluation: HELMET</h3>
+
+      <p>A separate validity concern affects long-context evaluation. <strong>HELMET</strong> (ICLR 2025) tested models on long-context tasks up to 128K tokens across seven application categories and discovered that popular synthetic tasks like <strong>needle-in-a-haystack</strong> (finding a specific fact buried in irrelevant text) do <em>not</em> reliably predict downstream long-context performance. A model that achieves 100% on needle-in-a-haystack may still fail at long-document summarization, multi-document QA, or citation-grounded generation. HELMET recommends evaluating on realistic long-context applications rather than synthetic probes, and found that open-source models significantly lag behind closed models on genuine long-context reasoning.</p>
+
+      <h3>Reproducibility</h3>
+
+      <p>Even without contamination, evaluation results vary significantly based on seemingly minor choices: <strong>temperature</strong> (greedy vs. sampled decoding), <strong>system prompt</strong> (different preambles can swing scores by 5+ percentage points), <strong>few-shot format</strong> (how examples are presented), and <strong>decoding strategy</strong> (beam search vs. nucleus sampling). The field is moving toward standardized evaluation harnesses — notably <strong>lm-evaluation-harness</strong> from EleutherAI — that fix these choices and enable reproducible comparisons. Any reported benchmark score that does not specify these parameters should be treated with skepticism.</p>
+
+      <div class="callout callout-warning">
+        <div class="callout-title">Warning</div>
+        <p>A model's benchmark score is only meaningful if you know: (1) which exact version of the benchmark was used, (2) whether contamination was checked, (3) what inference parameters were used, and (4) when the evaluation was run relative to the model's training cutoff. Leaderboard rankings without this metadata are marketing, not science.</p>
+      </div>
+    </section>
+
+    <!-- ================================================================== -->
+    <!-- SECTION: ELO RATING IMPLEMENTATION -->
+    <!-- ================================================================== -->
+    <section class="chapter-section" id="elo-implementation">
+      <h2>Implementing Elo Ratings for Model Comparison</h2>
+
+      <p>The Elo rating system — originally designed for chess — underlies Chatbot Arena's leaderboard. Understanding its mechanics clarifies both its power and its limitations. The core idea: each model has a rating; when two models are compared, the expected outcome is a function of the rating difference; the actual outcome updates both ratings.</p>
+
+      <p>The expected score for model A against model B is computed from their rating difference:</p>
+
+      $$E_A = \frac{1}{1 + 10^{(R_B - R_A)/400}}$$
+
+      <p>Here $R_A$ and $R_B$ are the current Elo ratings (scalars). The constant 400 controls the scale: a 400-point rating difference corresponds to a 10:1 expected win ratio. After a match, ratings update as $R'_A = R_A + K \cdot (S_A - E_A)$ where $S_A$ is the actual outcome (1 for win, 0.5 for tie, 0 for loss) and $K$ is the update magnitude (typically 4-32).</p>
+
+      <p>The following code implements a complete Elo rating system suitable for evaluating model comparisons.</p>
+
+<pre><code class="language-python">
+import torch
+
+class EloRatingSystem:
+    """
+    Elo rating system for pairwise model comparison,
+    as used in Chatbot Arena / LMArena.
+    """
+    def __init__(self, k: float = 32.0, initial_rating: float = 1500.0):
+        self.k = k                   # update magnitude (scalar)
+        self.initial_rating = initial_rating
+        self.ratings = {}            # model_name -> current Elo rating
+
+    def expected_score(self, rating_a: float, rating_b: float) -> float:
+        """P(A wins) based on current ratings. Returns scalar in [0, 1]."""
+        return 1.0 / (1.0 + 10.0 ** ((rating_b - rating_a) / 400.0))
+
+    def update(self, model_a: str, model_b: str, outcome: float):
+        """
+        Update ratings after a pairwise comparison.
+
+        Args:
+            model_a: name of first model
+            model_b: name of second model
+            outcome: 1.0 = A wins, 0.0 = B wins, 0.5 = tie
+        """
+        ra = self.ratings.setdefault(model_a, self.initial_rating)
+        rb = self.ratings.setdefault(model_b, self.initial_rating)
+
+        ea = self.expected_score(ra, rb)  # scalar: expected score for A
+        eb = 1.0 - ea                      # scalar: expected score for B
+
+        self.ratings[model_a] = ra + self.k * (outcome - ea)
+        self.ratings[model_b] = rb + self.k * ((1.0 - outcome) - eb)
+
+    def get_leaderboard(self):
+        """Return models sorted by Elo rating, descending."""
+        return sorted(self.ratings.items(), key=lambda x: -x[1])
+
+# Simulate a small arena with 4 models and 100 comparisons
+elo = EloRatingSystem(k=16.0)
+torch.manual_seed(42)
+
+models = ["ModelA", "ModelB", "ModelC", "ModelD"]
+# True skill levels (hidden): A > B > C > D
+true_skill = {"ModelA": 0.8, "ModelB": 0.6, "ModelC": 0.4, "ModelD": 0.2}
+
+for _ in range(200):
+    # Random matchup
+    i, j = torch.randint(0, 4, (2,)).tolist()
+    while i == j:
+        j = torch.randint(0, 4, (1,)).item()
+    a, b = models[i], models[j]
+
+    # Simulate outcome based on skill difference
+    p_a_wins = torch.sigmoid(torch.tensor(
+        5.0 * (true_skill[a] - true_skill[b])  # scalar logit
+    )).item()
+    outcome = 1.0 if torch.rand(1).item() < p_a_wins else 0.0
+    elo.update(a, b, outcome)
+
+print("Leaderboard after 200 comparisons:")
+for name, rating in elo.get_leaderboard():
+    print(f"  {name}: {rating:.0f}")
+# Rankings should recover true skill ordering: A > B > C > D
+</code></pre>
+
+      <p>Chatbot Arena uses a more sophisticated variant: the <strong>Bradley-Terry model</strong>, which jointly estimates all ratings from the full matrix of pairwise comparisons using maximum likelihood rather than sequential updates. This gives more stable ratings but follows the same core principle — pairwise comparisons become global rankings through probabilistic modeling of relative strength.</p>
+    </section>
+
+    <!-- ================================================================== -->
+    <!-- INTERACTIVE WIDGET: PERPLEXITY EXPLORER -->
+    <!-- ================================================================== -->
+    <section class="chapter-section" id="perplexity-explorer">
+      <h2>Exploring Perplexity Interactively</h2>
+
+      <p>Perplexity depends on the probability the model assigns to each correct token. The following widget lets you adjust token probabilities and see how perplexity responds — building intuition for why a single low-confidence prediction can spike the overall score.</p>
+
+      <figure class="diagram-figure diagram-interactive">
+        <div class="widget-container" id="widget-ch15-perplexity">
+          <style>
+            #widget-ch15-perplexity .controls { display: flex; flex-wrap: wrap; gap: 1rem; padding: 0.5rem 0; }
+            #widget-ch15-perplexity .token-row { display: flex; align-items: center; gap: 0.5rem; }
+          </style>
+
+          <div class="controls">
+            <label style="font-family: system-ui; font-size: 13px; color: #5C5B56; display:flex; align-items:center; gap:8px;">
+              Token 1 prob: <span id="ch15-p1-display">0.90</span>
+              <input type="range" min="0.01" max="0.99" step="0.01" value="0.90"
+                style="width:120px; accent-color:#534AB7;"
+                oninput="updateCh15Perplexity()">
+            </label>
+            <label style="font-family: system-ui; font-size: 13px; color: #5C5B56; display:flex; align-items:center; gap:8px;">
+              Token 2 prob: <span id="ch15-p2-display">0.80</span>
+              <input type="range" min="0.01" max="0.99" step="0.01" value="0.80"
+                style="width:120px; accent-color:#534AB7;"
+                oninput="updateCh15Perplexity()">
+            </label>
+            <label style="font-family: system-ui; font-size: 13px; color: #5C5B56; display:flex; align-items:center; gap:8px;">
+              Token 3 prob: <span id="ch15-p3-display">0.70</span>
+              <input type="range" min="0.01" max="0.99" step="0.01" value="0.70"
+                style="width:120px; accent-color:#534AB7;"
+                oninput="updateCh15Perplexity()">
+            </label>
+            <label style="font-family: system-ui; font-size: 13px; color: #5C5B56; display:flex; align-items:center; gap:8px;">
+              Token 4 prob: <span id="ch15-p4-display">0.05</span>
+              <input type="range" min="0.01" max="0.99" step="0.01" value="0.05"
+                style="width:120px; accent-color:#534AB7;"
+                oninput="updateCh15Perplexity()">
+            </label>
+          </div>
+
+          <svg id="ch15-ppl-svg" width="100%" viewBox="0 0 800 200">
+            <!-- Token probability bars -->
+            <text x="80" y="30" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#1A1A18">Token Probabilities</text>
+
+            <!-- Bar backgrounds -->
+            <rect x="40" y="45" width="80" height="120" rx="4" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="1"/>
+            <rect x="140" y="45" width="80" height="120" rx="4" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="1"/>
+            <rect x="240" y="45" width="80" height="120" rx="4" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="1"/>
+            <rect x="340" y="45" width="80" height="120" rx="4" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="1"/>
+
+            <!-- Probability fill bars (updated by JS) -->
+            <rect id="ch15-bar1" x="40" y="57" width="80" height="108" rx="4" fill="#534AB7" opacity="0.7"/>
+            <rect id="ch15-bar2" x="140" y="69" width="80" height="96" rx="4" fill="#534AB7" opacity="0.7"/>
+            <rect id="ch15-bar3" x="240" y="81" width="80" height="84" rx="4" fill="#534AB7" opacity="0.7"/>
+            <rect id="ch15-bar4" x="340" y="159" width="80" height="6" rx="4" fill="#993C1D" opacity="0.8"/>
+
+            <!-- Token labels -->
+            <text x="80" y="180" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#5C5B56">"the"</text>
+            <text x="180" y="180" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#5C5B56">"cat"</text>
+            <text x="280" y="180" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#5C5B56">"sat"</text>
+            <text x="380" y="180" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#5C5B56">"flb"</text>
+
+            <!-- Perplexity result area -->
+            <rect x="480" y="45" width="280" height="120" rx="8" fill="#FFFFFF" stroke="#E5E3DC" stroke-width="1"/>
+            <text x="620" y="72" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#534AB7">Perplexity</text>
+            <text id="ch15-ppl-value" x="620" y="110" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="36" font-weight="700" fill="#1A1A18">3.2</text>
+            <text id="ch15-ppl-formula" x="620" y="140" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">exp(−mean(log(probs)))</text>
+          </svg>
+
+          <p style="font-family:system-ui; font-size:13px; color:#9C9A94; font-style:italic;
+                    padding:0.5rem 0 0.5rem;" id="ch15-ppl-observation">
+            Notice how Token 4's low probability (0.05) dominates the perplexity despite three confident predictions.
+          </p>
+        </div>
+
+        <script>
+          function updateCh15Perplexity() {
+            var sliders = document.querySelectorAll('#widget-ch15-perplexity input[type="range"]');
+            var probs = [];
+            var displays = ['ch15-p1-display', 'ch15-p2-display', 'ch15-p3-display', 'ch15-p4-display'];
+            for (var i = 0; i < sliders.length; i++) {
+              var p = parseFloat(sliders[i].value);
+              probs.push(p);
+              document.getElementById(displays[i]).textContent = p.toFixed(2);
+            }
+
+            // Compute perplexity
+            var sumLogP = 0;
+            for (var i = 0; i < probs.length; i++) {
+              sumLogP += Math.log(probs[i]);
+            }
+            var avgNegLogP = -sumLogP / probs.length;
+            var ppl = Math.exp(avgNegLogP);
+
+            document.getElementById('ch15-ppl-value').textContent = ppl.toFixed(1);
+
+            // Update bars
+            var barIds = ['ch15-bar1', 'ch15-bar2', 'ch15-bar3', 'ch15-bar4'];
+            for (var i = 0; i < probs.length; i++) {
+              var barHeight = probs[i] * 120;
+              var barY = 45 + (120 - barHeight);
+              var bar = document.getElementById(barIds[i]);
+              bar.setAttribute('y', barY);
+              bar.setAttribute('height', barHeight);
+              // Color low-probability tokens red
+              if (probs[i] < 0.15) {
+                bar.setAttribute('fill', '#993C1D');
+              } else {
+                bar.setAttribute('fill', '#534AB7');
+              }
+            }
+
+            // Update observation
+            var minP = Math.min.apply(null, probs);
+            var minIdx = probs.indexOf(minP) + 1;
+            var obs = document.getElementById('ch15-ppl-observation');
+            if (ppl < 2) {
+              obs.textContent = 'All tokens have high probability — perplexity is low. The model is very confident.';
+            } else if (ppl > 10) {
+              obs.textContent = 'Token ' + minIdx + '\'s low probability (' + minP.toFixed(2) + ') drives perplexity to ' + ppl.toFixed(1) + '. A single uncertain prediction dominates the average.';
+            } else {
+              obs.textContent = 'Perplexity of ' + ppl.toFixed(1) + ' — the model is moderately confident. Try lowering Token ' + minIdx + ' to see how one bad prediction spikes the score.';
+            }
+          }
+          updateCh15Perplexity();
+        </script>
+
+        <figcaption>Figure 15.9 — Interactive: adjust individual token probabilities and observe how perplexity responds. Notice that perplexity is dominated by the least-confident prediction — a single token with probability 0.05 can spike perplexity even when all other tokens have probability >0.90.</figcaption>
+      </figure>
+    </section>
+
+  </article>
+
+  <footer class="chapter-footer">
+    <div class="footer-nav">
+      <a href="ch14.html">← Previous: Training Language Models at Scale</a>
+      <a href="ch16.html">Next: Evaluating Retrieval and RAG Systems →</a>
+    </div>
+  </footer>
+
+</body>
+</html>

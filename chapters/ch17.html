@@ -1,0 +1,931 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Chapter 17: Vision Transformer (ViT) — Transformer Research Book</title>
+  <link rel="stylesheet" href="../assets/style.css">
+  <link rel="stylesheet" href="../assets/math.css">
+  <link rel="stylesheet" href="../assets/prism.css">
+  <!-- KaTeX for math rendering -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"
+    onload="renderMathInElement(document.body, {
+      delimiters: [
+        {left: '$$', right: '$$', display: true},
+        {left: '$', right: '$', display: false}
+      ]
+    })">
+  </script>
+  <!-- Prism for code blocks -->
+  <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/prism.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-python.min.js"></script>
+</head>
+<body>
+  <nav class="chapter-nav">
+    <a href="../index.html" class="nav-home">← Table of Contents</a>
+    <span class="nav-chapter">Chapter 17</span>
+    <div style="display:flex; align-items:center; gap:1rem;">
+      <button class="theme-toggle" onclick="toggleTheme()" aria-label="Toggle dark mode">
+        <span class="icon-moon">&#9789;</span><span class="icon-sun">&#9788;</span>
+      </button>
+      <a href="ch18.html" class="nav-next">Next Chapter →</a>
+    </div>
+  </nav>
+  <script>
+    function toggleTheme() {
+      document.documentElement.classList.toggle('dark');
+      localStorage.setItem('theme', document.documentElement.classList.contains('dark') ? 'dark' : 'light');
+    }
+    if (localStorage.getItem('theme') === 'dark') document.documentElement.classList.add('dark');
+  </script>
+
+  <article class="chapter">
+
+    <header class="chapter-header">
+      <div class="chapter-number">Chapter 17</div>
+      <h1 class="chapter-title">Vision Transformer (ViT)</h1>
+      <p class="chapter-lead">For decades, convolutional neural networks owned computer vision. Every layer encoded a strong prior: nearby pixels matter more than distant ones, and the same pattern can appear anywhere in the image. Then in 2020, a team at Google asked a radical question — what if we threw away all of those priors and just fed image patches into a standard transformer? The answer was the Vision Transformer, and it changed the trajectory of the entire field. By the end of this chapter you will understand how ViT converts images into token sequences, why it needs massive data to outperform CNNs, how self-supervised methods like DINO and MAE eliminated that data dependency, and how the lineage from DINOv2 to DINOv3 produced universal visual features that rival human-designed representations.</p>
+    </header>
+
+    <!-- ================================================================== -->
+    <!-- SECTION 1: THE VIT PAPER -->
+    <!-- ================================================================== -->
+    <section class="chapter-section" id="vit-paper">
+      <h2>The ViT Paper</h2>
+
+      <p>The core insight of Dosovitskiy et al. (2020) is almost comically simple: split an image into fixed-size patches, flatten each patch into a vector, project it linearly into the transformer's embedding dimension, and process the resulting sequence with a standard transformer encoder — the same architecture used for language. No convolutions. No pooling hierarchies. Just attention over patches.</p>
+
+      <h3>Patch embedding</h3>
+
+      <p>Given an image of size $H \times W$ with $C$ channels, we divide it into a grid of non-overlapping patches, each of size $P \times P$. This produces $N = HW / P^2$ patches. For a 224×224 image with 16×16 patches, $N = 196$ patches. Each patch is flattened into a vector of dimension $P^2 \cdot C$ (for 16×16 RGB patches, this is $16 \times 16 \times 3 = 768$), then projected through a learned linear layer $E \in \mathbb{R}^{(P^2 \cdot C) \times d}$ into the model's hidden dimension $d$:</p>
+
+      $$\mathbf{z}_i^0 = \mathbf{x}_i E + \mathbf{e}_i^{\text{pos}}$$
+
+      <p>Here $\mathbf{x}_i$ is the flattened patch $i$ (a row vector in $\mathbb{R}^{P^2 C}$), $E$ is the patch embedding matrix, and $\mathbf{x}_i E$ is a matrix multiply ($\mathbb{R}^{1 \times P^2C} \times \mathbb{R}^{P^2C \times d} \to \mathbb{R}^{1 \times d}$) projecting the raw patch into the transformer's embedding space. $\mathbf{e}_i^{\text{pos}}$ is a learned positional embedding that tells the model where patch $i$ sits in the 2D grid.</p>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 370" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="ch17-arr" viewBox="0 0 10 10" refX="9" refY="5"
+              markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+              <path d="M1 1L9 5L1 9" fill="none" stroke="context-stroke"
+                stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </marker>
+          </defs>
+
+          <!-- Image -->
+          <rect x="30" y="130" width="100" height="100" rx="4" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1.5"/>
+          <!-- Grid lines to show patches -->
+          <line x1="55" y1="130" x2="55" y2="230" stroke="#5DCAA5" stroke-width="0.5" opacity="0.6"/>
+          <line x1="80" y1="130" x2="80" y2="230" stroke="#5DCAA5" stroke-width="0.5" opacity="0.6"/>
+          <line x1="105" y1="130" x2="105" y2="230" stroke="#5DCAA5" stroke-width="0.5" opacity="0.6"/>
+          <line x1="30" y1="155" x2="130" y2="155" stroke="#5DCAA5" stroke-width="0.5" opacity="0.6"/>
+          <line x1="30" y1="180" x2="130" y2="180" stroke="#5DCAA5" stroke-width="0.5" opacity="0.6"/>
+          <line x1="30" y1="205" x2="130" y2="205" stroke="#5DCAA5" stroke-width="0.5" opacity="0.6"/>
+          <text x="80" y="120" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#0F6E56">Image</text>
+          <text x="80" y="250" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">224 × 224</text>
+
+          <!-- Arrow -->
+          <line x1="135" y1="180" x2="165" y2="180" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch17-arr)"/>
+          <text x="150" y="170" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">split</text>
+
+          <!-- Patches row -->
+          <rect x="170" y="150" width="22" height="22" rx="3" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <rect x="196" y="150" width="22" height="22" rx="3" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <rect x="222" y="150" width="22" height="22" rx="3" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="257" y="166" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="400" fill="#9C9A94">…</text>
+          <rect x="270" y="150" width="22" height="22" rx="3" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="233" y="190" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">N = 196 patches</text>
+          <text x="233" y="203" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">each 16 × 16 × 3</text>
+
+          <!-- Arrow -->
+          <line x1="297" y1="165" x2="320" y2="165" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch17-arr)"/>
+          <text x="308" y="155" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">flatten</text>
+          <text x="308" y="185" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">+ project</text>
+
+          <!-- Token embeddings (including [CLS]) -->
+          <rect x="325" y="140" width="26" height="50" rx="3" fill="#534AB7" stroke="#534AB7"/>
+          <text x="338" y="169" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="500" fill="#FFFFFF">CLS</text>
+
+          <rect x="356" y="140" width="26" height="50" rx="3" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1"/>
+          <text x="369" y="169" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#534AB7">z₁</text>
+
+          <rect x="387" y="140" width="26" height="50" rx="3" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1"/>
+          <text x="400" y="169" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#534AB7">z₂</text>
+
+          <text x="425" y="169" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="400" fill="#9C9A94">…</text>
+
+          <rect x="437" y="140" width="26" height="50" rx="3" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1"/>
+          <text x="450" y="169" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#534AB7">z_N</text>
+
+          <!-- + pos encoding annotation -->
+          <text x="393" y="130" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#854F0B">+ positional embeddings</text>
+
+          <text x="393" y="210" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">(N+1) tokens × d</text>
+
+          <!-- Arrow to transformer -->
+          <line x1="468" y1="165" x2="498" y2="165" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch17-arr)"/>
+
+          <!-- Transformer Encoder -->
+          <rect x="503" y="105" width="160" height="120" rx="8" fill="#EEEDFE" stroke="#534AB7" stroke-width="1.5"/>
+          <text x="583" y="145" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="600" fill="#534AB7">Transformer</text>
+          <text x="583" y="163" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="600" fill="#534AB7">Encoder</text>
+          <text x="583" y="185" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">L layers of</text>
+          <text x="583" y="199" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">MHSA + FFN</text>
+
+          <!-- × L label -->
+          <line x1="675" y1="105" x2="675" y2="225" stroke="#C8C6BE" stroke-width="1" stroke-dasharray="4 3"/>
+          <line x1="669" y1="105" x2="675" y2="105" stroke="#C8C6BE" stroke-width="1"/>
+          <line x1="669" y1="225" x2="675" y2="225" stroke="#C8C6BE" stroke-width="1"/>
+          <text x="689" y="170" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#9C9A94">× L</text>
+
+          <!-- Arrow to classification head -->
+          <line x1="583" y1="225" x2="583" y2="260" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch17-arr)"/>
+          <text x="620" y="248" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">[CLS] output</text>
+
+          <!-- MLP Head -->
+          <rect x="518" y="265" width="130" height="40" rx="6" fill="#FAECE7" stroke="#F0997B" stroke-width="1.5"/>
+          <text x="583" y="289" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#993C1D">MLP Head → class</text>
+
+          <!-- Model configs table -->
+          <rect x="30" y="280" width="420" height="75" rx="6" fill="#FFFFFF" stroke="#E5E3DC" stroke-width="1"/>
+          <text x="240" y="300" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#1A1A18">Model Configurations</text>
+          <text x="80" y="320" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#534AB7">ViT-B/16</text>
+          <text x="80" y="338" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">86M, d=768</text>
+          <text x="80" y="350" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">L=12, H=12</text>
+
+          <text x="240" y="320" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#534AB7">ViT-L/16</text>
+          <text x="240" y="338" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">307M, d=1024</text>
+          <text x="240" y="350" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">L=24, H=16</text>
+
+          <text x="390" y="320" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#534AB7">ViT-H/14</text>
+          <text x="390" y="338" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">632M, d=1280</text>
+          <text x="390" y="350" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">L=32, H=16</text>
+        </svg>
+        <figcaption>Figure 17.1 — The Vision Transformer pipeline. A 224×224 image is split into 196 non-overlapping 16×16 patches, each linearly projected to dimension d. A learnable [CLS] token is prepended, positional embeddings are added, and the sequence is processed by L standard transformer encoder layers. The [CLS] output feeds an MLP classification head. Model sizes range from ViT-B (86M) to ViT-H (632M).</figcaption>
+      </figure>
+
+      <h3>Positional embeddings for 2D</h3>
+
+      <p>Unlike text, image patches have two-dimensional positions. The original ViT paper explored several options: <strong>1D learned positions</strong> (assign index 0 to N to patches in raster order, learn an embedding per index), <strong>2D sinusoidal</strong> (separate sinusoidal encoding for row and column), and <strong>2D learned</strong>. Surprisingly, learned 1D positions performed nearly as well as the 2D variants — the model learns to infer 2D structure from 1D ordering. A practical concern is resolution transfer: a model trained on 224×224 images (196 patches) cannot directly process 384×384 images (576 patches) because there are no learned embeddings for positions 197-576. The standard fix is <strong>bicubic interpolation</strong> of the position embedding grid to the new resolution, followed by fine-tuning.</p>
+
+      <h3>The [CLS] token</h3>
+
+      <p>Following BERT, ViT prepends a learnable <strong>[CLS] token</strong> to the patch sequence. This token has no spatial content — it attends to all patches and accumulates a global representation of the image. After the final transformer layer, the [CLS] token's output vector is fed to a classification MLP. An alternative is <strong>global average pooling</strong> over all patch outputs; both approaches work comparably, but [CLS] has become the convention because it mirrors the language model paradigm and simplifies downstream task heads.</p>
+
+      <p>The following code implements patch embedding with positional encoding in pure PyTorch.</p>
+
+<pre><code class="language-python">
+import torch
+import torch.nn as nn
+
+class PatchEmbedding(nn.Module):
+    """Convert image into patch embeddings with positional encoding."""
+    def __init__(self, img_size=224, patch_size=16, in_channels=3, d_model=768):
+        super().__init__()
+        self.patch_size = patch_size
+        self.n_patches = (img_size // patch_size) ** 2  # 196 for 224/16
+
+        # Linear projection: flatten patch → d_model
+        self.proj = nn.Conv2d(
+            in_channels, d_model,
+            kernel_size=patch_size, stride=patch_size  # non-overlapping patches
+        )  # output: (batch, d_model, H/P, W/P)
+
+        # Learnable [CLS] token and position embeddings
+        self.cls_token = nn.Parameter(torch.randn(1, 1, d_model))        # (1, 1, d_model)
+        self.pos_embed = nn.Parameter(
+            torch.randn(1, self.n_patches + 1, d_model)                  # (1, N+1, d_model)
+        )
+
+    def forward(self, x):
+        # x: (batch, 3, 224, 224)
+        B = x.shape[0]
+        patches = self.proj(x)              # (batch, d_model, 14, 14)
+        patches = patches.flatten(2)        # (batch, d_model, 196)
+        patches = patches.transpose(1, 2)   # (batch, 196, d_model)
+
+        # Prepend [CLS] token
+        cls = self.cls_token.expand(B, -1, -1)   # (batch, 1, d_model)
+        tokens = torch.cat([cls, patches], dim=1) # (batch, 197, d_model)
+
+        # Add positional embeddings (element-wise addition, same shape)
+        tokens = tokens + self.pos_embed           # (batch, 197, d_model)
+        return tokens
+
+# Example
+embed = PatchEmbedding(img_size=224, patch_size=16, d_model=768)
+img = torch.randn(2, 3, 224, 224)    # (batch=2, channels=3, H=224, W=224)
+tokens = embed(img)                    # (2, 197, 768)
+print(f"Output: {tokens.shape}")       # (2, 197, 768) — 196 patches + 1 CLS
+</code></pre>
+    </section>
+
+    <!-- ================================================================== -->
+    <!-- SECTION 2: WHY VIT WORKS AT SCALE -->
+    <!-- ================================================================== -->
+    <section class="chapter-section" id="why-vit-works">
+      <h2>Why ViT Works at Scale</h2>
+
+      <p>The original ViT paper carried a surprising caveat: when trained on ImageNet alone (1.3M images), ViT-B performs <em>worse</em> than a comparable ResNet. The transformer lacks the inductive biases that make CNNs data-efficient — translation equivariance (the same filter detects a cat whether it appears top-left or bottom-right) and locality (nearby pixels are processed together). Without these priors, the model must learn spatial structure from scratch, and that requires far more data.</p>
+
+      <h3>The data regime crossover</h3>
+
+      <p>The picture changes completely at scale. When pre-trained on JFT-300M (300 million images), ViT-H/14 surpasses the best ResNet variant (ResNet152x4, pre-trained with the same data) on ImageNet. The advantage grows with dataset size: on JFT-300M, ViT shows no sign of saturation while the CNN plateaus. The intuition is clean: with enough data, the flexibility of self-attention — which can learn arbitrary spatial relationships, not just local ones — outweighs the efficiency of built-in spatial priors.</p>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 280" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="ch17-arr2" viewBox="0 0 10 10" refX="9" refY="5"
+              markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+              <path d="M1 1L9 5L1 9" fill="none" stroke="context-stroke"
+                stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </marker>
+          </defs>
+
+          <!-- Axes -->
+          <line x1="100" y1="230" x2="700" y2="230" stroke="#C8C6BE" stroke-width="1.5" marker-end="url(#ch17-arr2)"/>
+          <line x1="100" y1="230" x2="100" y2="40" stroke="#C8C6BE" stroke-width="1.5" marker-end="url(#ch17-arr2)"/>
+
+          <!-- Axis labels -->
+          <text x="400" y="262" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#5C5B56">Pre-training Dataset Size →</text>
+          <text x="55" y="140" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#5C5B56" transform="rotate(-90, 55, 140)">ImageNet Accuracy →</text>
+
+          <!-- Dataset markers on x-axis -->
+          <text x="180" y="248" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">ImageNet</text>
+          <text x="180" y="260" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">1.3M</text>
+          <text x="370" y="248" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">ImageNet-21k</text>
+          <text x="370" y="260" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">14M</text>
+          <text x="580" y="248" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">JFT-300M</text>
+          <text x="580" y="260" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">300M</text>
+
+          <!-- CNN curve (coral) — starts higher, plateaus -->
+          <path d="M180 130 Q275 90 370 80 Q475 72 580 68" fill="none" stroke="#993C1D" stroke-width="2.5"/>
+          <circle cx="180" cy="130" r="4" fill="#993C1D"/>
+          <circle cx="370" cy="80" r="4" fill="#993C1D"/>
+          <circle cx="580" cy="68" r="4" fill="#993C1D"/>
+          <text x="610" y="72" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#993C1D">CNN</text>
+
+          <!-- ViT curve (purple) — starts lower, overtakes -->
+          <path d="M180 170 Q275 110 370 78 Q475 58 580 48" fill="none" stroke="#534AB7" stroke-width="2.5"/>
+          <circle cx="180" cy="170" r="4" fill="#534AB7"/>
+          <circle cx="370" cy="78" r="4" fill="#534AB7"/>
+          <circle cx="580" cy="48" r="4" fill="#534AB7"/>
+          <text x="610" y="52" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#534AB7">ViT</text>
+
+          <!-- Crossover annotation -->
+          <line x1="330" y1="80" x2="330" y2="40" stroke="#854F0B" stroke-width="1" stroke-dasharray="4 3"/>
+          <text x="330" y="35" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#854F0B">crossover point</text>
+
+          <!-- Region labels -->
+          <rect x="130" y="185" width="110" height="28" rx="4" fill="#FAECE7" stroke="#F0997B" stroke-width="1"/>
+          <text x="185" y="203" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#993C1D">CNN wins</text>
+
+          <rect x="480" y="85" width="110" height="28" rx="4" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1"/>
+          <text x="535" y="103" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#534AB7">ViT wins</text>
+        </svg>
+        <figcaption>Figure 17.2 — ViT vs CNN performance across data regimes. On small datasets (ImageNet-1k), CNNs outperform ViTs thanks to built-in spatial inductive biases. At scale (JFT-300M), ViTs overtake CNNs — their unrestricted attention can learn richer spatial relationships given sufficient data. The crossover occurs around 10-30M images.</figcaption>
+      </figure>
+
+      <h3>Scaling to 22 billion parameters</h3>
+
+      <p>Google's ViT-22B (2023) demonstrated that vision transformers scale like language models. At 22 billion parameters, it required two key engineering innovations: <strong>QK normalization</strong> (normalizing query and key vectors before computing attention scores to prevent training instability) and <strong>asynchronous parallel linear operations</strong> (overlapping the QKV projection and feed-forward computation across devices). ViT-22B achieved state-of-the-art results across ImageNet, fairness benchmarks, and multimodal tasks, confirming that the scaling laws observed in language transformers transfer directly to vision.</p>
+
+      <h3>The 2025 consensus: ViT vs CNN</h3>
+
+      <p>By 2025 the debate has largely settled. ViTs dominate at scale: every major foundation model for vision (CLIP, SigLIP, DINOv2, DINOv3) uses a ViT backbone. CNNs remain competitive for edge deployment (smaller compute budgets, fixed-size inputs) and domains with limited data (medical imaging, industrial inspection). In practice, <strong>hybrid architectures</strong> like ConvNeXt (a CNN redesigned with transformer-era training recipes) and CoAtNet (CNN early stages + transformer late stages) often provide the best accuracy-compute tradeoff. The key lesson: ViT's advantage comes from its flexibility and scalability, not from any inherent architectural superiority on small problems.</p>
+    </section>
+
+    <!-- ================================================================== -->
+    <!-- SECTION 3: DeiT -->
+    <!-- ================================================================== -->
+    <section class="chapter-section" id="deit">
+      <h2>DeiT: Data-Efficient Image Transformers</h2>
+
+      <p>ViT's dependence on JFT-300M was a practical barrier — few researchers have access to 300 million labeled images. Touvron et al. (2021) showed that with the right training recipe, ViT can match CNN performance using only ImageNet-1k. The key ingredient is <strong>knowledge distillation</strong> from a strong CNN teacher.</p>
+
+      <h3>The distillation token</h3>
+
+      <p>DeiT introduces a second special token alongside [CLS]: a <strong>distillation token</strong>. While [CLS] is trained against the ground-truth label via cross-entropy, the distillation token is trained to match the output of a pre-trained CNN teacher (typically a RegNet). Both tokens attend to all patches and to each other, but they learn different things — the [CLS] token learns to classify directly, while the distillation token learns to mimic the teacher's behavior. At test time, the two predictions are averaged. This dual-token design outperforms standard knowledge distillation (which applies a single soft-target loss to the [CLS] output).</p>
+
+      <h3>Strong augmentation and regularization</h3>
+
+      <p>DeiT's training recipe is equally important. It combines <strong>RandAugment</strong> (random combinations of image transformations), <strong>MixUp</strong> (convex combinations of image pairs and their labels), <strong>CutMix</strong> (replacing a rectangular region of one image with another), <strong>random erasing</strong>, <strong>stochastic depth</strong> (randomly dropping transformer layers during training), and <strong>repeated augmentation</strong> (multiple augmented views of the same image in one batch). This heavy regularization compensates for ViT's lack of inductive biases, enabling it to learn from limited data without overfitting.</p>
+
+      <h3>DeiT-III</h3>
+
+      <p>DeiT-III (Touvron et al., 2022) refined the recipe further: a 3-augmentation strategy replacing the kitchen-sink approach, longer training schedules (400-800 epochs), and LayerScale (per-channel learnable scaling of each residual block's output). DeiT-III ViT-L/16 achieves 87.7% top-1 on ImageNet without any external data, competitive with models trained on far larger datasets. The lesson of DeiT is that architecture is only half the story — training methodology can close the gap that data volume was supposed to fill.</p>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 240" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="ch17-arr3" viewBox="0 0 10 10" refX="9" refY="5"
+              markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+              <path d="M1 1L9 5L1 9" fill="none" stroke="context-stroke"
+                stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </marker>
+          </defs>
+
+          <!-- Input patches -->
+          <rect x="30" y="80" width="80" height="40" rx="6" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1.5"/>
+          <text x="70" y="104" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#0F6E56">Patches</text>
+
+          <line x1="110" y1="100" x2="140" y2="100" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch17-arr3)"/>
+
+          <!-- Token sequence -->
+          <rect x="145" y="50" width="40" height="30" rx="4" fill="#534AB7" stroke="#534AB7"/>
+          <text x="165" y="69" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="500" fill="#FFFFFF">CLS</text>
+
+          <rect x="145" y="85" width="40" height="30" rx="4" fill="#854F0B" stroke="#854F0B"/>
+          <text x="165" y="104" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="500" fill="#FFFFFF">DIST</text>
+
+          <rect x="145" y="120" width="40" height="30" rx="4" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1"/>
+          <text x="165" y="139" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#534AB7">z₁..zₙ</text>
+
+          <line x1="190" y1="100" x2="220" y2="100" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch17-arr3)"/>
+
+          <!-- Transformer -->
+          <rect x="225" y="55" width="130" height="90" rx="8" fill="#EEEDFE" stroke="#534AB7" stroke-width="1.5"/>
+          <text x="290" y="95" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#534AB7">Transformer</text>
+          <text x="290" y="113" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">Encoder</text>
+
+          <!-- Two output branches -->
+          <line x1="355" y1="80" x2="400" y2="55" stroke="#534AB7" stroke-width="1.5" marker-end="url(#ch17-arr3)"/>
+          <line x1="355" y1="120" x2="400" y2="145" stroke="#854F0B" stroke-width="1.5" marker-end="url(#ch17-arr3)"/>
+
+          <!-- CLS head -->
+          <rect x="405" y="35" width="110" height="40" rx="6" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1"/>
+          <text x="460" y="52" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#534AB7">[CLS] output</text>
+          <text x="460" y="66" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#9C9A94">→ ground truth</text>
+
+          <!-- Dist head -->
+          <rect x="405" y="130" width="110" height="40" rx="6" fill="#FAEEDA" stroke="#EF9F27" stroke-width="1"/>
+          <text x="460" y="147" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#854F0B">[DIST] output</text>
+          <text x="460" y="161" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#9C9A94">→ teacher logits</text>
+
+          <!-- Loss arrows -->
+          <line x1="515" y1="55" x2="555" y2="55" stroke="#534AB7" stroke-width="1.5" marker-end="url(#ch17-arr3)"/>
+          <line x1="515" y1="150" x2="555" y2="150" stroke="#854F0B" stroke-width="1.5" marker-end="url(#ch17-arr3)"/>
+
+          <!-- Losses -->
+          <rect x="560" y="38" width="100" height="34" rx="6" fill="#FAECE7" stroke="#F0997B" stroke-width="1"/>
+          <text x="610" y="59" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#993C1D">L_CE (hard)</text>
+
+          <rect x="560" y="133" width="100" height="34" rx="6" fill="#FAECE7" stroke="#F0997B" stroke-width="1"/>
+          <text x="610" y="154" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#993C1D">L_KD (soft)</text>
+
+          <!-- Teacher -->
+          <rect x="680" y="118" width="100" height="44" rx="6" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="1"/>
+          <text x="730" y="138" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#5C5B56">CNN</text>
+          <text x="730" y="153" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">Teacher</text>
+
+          <line x1="680" y1="150" x2="663" y2="150" stroke="#C8C6BE" stroke-width="1.5" marker-end="url(#ch17-arr3)"/>
+
+          <!-- Inference note -->
+          <text x="400" y="205" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#5C5B56">Inference: average [CLS] and [DIST] predictions</text>
+        </svg>
+        <figcaption>Figure 17.3 — DeiT's dual-token distillation. The [CLS] token is trained against ground-truth labels (hard cross-entropy), while a separate distillation token is trained to match the CNN teacher's soft logits (knowledge distillation loss). Both tokens attend to all patches throughout the transformer. At inference, their predictions are averaged.</figcaption>
+      </figure>
+    </section>
+
+    <!-- ================================================================== -->
+    <!-- SECTION 4: SELF-SUPERVISED VIT PRE-TRAINING -->
+    <!-- ================================================================== -->
+    <section class="chapter-section" id="self-supervised">
+      <h2>Self-Supervised ViT Pre-Training</h2>
+
+      <p>Supervised pre-training on JFT-300M requires hundreds of millions of labeled images. Self-supervised methods eliminate this requirement entirely, learning powerful visual features from raw images with no human annotation. Two paradigms dominate: <strong>self-distillation</strong> (DINO) and <strong>masked image modeling</strong> (MAE). Each encodes a different inductive bias about what makes a good visual representation.</p>
+
+      <h3>DINO: self-distillation with no labels</h3>
+
+      <p>DINO (Caron et al., 2021) trains a student network and a teacher network on different augmented views of the same image. The teacher is not a separate pre-trained model — it is an <strong>exponential moving average</strong> (EMA) of the student's own weights. Two small crops and two large crops are generated from each image. The student sees all crops; the teacher sees only the large crops. The training objective is to match the student's output distribution to the teacher's:</p>
+
+      $$\mathcal{L}_{\text{DINO}} = -\sum_{x \in \text{teacher crops}} \sum_{x' \in \text{student crops},\, x' \neq x} P_t(x) \log P_s(x')$$
+
+      <p>Here $P_t(x)$ and $P_s(x')$ are probability distributions (vectors in $\mathbb{R}^K$ that sum to 1) obtained by passing the [CLS] output through a projection head and applying a softmax with temperature. The loss is a cross-entropy between the teacher's and student's distributions (both are vectors, and the summation is over the $K$ dimensions plus the crop pairs). Two tricks prevent collapse: <strong>centering</strong> (subtracting the running mean of the teacher's output) and <strong>sharpening</strong> (using a low temperature for the teacher's softmax).</p>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 310" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="ch17-arr4" viewBox="0 0 10 10" refX="9" refY="5"
+              markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+              <path d="M1 1L9 5L1 9" fill="none" stroke="context-stroke"
+                stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </marker>
+          </defs>
+
+          <!-- Image -->
+          <rect x="30" y="120" width="80" height="80" rx="4" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1.5"/>
+          <text x="70" y="165" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#0F6E56">Image</text>
+
+          <!-- Augmentation arrows -->
+          <line x1="110" y1="140" x2="155" y2="80" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch17-arr4)"/>
+          <line x1="110" y1="180" x2="155" y2="230" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch17-arr4)"/>
+
+          <!-- Crop labels -->
+          <text x="143" y="65" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">global + local crops</text>
+          <text x="143" y="255" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">global crops only</text>
+
+          <!-- Student -->
+          <rect x="160" y="55" width="140" height="50" rx="6" fill="#EEEDFE" stroke="#534AB7" stroke-width="1.5"/>
+          <text x="230" y="77" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="500" fill="#534AB7">Student ViT</text>
+          <text x="230" y="94" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">θ_s (gradient ✓)</text>
+
+          <!-- Teacher -->
+          <rect x="160" y="210" width="140" height="50" rx="6" fill="#FAEEDA" stroke="#EF9F27" stroke-width="1.5"/>
+          <text x="230" y="232" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="500" fill="#854F0B">Teacher ViT</text>
+          <text x="230" y="249" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">θ_t = EMA(θ_s)</text>
+
+          <!-- Projection heads -->
+          <line x1="300" y1="80" x2="340" y2="80" stroke="#534AB7" stroke-width="1.5" marker-end="url(#ch17-arr4)"/>
+          <line x1="300" y1="235" x2="340" y2="235" stroke="#854F0B" stroke-width="1.5" marker-end="url(#ch17-arr4)"/>
+
+          <rect x="345" y="62" width="100" height="36" rx="6" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1"/>
+          <text x="395" y="84" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#534AB7">P_s (softmax τ_s)</text>
+
+          <rect x="345" y="217" width="100" height="36" rx="6" fill="#FAEEDA" stroke="#EF9F27" stroke-width="1"/>
+          <text x="395" y="239" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#854F0B">P_t (softmax τ_t)</text>
+
+          <!-- Cross-entropy loss -->
+          <line x1="445" y1="80" x2="510" y2="140" stroke="#534AB7" stroke-width="1.5" marker-end="url(#ch17-arr4)"/>
+          <line x1="445" y1="235" x2="510" y2="175" stroke="#854F0B" stroke-width="1.5" marker-end="url(#ch17-arr4)"/>
+
+          <rect x="515" y="135" width="130" height="50" rx="6" fill="#FAECE7" stroke="#F0997B" stroke-width="1.5"/>
+          <text x="580" y="157" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#993C1D">Cross-Entropy</text>
+          <text x="580" y="174" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">-P_t · log(P_s)</text>
+
+          <!-- Gradient flow -->
+          <line x1="580" y1="135" x2="580" y2="105" stroke="#993C1D" stroke-width="1.5" marker-end="url(#ch17-arr4)"/>
+          <text x="580" y="95" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#993C1D">∇ to student only</text>
+
+          <!-- EMA arrow -->
+          <path d="M230 105 L230 130 Q230 160 200 160 L160 160 Q130 160 130 190 L130 210 L230 210" fill="none" stroke="#854F0B" stroke-width="1.5" stroke-dasharray="5 3" marker-end="url(#ch17-arr4)"/>
+          <text x="100" y="165" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#854F0B">EMA</text>
+
+          <!-- Collapse prevention -->
+          <rect x="660" y="195" width="120" height="60" rx="6" fill="#FFFFFF" stroke="#E5E3DC" stroke-width="1"/>
+          <text x="720" y="213" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#1A1A18">Collapse prevention</text>
+          <text x="720" y="228" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#5C5B56">• centering</text>
+          <text x="720" y="243" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#5C5B56">• sharpening (low τ_t)</text>
+
+          <line x1="445" y1="240" x2="657" y2="240" stroke="#E5E3DC" stroke-width="1" stroke-dasharray="3 3"/>
+        </svg>
+        <figcaption>Figure 17.4 — DINO self-distillation. Student and teacher are both ViTs; the teacher's weights are an exponential moving average of the student. The student processes all crops (global + local); the teacher sees only global crops. The cross-entropy loss updates only the student — gradients never flow through the teacher. Centering and sharpening prevent representation collapse.</figcaption>
+      </figure>
+
+      <p>The remarkable finding: DINO's self-attention maps spontaneously learn to segment foreground objects from background, without any segmentation labels or supervision. The [CLS] token's attention to individual patches forms a near-perfect saliency map. This emergent behavior suggests that the combination of multi-crop training and self-distillation forces the model to learn semantically meaningful spatial features.</p>
+
+      <h3>iBOT: combining DINO with masked image modeling</h3>
+
+      <p><strong>iBOT</strong> (Zhou et al., 2022) extends DINO by adding a masked image modeling objective alongside the self-distillation loss. The student receives an image with some patches masked; it must predict the teacher's patch-level representations for the masked positions. This combines DINO's global self-distillation (on the [CLS] token) with local patch-level prediction, producing features that are strong for both image-level classification and dense prediction tasks like segmentation.</p>
+
+      <h3>MAE: masked autoencoders</h3>
+
+      <p>While DINO learns by matching views, MAE (He et al., 2022) learns by reconstruction. The idea is borrowed directly from masked language modeling in BERT: mask out a large fraction of input patches, encode the visible ones, then decode to reconstruct the masked patches in pixel space.</p>
+
+      <p>The critical design choice is the <strong>masking ratio</strong>: MAE masks 75% of patches — far more than BERT's 15% masking ratio for text. Why so much? Images are highly redundant: neighboring patches contain similar information, so masking 15% leaves enough context to reconstruct without understanding semantics. At 75% masking, the model must reason about high-level structure — object shapes, scene layout, semantic categories — to fill in the blanks.</p>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 260" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="ch17-arr5" viewBox="0 0 10 10" refX="9" refY="5"
+              markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+              <path d="M1 1L9 5L1 9" fill="none" stroke="context-stroke"
+                stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </marker>
+          </defs>
+
+          <!-- Original image grid (4x4 for illustration, representing 14x14) -->
+          <text x="85" y="30" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#1A1A18">Original Patches</text>
+          <!-- 4x4 grid, each cell 28x28, starting at x=29, y=40 -->
+          <rect x="29" y="40" width="28" height="28" rx="2" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <rect x="59" y="40" width="28" height="28" rx="2" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <rect x="89" y="40" width="28" height="28" rx="2" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <rect x="119" y="40" width="28" height="28" rx="2" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <rect x="29" y="70" width="28" height="28" rx="2" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <rect x="59" y="70" width="28" height="28" rx="2" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <rect x="89" y="70" width="28" height="28" rx="2" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <rect x="119" y="70" width="28" height="28" rx="2" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <rect x="29" y="100" width="28" height="28" rx="2" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <rect x="59" y="100" width="28" height="28" rx="2" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <rect x="89" y="100" width="28" height="28" rx="2" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <rect x="119" y="100" width="28" height="28" rx="2" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <rect x="29" y="130" width="28" height="28" rx="2" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <rect x="59" y="130" width="28" height="28" rx="2" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <rect x="89" y="130" width="28" height="28" rx="2" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <rect x="119" y="130" width="28" height="28" rx="2" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+
+          <!-- Arrow: mask 75% -->
+          <line x1="155" y1="100" x2="185" y2="100" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch17-arr5)"/>
+          <text x="170" y="85" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#993C1D">mask</text>
+          <text x="170" y="120" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#993C1D">75%</text>
+
+          <!-- Masked grid: 4 visible (teal), 12 masked (gray) -->
+          <text x="255" y="30" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#1A1A18">After Masking</text>
+          <rect x="199" y="40" width="28" height="28" rx="2" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="1"/>
+          <rect x="229" y="40" width="28" height="28" rx="2" fill="#E1F5EE" stroke="#0F6E56" stroke-width="1.5"/>
+          <rect x="259" y="40" width="28" height="28" rx="2" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="1"/>
+          <rect x="289" y="40" width="28" height="28" rx="2" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="1"/>
+          <rect x="199" y="70" width="28" height="28" rx="2" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="1"/>
+          <rect x="229" y="70" width="28" height="28" rx="2" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="1"/>
+          <rect x="259" y="70" width="28" height="28" rx="2" fill="#E1F5EE" stroke="#0F6E56" stroke-width="1.5"/>
+          <rect x="289" y="70" width="28" height="28" rx="2" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="1"/>
+          <rect x="199" y="100" width="28" height="28" rx="2" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="1"/>
+          <rect x="229" y="100" width="28" height="28" rx="2" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="1"/>
+          <rect x="259" y="100" width="28" height="28" rx="2" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="1"/>
+          <rect x="289" y="100" width="28" height="28" rx="2" fill="#E1F5EE" stroke="#0F6E56" stroke-width="1.5"/>
+          <rect x="199" y="130" width="28" height="28" rx="2" fill="#E1F5EE" stroke="#0F6E56" stroke-width="1.5"/>
+          <rect x="229" y="130" width="28" height="28" rx="2" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="1"/>
+          <rect x="259" y="130" width="28" height="28" rx="2" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="1"/>
+          <rect x="289" y="130" width="28" height="28" rx="2" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="1"/>
+
+          <!-- Legend for masked grid -->
+          <rect x="199" y="172" width="12" height="12" rx="2" fill="#E1F5EE" stroke="#0F6E56" stroke-width="1"/>
+          <text x="218" y="183" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#5C5B56">Visible (25%)</text>
+          <rect x="289" y="172" width="12" height="12" rx="2" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="1"/>
+          <text x="308" y="183" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#5C5B56">Masked (75%)</text>
+
+          <!-- Arrow to encoder -->
+          <line x1="322" y1="100" x2="355" y2="100" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch17-arr5)"/>
+
+          <!-- Encoder (small, only visible patches) -->
+          <rect x="360" y="60" width="110" height="80" rx="6" fill="#EEEDFE" stroke="#534AB7" stroke-width="1.5"/>
+          <text x="415" y="90" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#534AB7">Encoder</text>
+          <text x="415" y="107" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">visible only</text>
+          <text x="415" y="121" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">(25% patches)</text>
+
+          <!-- Arrow to decoder -->
+          <line x1="470" y1="100" x2="503" y2="100" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch17-arr5)"/>
+          <text x="487" y="85" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#9C9A94">+ mask</text>
+          <text x="487" y="120" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#9C9A94">tokens</text>
+
+          <!-- Decoder (all patches) -->
+          <rect x="508" y="60" width="110" height="80" rx="6" fill="#FAEEDA" stroke="#EF9F27" stroke-width="1.5"/>
+          <text x="563" y="90" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#854F0B">Decoder</text>
+          <text x="563" y="107" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">all patches</text>
+          <text x="563" y="121" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">(lightweight)</text>
+
+          <!-- Arrow to reconstruction -->
+          <line x1="618" y1="100" x2="648" y2="100" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch17-arr5)"/>
+
+          <!-- Reconstructed grid -->
+          <text x="720" y="30" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#1A1A18">Reconstructed</text>
+          <rect x="654" y="40" width="28" height="28" rx="2" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="1"/>
+          <rect x="684" y="40" width="28" height="28" rx="2" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <rect x="714" y="40" width="28" height="28" rx="2" fill="#FAECE7" stroke="#F0997B" stroke-width="1"/>
+          <rect x="744" y="40" width="28" height="28" rx="2" fill="#FAECE7" stroke="#F0997B" stroke-width="1"/>
+          <rect x="654" y="70" width="28" height="28" rx="2" fill="#FAECE7" stroke="#F0997B" stroke-width="1"/>
+          <rect x="684" y="70" width="28" height="28" rx="2" fill="#FAECE7" stroke="#F0997B" stroke-width="1"/>
+          <rect x="714" y="70" width="28" height="28" rx="2" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <rect x="744" y="70" width="28" height="28" rx="2" fill="#FAECE7" stroke="#F0997B" stroke-width="1"/>
+          <rect x="654" y="100" width="28" height="28" rx="2" fill="#FAECE7" stroke="#F0997B" stroke-width="1"/>
+          <rect x="684" y="100" width="28" height="28" rx="2" fill="#FAECE7" stroke="#F0997B" stroke-width="1"/>
+          <rect x="714" y="100" width="28" height="28" rx="2" fill="#FAECE7" stroke="#F0997B" stroke-width="1"/>
+          <rect x="744" y="100" width="28" height="28" rx="2" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <rect x="654" y="130" width="28" height="28" rx="2" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <rect x="684" y="130" width="28" height="28" rx="2" fill="#FAECE7" stroke="#F0997B" stroke-width="1"/>
+          <rect x="714" y="130" width="28" height="28" rx="2" fill="#FAECE7" stroke="#F0997B" stroke-width="1"/>
+          <rect x="744" y="130" width="28" height="28" rx="2" fill="#FAECE7" stroke="#F0997B" stroke-width="1"/>
+
+          <rect x="654" y="172" width="12" height="12" rx="2" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="673" y="183" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#5C5B56">Original</text>
+          <rect x="724" y="172" width="12" height="12" rx="2" fill="#FAECE7" stroke="#F0997B" stroke-width="1"/>
+          <text x="743" y="183" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#5C5B56">Predicted</text>
+
+          <!-- MSE loss -->
+          <text x="720" y="210" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#993C1D">MSE loss on masked patches only</text>
+
+          <!-- Efficiency annotation -->
+          <rect x="360" y="200" width="258" height="40" rx="6" fill="#FFFFFF" stroke="#E5E3DC" stroke-width="1"/>
+          <text x="489" y="217" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#534AB7">Key efficiency: encoder processes only 25% of patches</text>
+          <text x="489" y="232" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">4× faster than encoding the full image</text>
+        </svg>
+        <figcaption>Figure 17.5 — MAE architecture. 75% of patches are randomly masked. The encoder (a large ViT) processes only the 25% visible patches — a 4× computational saving. Mask tokens are inserted before the lightweight decoder, which reconstructs pixel values for all patches. MSE loss is computed only on the masked patches, forcing the encoder to learn semantic features rather than memorize local texture.</figcaption>
+      </figure>
+
+      <p>The <strong>asymmetric encoder-decoder</strong> design is critical for efficiency. The encoder — which is the large, expensive ViT — processes only the 25% of visible patches. Learnable mask tokens are inserted only before the decoder, which is shallow (typically 8 transformer layers vs. 24 in the encoder). This means pre-training runs about 3-4× faster than encoding the full image.</p>
+
+      <p>Here is a simplified implementation of MAE's masking and encoding pipeline.</p>
+
+<pre><code class="language-python">
+import torch
+import torch.nn as nn
+
+class MAEEncoder(nn.Module):
+    """Simplified MAE: random masking + encoder on visible patches only."""
+    def __init__(self, img_size=224, patch_size=16, d_model=768,
+                 mask_ratio=0.75):
+        super().__init__()
+        self.n_patches = (img_size // patch_size) ** 2   # 196
+        self.mask_ratio = mask_ratio
+        self.n_visible = int(self.n_patches * (1 - mask_ratio))  # 49
+
+        # Patch embedding (same as ViT)
+        self.patch_embed = nn.Conv2d(
+            3, d_model, kernel_size=patch_size, stride=patch_size
+        )
+        self.pos_embed = nn.Parameter(
+            torch.randn(1, self.n_patches, d_model)      # (1, 196, d_model)
+        )
+
+        # Encoder: standard transformer layers (simplified as LayerNorm + identity)
+        self.encoder = nn.TransformerEncoder(
+            nn.TransformerEncoderLayer(
+                d_model=d_model, nhead=12, dim_feedforward=3072,
+                batch_first=True, norm_first=True
+            ),
+            num_layers=12
+        )
+
+    def random_masking(self, x):
+        """
+        Random masking: keep only (1-mask_ratio) patches.
+        Args:
+            x: (batch, n_patches, d_model) — all patch embeddings
+        Returns:
+            visible: (batch, n_visible, d_model)
+            mask: (batch, n_patches) — 0=visible, 1=masked
+            ids_restore: (batch, n_patches) — for unshuffling later
+        """
+        B, N, D = x.shape
+        n_vis = self.n_visible
+
+        # Random permutation per sample
+        noise = torch.rand(B, N, device=x.device)    # (batch, 196)
+        ids_shuffle = noise.argsort(dim=1)            # (batch, 196)
+        ids_restore = ids_shuffle.argsort(dim=1)      # (batch, 196)
+
+        # Keep first n_vis patches (the ones with smallest random values)
+        ids_keep = ids_shuffle[:, :n_vis]             # (batch, 49)
+        visible = x.gather(
+            1, ids_keep.unsqueeze(-1).expand(-1, -1, D)  # (batch, 49, d_model)
+        )
+
+        # Binary mask: 0=visible, 1=masked
+        mask = torch.ones(B, N, device=x.device)      # (batch, 196)
+        mask.scatter_(1, ids_keep, 0)                  # set visible positions to 0
+
+        return visible, mask, ids_restore
+
+    def forward(self, imgs):
+        # imgs: (batch, 3, 224, 224)
+        x = self.patch_embed(imgs)          # (batch, d_model, 14, 14)
+        x = x.flatten(2).transpose(1, 2)    # (batch, 196, d_model)
+        x = x + self.pos_embed              # (batch, 196, d_model)
+
+        # Mask 75%, encode only visible 25%
+        visible, mask, ids_restore = self.random_masking(x)
+        # visible: (batch, 49, d_model) — only 25% of patches!
+
+        encoded = self.encoder(visible)      # (batch, 49, d_model)
+        return encoded, mask, ids_restore
+
+# Example: encode only 49 out of 196 patches
+mae = MAEEncoder(mask_ratio=0.75)
+imgs = torch.randn(4, 3, 224, 224)         # (batch=4, 3, 224, 224)
+encoded, mask, ids = mae(imgs)
+print(f"Encoded: {encoded.shape}")           # (4, 49, 768) — 4x smaller than full
+print(f"Masked: {mask.sum(1)[0].item():.0f} of {mask.shape[1]} patches")  # 147 of 196
+</code></pre>
+
+      <h3>I-JEPA: predicting in representation space</h3>
+
+      <p>A philosophical critique of MAE: does predicting exact pixel values force the model to waste capacity on low-level texture? <strong>I-JEPA</strong> (Assran et al., 2023) tests this hypothesis by predicting masked patch <em>representations</em> in latent space rather than pixel values. A context encoder processes the visible patches; a predictor network maps from the context representations to predicted target representations; a target encoder (EMA of the context encoder, like DINO's teacher) provides the supervision signal. By operating in representation space, I-JEPA avoids the pressure to reconstruct fine-grained pixel detail and focuses on capturing semantic structure. Its successor <strong>V-JEPA 2</strong> (Meta, 2025) extends this approach to video at massive scale, demonstrating that representation-space prediction scales as effectively as pixel-space reconstruction.</p>
+
+      <div class="callout callout-insight">
+        <div class="callout-title">Key Insight</div>
+        <p>DINO and MAE represent two extremes of self-supervised ViT training. DINO operates entirely in representation space — it never reconstructs pixels. MAE operates entirely in pixel space — it reconstructs the raw image. I-JEPA occupies the middle ground: it uses masking like MAE but predicts in representation space like DINO. DINOv2 (and its successor DINOv3) combine both approaches, using DINO's self-distillation loss alongside iBOT's masked prediction loss.</p>
+      </div>
+    </section>
+
+    <!-- ================================================================== -->
+    <!-- SECTION 5: DINOv2 -->
+    <!-- ================================================================== -->
+    <section class="chapter-section" id="dinov2">
+      <h2>DINOv2</h2>
+
+      <p>DINO produces beautiful attention maps. MAE produces strong fine-tuning performance. The question was whether a single model could do both — and do both well enough to serve as a <strong>universal visual feature extractor</strong>, replacing task-specific pre-training entirely. DINOv2 (Oquab et al., 2023) answered yes.</p>
+
+      <h3>Curated data at scale</h3>
+
+      <p>DINOv2's first innovation is its training data. Rather than using raw internet scrapes, Meta built the <strong>LVD-142M</strong> dataset through a careful curation pipeline: starting from a large uncurated pool, they removed near-duplicates, filtered out memes and text-heavy images, and used self-supervised retrieval to balance the dataset across visual concepts. This curation proved critical — the same model trained on uncurated data performs significantly worse, confirming that data quality matters as much as data quantity for self-supervised learning.</p>
+
+      <h3>Combined objectives</h3>
+
+      <p>DINOv2 combines two losses: the <strong>DINO self-distillation loss</strong> (matching global [CLS] representations across views) and the <strong>iBOT masked prediction loss</strong> (predicting patch-level representations for masked tokens). This dual objective produces features that are simultaneously strong for image-level tasks (classification, retrieval) and dense prediction tasks (segmentation, depth estimation). A ViT-g/14 model with 1.1B parameters achieves state-of-the-art results across all these tasks with a <em>frozen</em> backbone — no fine-tuning needed, just a simple linear probe or lightweight head on top.</p>
+
+      <h3>Register tokens</h3>
+
+      <p>Darcet et al. (ICLR 2024) discovered a subtle artifact in large ViTs including DINOv2: certain patch tokens in low-information background regions develop <strong>anomalously high norms</strong>. These tokens appear to serve as internal "scratch pads" — the model repurposes them for global computations rather than representing local spatial content. This is harmless for classification (the [CLS] token still works fine) but corrupts dense prediction tasks that depend on per-patch features.</p>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 240" xmlns="http://www.w3.org/2000/svg">
+          <!-- Panel headers -->
+          <rect x="20" y="16" width="350" height="34" rx="5" fill="#FAECE7" stroke="#F0997B" stroke-width="1"/>
+          <text x="195" y="38" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="600" fill="#993C1D">Without Registers (Artifacts)</text>
+
+          <rect x="430" y="16" width="350" height="34" rx="5" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="605" y="38" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="600" fill="#0F6E56">With Register Tokens (Clean)</text>
+
+          <!-- Vertical divider -->
+          <line x1="400" y1="10" x2="400" y2="225" stroke="#E5E3DC" stroke-width="1" stroke-dasharray="5 4"/>
+
+          <!-- Left: attention map with artifacts -->
+          <!-- Simulated attention map as grid of colored cells -->
+          <rect x="70" y="65" width="220" height="120" rx="6" fill="#FFFFFF" stroke="#E5E3DC" stroke-width="1"/>
+          <!-- Normal attention (light, low values) -->
+          <rect x="75" y="70" width="25" height="25" rx="2" fill="#EEEDFE" stroke="none"/>
+          <rect x="102" y="70" width="25" height="25" rx="2" fill="#EEEDFE" stroke="none"/>
+          <rect x="129" y="70" width="25" height="25" rx="2" fill="#EEEDFE" stroke="none"/>
+          <rect x="156" y="70" width="25" height="25" rx="2" fill="#AFA9EC" stroke="none"/>
+          <rect x="183" y="70" width="25" height="25" rx="2" fill="#EEEDFE" stroke="none"/>
+          <rect x="210" y="70" width="25" height="25" rx="2" fill="#EEEDFE" stroke="none"/>
+          <rect x="237" y="70" width="25" height="25" rx="2" fill="#EEEDFE" stroke="none"/>
+          <rect x="264" y="70" width="25" height="25" rx="2" fill="#EEEDFE" stroke="none"/>
+          <!-- Row 2 -->
+          <rect x="75" y="97" width="25" height="25" rx="2" fill="#EEEDFE" stroke="none"/>
+          <rect x="102" y="97" width="25" height="25" rx="2" fill="#AFA9EC" stroke="none"/>
+          <rect x="129" y="97" width="25" height="25" rx="2" fill="#534AB7" stroke="none"/>
+          <rect x="156" y="97" width="25" height="25" rx="2" fill="#534AB7" stroke="none"/>
+          <rect x="183" y="97" width="25" height="25" rx="2" fill="#AFA9EC" stroke="none"/>
+          <rect x="210" y="97" width="25" height="25" rx="2" fill="#EEEDFE" stroke="none"/>
+          <rect x="237" y="97" width="25" height="25" rx="2" fill="#EEEDFE" stroke="none"/>
+          <rect x="264" y="97" width="25" height="25" rx="2" fill="#EEEDFE" stroke="none"/>
+          <!-- Row 3: artifacts (red hot spots in background) -->
+          <rect x="75" y="124" width="25" height="25" rx="2" fill="#993C1D" stroke="none"/>
+          <rect x="102" y="124" width="25" height="25" rx="2" fill="#EEEDFE" stroke="none"/>
+          <rect x="129" y="124" width="25" height="25" rx="2" fill="#AFA9EC" stroke="none"/>
+          <rect x="156" y="124" width="25" height="25" rx="2" fill="#AFA9EC" stroke="none"/>
+          <rect x="183" y="124" width="25" height="25" rx="2" fill="#EEEDFE" stroke="none"/>
+          <rect x="210" y="124" width="25" height="25" rx="2" fill="#EEEDFE" stroke="none"/>
+          <rect x="237" y="124" width="25" height="25" rx="2" fill="#993C1D" stroke="none"/>
+          <rect x="264" y="124" width="25" height="25" rx="2" fill="#EEEDFE" stroke="none"/>
+          <!-- Row 4 -->
+          <rect x="75" y="151" width="25" height="25" rx="2" fill="#EEEDFE" stroke="none"/>
+          <rect x="102" y="151" width="25" height="25" rx="2" fill="#EEEDFE" stroke="none"/>
+          <rect x="129" y="151" width="25" height="25" rx="2" fill="#EEEDFE" stroke="none"/>
+          <rect x="156" y="151" width="25" height="25" rx="2" fill="#EEEDFE" stroke="none"/>
+          <rect x="183" y="151" width="25" height="25" rx="2" fill="#EEEDFE" stroke="none"/>
+          <rect x="210" y="151" width="25" height="25" rx="2" fill="#993C1D" stroke="none"/>
+          <rect x="237" y="151" width="25" height="25" rx="2" fill="#EEEDFE" stroke="none"/>
+          <rect x="264" y="151" width="25" height="25" rx="2" fill="#EEEDFE" stroke="none"/>
+
+          <!-- Artifact labels -->
+          <text x="75" y="195" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#993C1D">↑ high-norm artifacts in background</text>
+
+          <!-- Right: clean attention map with registers -->
+          <rect x="480" y="65" width="220" height="120" rx="6" fill="#FFFFFF" stroke="#E5E3DC" stroke-width="1"/>
+          <!-- Clean attention (smooth, no artifacts) -->
+          <rect x="485" y="70" width="25" height="25" rx="2" fill="#EEEDFE" stroke="none"/>
+          <rect x="512" y="70" width="25" height="25" rx="2" fill="#EEEDFE" stroke="none"/>
+          <rect x="539" y="70" width="25" height="25" rx="2" fill="#EEEDFE" stroke="none"/>
+          <rect x="566" y="70" width="25" height="25" rx="2" fill="#AFA9EC" stroke="none"/>
+          <rect x="593" y="70" width="25" height="25" rx="2" fill="#EEEDFE" stroke="none"/>
+          <rect x="620" y="70" width="25" height="25" rx="2" fill="#EEEDFE" stroke="none"/>
+          <rect x="647" y="70" width="25" height="25" rx="2" fill="#EEEDFE" stroke="none"/>
+          <rect x="674" y="70" width="25" height="25" rx="2" fill="#EEEDFE" stroke="none"/>
+          <rect x="485" y="97" width="25" height="25" rx="2" fill="#EEEDFE" stroke="none"/>
+          <rect x="512" y="97" width="25" height="25" rx="2" fill="#AFA9EC" stroke="none"/>
+          <rect x="539" y="97" width="25" height="25" rx="2" fill="#534AB7" stroke="none"/>
+          <rect x="566" y="97" width="25" height="25" rx="2" fill="#534AB7" stroke="none"/>
+          <rect x="593" y="97" width="25" height="25" rx="2" fill="#AFA9EC" stroke="none"/>
+          <rect x="620" y="97" width="25" height="25" rx="2" fill="#EEEDFE" stroke="none"/>
+          <rect x="647" y="97" width="25" height="25" rx="2" fill="#EEEDFE" stroke="none"/>
+          <rect x="674" y="97" width="25" height="25" rx="2" fill="#EEEDFE" stroke="none"/>
+          <rect x="485" y="124" width="25" height="25" rx="2" fill="#EEEDFE" stroke="none"/>
+          <rect x="512" y="124" width="25" height="25" rx="2" fill="#EEEDFE" stroke="none"/>
+          <rect x="539" y="124" width="25" height="25" rx="2" fill="#AFA9EC" stroke="none"/>
+          <rect x="566" y="124" width="25" height="25" rx="2" fill="#AFA9EC" stroke="none"/>
+          <rect x="593" y="124" width="25" height="25" rx="2" fill="#EEEDFE" stroke="none"/>
+          <rect x="620" y="124" width="25" height="25" rx="2" fill="#EEEDFE" stroke="none"/>
+          <rect x="647" y="124" width="25" height="25" rx="2" fill="#EEEDFE" stroke="none"/>
+          <rect x="674" y="124" width="25" height="25" rx="2" fill="#EEEDFE" stroke="none"/>
+          <rect x="485" y="151" width="25" height="25" rx="2" fill="#EEEDFE" stroke="none"/>
+          <rect x="512" y="151" width="25" height="25" rx="2" fill="#EEEDFE" stroke="none"/>
+          <rect x="539" y="151" width="25" height="25" rx="2" fill="#EEEDFE" stroke="none"/>
+          <rect x="566" y="151" width="25" height="25" rx="2" fill="#EEEDFE" stroke="none"/>
+          <rect x="593" y="151" width="25" height="25" rx="2" fill="#EEEDFE" stroke="none"/>
+          <rect x="620" y="151" width="25" height="25" rx="2" fill="#EEEDFE" stroke="none"/>
+          <rect x="647" y="151" width="25" height="25" rx="2" fill="#EEEDFE" stroke="none"/>
+          <rect x="674" y="151" width="25" height="25" rx="2" fill="#EEEDFE" stroke="none"/>
+
+          <!-- Register tokens annotation -->
+          <text x="590" y="195" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#0F6E56">✓ clean attention — registers absorb bookkeeping</text>
+
+          <!-- Register tokens illustration -->
+          <rect x="720" y="80" width="50" height="90" rx="4" fill="#E6F1FB" stroke="#85B7EB" stroke-width="1.5"/>
+          <text x="745" y="105" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="500" fill="#185FA5">REG</text>
+          <text x="745" y="120" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="500" fill="#185FA5">REG</text>
+          <text x="745" y="135" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="500" fill="#185FA5">REG</text>
+          <text x="745" y="150" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="500" fill="#185FA5">REG</text>
+        </svg>
+        <figcaption>Figure 17.6 — Register tokens fix attention artifacts in large ViTs. Without registers (left), high-norm artifact tokens (red) appear in low-information background regions, corrupting dense prediction. With register tokens (right), extra learnable tokens (blue, appended to the sequence) absorb the model's internal bookkeeping, producing clean per-patch features. The effect only appears in ViT-L and larger models.</figcaption>
+      </figure>
+
+      <p>The fix is elegant: append a small number (typically 4) of extra learnable <strong>register tokens</strong> to the input sequence. These tokens have no spatial meaning — they exist solely to give the model a place to perform global computations without hijacking spatial patch tokens. After training, the register tokens are simply discarded for dense prediction tasks. DINOv2 models with registers are now the standard variant released by Meta.</p>
+    </section>
+
+    <!-- ================================================================== -->
+    <!-- SECTION 6: DINOv3 AND BEYOND -->
+    <!-- ================================================================== -->
+    <section class="chapter-section" id="dinov3-beyond">
+      <h2>DINOv3 and Beyond</h2>
+
+      <p>DINOv2 established that a single self-supervised ViT could serve as a universal feature extractor. The 2025-2026 landscape extends this story in three directions: scaling the DINO recipe to its limits, showing that autoregressive pre-training works for vision too, and unifying vision and language training in a single encoder.</p>
+
+      <h3>DINOv3</h3>
+
+      <p>Meta released <strong>DINOv3</strong> in August 2025 as the culmination of the DINO lineage. Three key innovations distinguish it from DINOv2. First, <strong>Gram Anchoring</strong>: a new loss term that regularizes the second-order correlations (Gram matrices) of patch features during training. Without this, dense feature quality degrades during long training schedules — a known but previously unsolved problem. Gram Anchoring explicitly prevents this degradation by penalizing drift in the correlation structure of patch representations.</p>
+
+      <p>Second, <strong>massive scale</strong>: DINOv3 trains a 7-billion-parameter ViT teacher on 1.7 billion images (vs. DINOv2's 142 million). Third, a <strong>high-resolution training stage</strong> specifically optimized for dense prediction tasks. The result: +6 mIoU over DINOv2 on ADE20K segmentation, 88.4% ImageNet top-1 (fine-tuned), and exceptional out-of-distribution robustness — 91.1% on ImageNet-R and 86.9% on ImageNet-Adversarial. Models from 21M to 7B parameters are all open-sourced.</p>
+
+      <h3>AIMv2: autoregressive image modeling</h3>
+
+      <p>Apple's <strong>AIMv2</strong> (CVPR 2025 Highlight) demonstrates that vision transformers do not require masking or contrastive objectives at all. Instead, AIMv2 treats image patches as a sequence and predicts them autoregressively — left to right, top to bottom — exactly as a language model predicts the next token. A multimodal decoder jointly generates both raw patches and text tokens, unifying visual and linguistic representation learning. At 3 billion parameters with a frozen trunk, AIMv2 achieves 89.5% ImageNet top-1 and outperforms CLIP, SigLIP, and DINOv2 on several multimodal benchmarks. The message is clear: the ViT architecture is objective-agnostic — it works with contrastive, masked, and autoregressive training alike.</p>
+
+      <h3>SigLIP 2: unified vision-language encoders</h3>
+
+      <p><strong>SigLIP 2</strong> (Google DeepMind, February 2025) unifies multiple training objectives into a single recipe: sigmoid contrastive loss (matching images to text), LocCa decoder-based captioning, self-distillation, and masked prediction. Rather than choosing between contrastive and generative objectives, SigLIP 2 uses all of them. The result outperforms SigLIP at every model scale on zero-shot classification, retrieval, and as a vision-language model backbone. SigLIP 2 has become the default vision encoder for Google's PaliGemma 2 and other production VLMs, cementing the ViT's role as the universal vision backbone for the multimodal era.</p>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 220" xmlns="http://www.w3.org/2000/svg">
+          <!-- Horizontal timeline -->
+          <line x1="40" y1="120" x2="770" y2="120" stroke="#C8C6BE" stroke-width="1.5"/>
+
+          <!-- Year markers -->
+          <text x="100" y="145" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">2020</text>
+          <text x="225" y="145" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">2021</text>
+          <text x="350" y="145" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">2022</text>
+          <text x="475" y="145" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">2023</text>
+          <text x="600" y="145" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">2024</text>
+          <text x="725" y="145" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">2025</text>
+
+          <!-- ViT -->
+          <circle cx="100" cy="120" r="7" fill="#0F6E56" stroke="#E1F5EE" stroke-width="2"/>
+          <text x="100" y="108" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#0F6E56">ViT</text>
+
+          <!-- DINO -->
+          <circle cx="225" cy="120" r="7" fill="#534AB7" stroke="#EEEDFE" stroke-width="2"/>
+          <text x="225" y="108" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#534AB7">DINO</text>
+          <text x="225" y="95" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#9C9A94">self-distillation</text>
+
+          <!-- MAE + iBOT -->
+          <circle cx="350" cy="120" r="7" fill="#534AB7" stroke="#EEEDFE" stroke-width="2"/>
+          <text x="330" y="108" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#534AB7">MAE</text>
+          <text x="330" y="95" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#9C9A94">pixel reconstruction</text>
+
+          <circle cx="375" cy="120" r="5" fill="#AFA9EC" stroke="#EEEDFE" stroke-width="2"/>
+          <text x="395" y="108" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#534AB7">iBOT</text>
+
+          <!-- DINOv2 + I-JEPA -->
+          <circle cx="475" cy="120" r="7" fill="#534AB7" stroke="#EEEDFE" stroke-width="2"/>
+          <text x="455" y="108" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#534AB7">DINOv2</text>
+          <text x="455" y="95" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#9C9A94">DINO + iBOT + data curation</text>
+
+          <circle cx="510" cy="120" r="5" fill="#854F0B" stroke="#FAEEDA" stroke-width="2"/>
+          <text x="530" y="108" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#854F0B">I-JEPA</text>
+
+          <!-- Registers -->
+          <circle cx="600" cy="120" r="5" fill="#185FA5" stroke="#E6F1FB" stroke-width="2"/>
+          <text x="600" y="108" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#185FA5">Registers</text>
+
+          <!-- DINOv3, AIMv2, SigLIP 2 -->
+          <circle cx="700" cy="120" r="7" fill="#534AB7" stroke="#EEEDFE" stroke-width="2"/>
+          <text x="680" y="108" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#534AB7">DINOv3</text>
+          <text x="680" y="95" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#9C9A94">+ Gram Anchoring</text>
+
+          <circle cx="740" cy="120" r="5" fill="#0F6E56" stroke="#E1F5EE" stroke-width="2"/>
+          <text x="750" y="108" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#0F6E56">AIMv2</text>
+
+          <!-- Paradigm labels at bottom -->
+          <rect x="100" y="165" width="140" height="24" rx="4" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1"/>
+          <text x="170" y="181" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#534AB7">Self-distillation era</text>
+
+          <rect x="310" y="165" width="130" height="24" rx="4" fill="#FAEEDA" stroke="#EF9F27" stroke-width="1"/>
+          <text x="375" y="181" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#854F0B">Masked prediction era</text>
+
+          <rect x="510" y="165" width="220" height="24" rx="4" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="620" y="181" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#0F6E56">Unified / multi-objective era</text>
+        </svg>
+        <figcaption>Figure 17.7 — Timeline of self-supervised ViT methods. The field evolved from pure self-distillation (DINO) through masked pixel reconstruction (MAE) to unified approaches that combine multiple objectives (DINOv2, DINOv3). Recent methods like AIMv2 show that even autoregressive objectives work for ViTs, and SigLIP 2 adds vision-language alignment to the mix.</figcaption>
+      </figure>
+
+      <div class="callout callout-insight">
+        <div class="callout-title">Key Insight</div>
+        <p>The ViT architecture is remarkably objective-agnostic. The same transformer encoder produces strong visual features whether trained with contrastive learning (CLIP, SigLIP), self-distillation (DINO), masked reconstruction (MAE), representation prediction (I-JEPA), autoregressive generation (AIM), or combinations of all of these. This flexibility — inherited from the language transformer — is arguably ViT's most important property, more important than any specific architectural choice.</p>
+      </div>
+    </section>
+
+  </article>
+
+  <footer class="chapter-footer">
+    <div class="footer-nav">
+      <a href="ch16.html">← Previous: Evaluating Retrieval and RAG Systems</a>
+      <a href="ch18.html">Next: Hierarchical Vision Transformers →</a>
+    </div>
+  </footer>
+
+</body>
+</html>

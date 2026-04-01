@@ -559,32 +559,76 @@ retrieval systems, and distributed training, with rigorous benchmarking methodol
 - Bits-per-character, bits-per-byte: cross-domain perplexity comparison
 - Why low perplexity does not guarantee good generation
 
-**Classification and reasoning benchmarks**
-- GLUE and SuperGLUE: historical benchmarks, now saturated
-- MMLU (Massive Multitask Language Understanding): 57 subjects, zero/few-shot
-- BIG-Bench and BIG-Bench Hard: 200+ tasks, challenging reasoning
-- HellaSwag, ARC, WinoGrande: commonsense reasoning suite
-- MATH and MATH-500: competition math, chain-of-thought evaluation
-- HumanEval and MBPP: functional code correctness
+**Knowledge and reasoning benchmarks**
+- The saturation cycle: GLUE → SuperGLUE → MMLU, each saturated within 2-4 years
+- MMLU (57 subjects, zero/few-shot): now saturated at 93%+ for frontier models
+- MMLU-Pro (TIGER-AI-Lab, NeurIPS 2024): 12K graduate-level questions, 10 answer choices, 16-33% harder
+- GPQA-Diamond: PhD-level "Google-proof" questions in biology, physics, chemistry
+- Humanity's Last Exam (HLE, Nature 2025): 2,500 questions from 1,000 experts, best model ~45%
+- SimpleQA (OpenAI, 2024): factuality and calibration measurement, targeting hallucination
+- BIG-Bench Hard: 23 hardest tasks from original 200+ task suite
+- HellaSwag, ARC, WinoGrande: commonsense reasoning suite (saturated at frontier)
 
-**Open-ended generation evaluation**
-- MT-Bench: 80 multi-turn questions, GPT-4 as judge
-- AlpacaEval: single-turn instruction following, win rate vs GPT-4
-- HELM (Holistic Evaluation of Language Models): multi-metric, many scenarios
-- Chatbot Arena / LMSYS: pairwise human preference, ELO rating system
-- LLM-as-judge: methodology, biases (verbosity, self-preference), multi-judge consensus
+**Mathematics and formal reasoning benchmarks**
+- MATH and MATH-500: competition math, now saturated at frontier (>90%)
+- AIME 2025: 30 olympiad-level problems, best model at 100%
+- FrontierMath (Epoch AI, 2024): 350 research-level problems, Fields Medalists involved, best ~50%
+- ARC-AGI-2 (2025): abstract visual reasoning, top score 24%
+- ARC-AGI-3 (2026): interactive reasoning, planning, memory -- frontier AI <1%, humans 100%
+
+**Code and software engineering benchmarks**
+- HumanEval and MBPP: historical baselines, now contaminated
+- SWE-bench Verified (Princeton NLP): real GitHub issue resolution, top ~81%
+- LiveCodeBench (ICLR 2025): temporally segmented competitive programming, contamination-resistant
+- MLE-bench (OpenAI, ICLR 2025): 75 Kaggle ML competitions, testing ML engineering skills
+- The pass@k metric: unbiased estimator for code generation evaluation
+
+**Open-ended generation and human preference**
+- MT-Bench: 80 multi-turn questions, LLM-as-judge scoring
+- AlpacaEval 2.0: length-controlled win rates for instruction following
+- Chatbot Arena / LMArena (rebranded Jan 2026): Elo ratings from crowdsourced pairwise comparison
+- Domain-specific arenas: SciArena (Allen AI), BioMedArena (NIH/DataTecnica)
+- WildBench (Allen AI, ICLR 2025): 1,024 real user tasks, 0.98 correlation with Arena
+- GDPval (OpenAI, 2025): 1,320 professional tasks across 44 occupations
+- IFEval: verifiable instruction following with 25 constraint types, multilingual extensions
+- HELM: holistic multi-metric evaluation framework
+
+**LLM-as-judge**
+- Core methodology: single-answer grading, pairwise comparison, reference-based
+- Known biases: verbosity, self-preference, position bias
+- Chain-of-thought judging: improved correlation with human judgments (0.51 → 0.66 Spearman ρ)
+- Multi-agent debate (MAJ-Eval): group deliberation for higher agreement with humans
+- Crowd Comparative Reasoning, Mixture of Prompts (MoPs)
+
+**Agentic evaluation**
+- Why agentic eval differs: multi-step, tool use, environment interaction, trajectory quality
+- GAIA / GAIA-2: multi-step reasoning with web browsing and dynamic environments
+- WebArena (CMU): autonomous web task completion, ~60% success rate
+- Tau-bench / Tau-2 (Sierra Research, ICLR 2025): customer service agents, database state checking
+- BFCL V4 (Berkeley): function calling / tool use leaderboard across languages
+
+**Evaluating reasoning models**
+- The "thinking" model paradigm: o1/o3, DeepSeek R1, Claude extended thinking
+- Why standard benchmarks undercount reasoning ability: variable compute budgets
+- Compute-optimal evaluation: accuracy per dollar/token, same-cost comparisons
+- Chain-of-thought monitorability (OpenAI 2025): monitoring hidden reasoning for safety
+- TTT-Bench (EMNLP 2025): reasoning-specific evaluation
 
 **Safety and alignment evaluation**
 - TruthfulQA: measuring hallucination on adversarial questions
-- BBQ: bias benchmark for question answering
+- BBQ: bias benchmark for question answering across 9 social dimensions
 - Toxicity: Perspective API, ToxiGen
-- Red-teaming: structured adversarial evaluation protocols
-- Constitutional AI self-critique scoring
+- HarmBench: standardized red-teaming with Attack Success Rate (ASR) classifiers
+- ALERT (Babelscape, 2024): 45K instructions, 6 macro / 32 micro safety categories
+- Red-teaming protocols: RedBench (2026), domain-specific (FINBench, SGToxicGuard)
+- Constitutional AI self-critique scoring: self-evaluation against written principles
 
 **Contamination and eval validity**
 - Training data contamination: when benchmarks appear in pre-training data
-- Contamination detection: n-gram overlap, perplexity on benchmark splits
-- Dynamic benchmarks: LiveBench, EvoEval -- continuously updated to resist contamination
+- Contamination detection: n-gram overlap, perplexity analysis, temporal segmentation
+- Case studies: HumanEval contamination, MMLU in training corpora
+- Dynamic benchmarks: LiveBench (monthly updates), LiveCodeBench, EvoEval (transformed variants)
+- Long-context evaluation: HELMET (ICLR 2025) -- synthetic tasks ≠ downstream performance
 - Reproducibility: temperature, system prompt, decoding strategy standardization
 
 ---
@@ -630,8 +674,8 @@ through dense prediction, video understanding, and video generation.*
 **The ViT paper (Dosovitskiy et al., 2020)**
 - Core insight: treat image patches as tokens, apply standard transformer
 - Patch embedding: 16x16 patches, linear projection to d_model
-- Positional embeddings for 2D: 1D learned positions, 2D sinusoidal, interpolation
-- [CLS] token: global representation for classification
+- Positional embeddings for 2D: 1D learned positions, 2D sinusoidal, interpolation at new resolutions
+- [CLS] token: global representation for classification, vs global average pooling
 - ViT-B (86M), ViT-L (307M), ViT-H (632M): scaling configurations
 
 **Why ViT works at scale**
@@ -639,24 +683,40 @@ through dense prediction, video understanding, and video generation.*
 - Advantage on large data: global attention can learn any spatial relationship
 - JFT-300M pre-training: ViT-H/14 beats ResNet152x4 on ImageNet
 - ViT vs CNN comparison across data regimes: when each architecture wins
+- ViT-22B (Google, 2023): scaling to 22B parameters, QK normalization for stability
+- The 2025 consensus: ViTs dominate at scale, CNNs for edge/small data, hybrids (ConvNeXt, CoAtNet) in practice
 
 **DeiT: Data-efficient image transformers**
 - Training ViT without large datasets: knowledge distillation from CNN teacher
-- Distillation token: a separate CLS-like token targeting the teacher
-- Strong augmentation: RandAugment, MixUp, CutMix, random erasing
-- DeiT-III: improved recipes, competitive with larger ViTs
+- Distillation token: a separate CLS-like token targeting the teacher's soft logits
+- Strong augmentation: RandAugment, MixUp, CutMix, random erasing, stochastic depth
+- DeiT-III: refined 3-augmentation strategy, LayerScale, 87.7% ImageNet without external data
 
 **Self-supervised ViT pre-training**
-- DINO (Caron et al., 2021): self-distillation with no labels
-- DINO features: emergent foreground segmentation, excellent k-NN classification
-- iBOT: combining DINO with masked image modeling
+- DINO (Caron et al., 2021): self-distillation with no labels, student-teacher with EMA
+- DINO features: emergent foreground segmentation in attention maps, excellent k-NN classification
+- iBOT: combining DINO self-distillation with masked image modeling for patch-level features
 - MAE (He et al., 2022): masked autoencoder, 75% masking, asymmetric encoder-decoder
-- Why MAE works: high masking ratio forces semantic understanding, not texture
+- Why MAE works: high masking ratio forces semantic understanding, not texture; 4x training speedup
+- I-JEPA (Assran et al., 2023): predict masked representations in latent space, not pixel space
+- V-JEPA 2 (Meta, 2025): extending representation-space prediction to video at massive scale
 
 **DINOv2**
 - Curated dataset: LVD-142M, data curation pipeline removing near-duplicates and memes
-- Self-supervised at scale: DINOv2 features generalize to depth, segmentation, classification
-- Universal visual features: one encoder for many downstream tasks without fine-tuning
+- Combined objectives: DINO self-distillation loss + iBOT masked prediction loss
+- Universal visual features: one encoder for depth, segmentation, classification without fine-tuning
+- Register tokens (Darcet et al., ICLR 2024): fixing high-norm artifact tokens in large ViTs
+  - Problem: background patches hijacked for internal bookkeeping in ViT-L+
+  - Solution: append learnable register tokens to absorb global computations
+
+**DINOv3 and beyond**
+- DINOv3 (Meta, Aug 2025): Gram Anchoring loss, 7B teacher, 1.7B images, +6 mIoU over DINOv2
+  - Gram Anchoring: regularizes second-order feature correlations to prevent dense feature degradation
+  - 88.4% ImageNet fine-tuned, 91.1% ImageNet-R (outstanding OOD robustness)
+- AIMv2 (Apple, CVPR 2025): autoregressive patch prediction (not masked), 89.5% ImageNet frozen at 3B
+  - Multimodal decoder generating both patches and text tokens
+- SigLIP 2 (Google DeepMind, Feb 2025): unified contrastive + captioning + self-distillation + masked prediction
+  - Default vision encoder for PaliGemma 2 and production VLMs
 
 ---
 
