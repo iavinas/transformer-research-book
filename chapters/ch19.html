@@ -1,0 +1,1211 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Chapter 19: Transformers for Detection and Segmentation — Transformer Research Book</title>
+  <link rel="stylesheet" href="../assets/style.css">
+  <link rel="stylesheet" href="../assets/math.css">
+  <link rel="stylesheet" href="../assets/prism.css">
+  <!-- KaTeX for math rendering -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"
+    onload="renderMathInElement(document.body, {
+      delimiters: [
+        {left: '$$', right: '$$', display: true},
+        {left: '$', right: '$', display: false}
+      ]
+    })">
+  </script>
+  <!-- Prism for code blocks -->
+  <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/prism.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-python.min.js"></script>
+</head>
+<body>
+  <nav class="chapter-nav">
+    <a href="../index.html" class="nav-home">← Table of Contents</a>
+    <span class="nav-chapter">Chapter 19</span>
+    <div style="display:flex; align-items:center; gap:1rem;">
+      <button class="theme-toggle" onclick="toggleTheme()" aria-label="Toggle dark mode">
+        <span class="icon-moon">&#9789;</span><span class="icon-sun">&#9788;</span>
+      </button>
+      <a href="ch20.html" class="nav-next">Next Chapter →</a>
+    </div>
+  </nav>
+  <script>
+    function toggleTheme() {
+      document.documentElement.classList.toggle('dark');
+      localStorage.setItem('theme', document.documentElement.classList.contains('dark') ? 'dark' : 'light');
+    }
+    if (localStorage.getItem('theme') === 'dark') document.documentElement.classList.add('dark');
+  </script>
+
+  <article class="chapter">
+
+    <header class="chapter-header">
+      <div class="chapter-number">Chapter 19</div>
+      <h1 class="chapter-title">Transformers for Detection and Segmentation</h1>
+      <p class="chapter-lead">Object detection accumulated a decade of hand-engineered complexity: anchor boxes tuned per dataset, non-maximum suppression thresholds that silently dropped valid predictions, region proposal networks that added an entire subnetwork just to guess where objects might be. In 2020, DETR replaced all of it with a single transformer decoder and a matching loss — proving that detection could be formulated as set prediction. Within five years, that idea evolved into systems that detect objects described in free-form text, segment anything given a single click, and track every instance of a concept across video — all without anchors, NMS, or task-specific post-processing. By the end of this chapter you will understand how each of these systems works, why each architectural decision was made, and how the detection and segmentation lines converged into unified foundation models.</p>
+    </header>
+
+    <!-- ============================================================
+         SECTION 1: DETR
+         ============================================================ -->
+    <section class="chapter-section" id="detr">
+      <h2>DETR: Detection as Set Prediction</h2>
+
+      <p>Before DETR, every competitive object detector was a pipeline. Faster R-CNN generated region proposals, applied RoI pooling, ran a classifier, then filtered duplicates with non-maximum suppression. Each stage had hyperparameters — anchor aspect ratios, NMS IoU thresholds, score cutoffs — that were tuned per dataset and often per object category. The system worked, but it was fragile: change one hyperparameter and the entire downstream pipeline shifted.</p>
+
+      <p>DETR reframed detection as a direct set prediction problem. Given an image, predict a fixed-size set of $N$ detections (typically $N = 100$), where each detection is either an object (class label + bounding box) or a special "no object" token. Because the output is an unordered set, there is no need for anchors to define candidate locations, no need for NMS to remove duplicates, and no need for a region proposal stage at all.</p>
+
+      <h3>Object Queries</h3>
+
+      <p>The core mechanism is a set of $N$ learned embeddings called <strong>object queries</strong>. These are randomly initialized vectors in $\mathbb{R}^d$ that serve as "detection slots." Each query is fed into a transformer decoder, where it cross-attends to the encoder's output — a flattened feature map from a CNN backbone. Through this cross-attention, each query gathers spatial information from the image and specializes to predict a single object or "no object."</p>
+
+      <p>Think of object queries as $N$ detectives assigned to a crime scene. Each detective walks through the scene (cross-attends to image features), forms their own hypothesis about what happened where (predicts a class and box), and then the detectives compare notes with each other (self-attend among queries) to avoid two detectives reporting the same event.</p>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 440" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="ch19-arr" viewBox="0 0 10 10" refX="9" refY="5"
+              markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+              <path d="M1 1L9 5L1 9" fill="none" stroke="context-stroke"
+                stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </marker>
+          </defs>
+
+          <!-- Title: Traditional Pipeline -->
+          <rect x="20" y="12" width="360" height="30" rx="5" fill="#FAECE7" stroke="#F0997B" stroke-width="1"/>
+          <text x="200" y="32" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="600" fill="#993C1D">Traditional: Faster R-CNN Pipeline</text>
+
+          <!-- Title: DETR -->
+          <rect x="420" y="12" width="360" height="30" rx="5" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="600" y="32" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="600" fill="#0F6E56">DETR: End-to-End Set Prediction</text>
+
+          <!-- Vertical divider -->
+          <line x1="400" y1="8" x2="400" y2="430" stroke="#E5E3DC" stroke-width="1" stroke-dasharray="5 4"/>
+
+          <!-- === LEFT PANEL: Faster R-CNN === -->
+          <!-- Image -->
+          <rect x="120" y="62" width="160" height="36" rx="6" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1.5"/>
+          <text x="200" y="85" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="500" fill="#0F6E56">Image</text>
+
+          <line x1="200" y1="98" x2="200" y2="118" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch19-arr)"/>
+
+          <!-- CNN Backbone -->
+          <rect x="100" y="118" width="200" height="40" rx="6" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="1"/>
+          <text x="200" y="143" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="500" fill="#5C5B56">CNN Backbone</text>
+
+          <line x1="200" y1="158" x2="200" y2="178" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch19-arr)"/>
+
+          <!-- RPN -->
+          <rect x="100" y="178" width="200" height="40" rx="6" fill="#FAEEDA" stroke="#EF9F27" stroke-width="1.5"/>
+          <text x="200" y="203" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="500" fill="#854F0B">Region Proposal Network</text>
+
+          <line x1="200" y1="218" x2="200" y2="238" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch19-arr)"/>
+
+          <!-- RoI Pooling -->
+          <rect x="100" y="238" width="200" height="40" rx="6" fill="#FAEEDA" stroke="#EF9F27" stroke-width="1.5"/>
+          <text x="200" y="263" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="500" fill="#854F0B">RoI Pooling + Classifier</text>
+
+          <line x1="200" y1="278" x2="200" y2="298" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch19-arr)"/>
+
+          <!-- NMS -->
+          <rect x="100" y="298" width="200" height="40" rx="6" fill="#FAEEDA" stroke="#EF9F27" stroke-width="1.5"/>
+          <text x="200" y="323" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="500" fill="#854F0B">Non-Maximum Suppression</text>
+
+          <line x1="200" y1="338" x2="200" y2="358" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch19-arr)"/>
+
+          <!-- Output -->
+          <rect x="120" y="358" width="160" height="36" rx="6" fill="#FAECE7" stroke="#F0997B" stroke-width="1.5"/>
+          <text x="200" y="381" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="500" fill="#993C1D">Detections</text>
+
+          <!-- Hand-tuned label -->
+          <text x="320" y="210" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">hand-tuned</text>
+          <text x="320" y="224" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">per dataset</text>
+
+          <!-- === RIGHT PANEL: DETR === -->
+          <!-- Image -->
+          <rect x="520" y="62" width="160" height="36" rx="6" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1.5"/>
+          <text x="600" y="85" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="500" fill="#0F6E56">Image</text>
+
+          <line x1="600" y1="98" x2="600" y2="118" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch19-arr)"/>
+
+          <!-- CNN Backbone -->
+          <rect x="500" y="118" width="200" height="40" rx="6" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="1"/>
+          <text x="600" y="143" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="500" fill="#5C5B56">CNN Backbone</text>
+
+          <line x1="600" y1="158" x2="600" y2="178" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch19-arr)"/>
+
+          <!-- Transformer Encoder -->
+          <rect x="480" y="178" width="240" height="40" rx="6" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <text x="600" y="203" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="500" fill="#534AB7">Transformer Encoder</text>
+
+          <line x1="600" y1="218" x2="600" y2="238" stroke="#534AB7" stroke-width="1.5" marker-end="url(#ch19-arr)"/>
+
+          <!-- Transformer Decoder -->
+          <rect x="480" y="238" width="240" height="52" rx="6" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <text x="600" y="261" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="500" fill="#534AB7">Transformer Decoder</text>
+          <text x="600" y="279" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">N object queries → N predictions</text>
+
+          <!-- Object queries arrow -->
+          <rect x="440" y="250" width="30" height="30" rx="4" fill="#534AB7"/>
+          <text x="455" y="270" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#FFFFFF">Q</text>
+          <line x1="470" y1="265" x2="480" y2="265" stroke="#534AB7" stroke-width="1.5" marker-end="url(#ch19-arr)"/>
+
+          <line x1="600" y1="290" x2="600" y2="310" stroke="#534AB7" stroke-width="1.5" marker-end="url(#ch19-arr)"/>
+
+          <!-- FFN Heads -->
+          <rect x="500" y="310" width="200" height="40" rx="6" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <text x="600" y="335" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="500" fill="#534AB7">FFN Heads (class + box)</text>
+
+          <line x1="600" y1="350" x2="600" y2="370" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch19-arr)"/>
+
+          <!-- Output -->
+          <rect x="520" y="370" width="160" height="36" rx="6" fill="#FAECE7" stroke="#F0997B" stroke-width="1.5"/>
+          <text x="600" y="393" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="500" fill="#993C1D">Detections</text>
+
+          <!-- End-to-end label -->
+          <text x="740" y="260" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#534AB7">end-to-end</text>
+          <text x="740" y="274" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#534AB7">trainable</text>
+        </svg>
+        <figcaption>Figure 19.1 — Traditional detection pipeline (left) requires three hand-tuned stages — region proposals, RoI classification, and NMS — each with dataset-specific hyperparameters. DETR (right) replaces all three with a transformer encoder-decoder and learned object queries, producing detections in a single forward pass with no post-processing.</figcaption>
+      </figure>
+
+      <h3>Bipartite Matching Loss</h3>
+
+      <p>The key question is: if the model outputs $N$ predictions and the image has $M$ objects (with $M \ll N$), how do you assign predictions to ground-truth objects for computing the loss? DETR uses the <strong>Hungarian algorithm</strong> for bipartite matching. We construct an $N \times M$ cost matrix where each entry measures how well prediction $i$ matches ground-truth object $j$, then find the minimum-cost one-to-one assignment:</p>
+
+      $$\hat{\sigma} = \arg\min_{\sigma \in \mathfrak{S}_N} \sum_{i=1}^{N} \mathcal{L}_{\text{match}}(y_i, \hat{y}_{\sigma(i)})$$
+
+      <p>where $\sigma$ is a permutation and $\mathcal{L}_{\text{match}}$ combines classification probability and box distance. The matching cost for each pair is $-\hat{p}_{\sigma(i)}(c_i) + \mathcal{L}_{\text{box}}(b_i, \hat{b}_{\sigma(i)})$ — the model wants high confidence on the correct class and a tight box fit. Predictions not matched to any ground-truth object are assigned to a "no object" class. The box loss itself is a combination of generalized IoU and L1 distance:</p>
+
+      $$\mathcal{L}_{\text{box}} = \lambda_{\text{iou}}\, \mathcal{L}_{\text{GIoU}}(b_i, \hat{b}_{\sigma(i)}) + \lambda_{\text{L1}}\, \|b_i - \hat{b}_{\sigma(i)}\|_1$$
+
+      <p>The GIoU term (generalized intersection over union, $\mathbb{R}^4 \times \mathbb{R}^4 \to \mathbb{R}$, a scalar similarity between two bounding boxes) handles scale invariance, while the L1 term provides a direct regression signal. Because matching is one-to-one, each ground-truth object gets exactly one prediction — no duplicates, no NMS needed.</p>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 310" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="ch19-arr2" viewBox="0 0 10 10" refX="9" refY="5"
+              markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+              <path d="M1 1L9 5L1 9" fill="none" stroke="context-stroke"
+                stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </marker>
+          </defs>
+
+          <!-- Title -->
+          <text x="400" y="28" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="600" fill="#1A1A18">Hungarian Matching: Cost Matrix → Optimal Assignment</text>
+
+          <!-- Cost matrix -->
+          <text x="190" y="58" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#5C5B56">Cost Matrix (N=5 predictions, M=3 objects)</text>
+
+          <!-- Column headers: GT objects -->
+          <text x="170" y="85" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#0F6E56">dog</text>
+          <text x="240" y="85" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#0F6E56">car</text>
+          <text x="310" y="85" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#0F6E56">person</text>
+
+          <!-- Row headers: Predictions -->
+          <text x="90" y="115" text-anchor="end" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#534AB7">pred 1</text>
+          <text x="90" y="150" text-anchor="end" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#534AB7">pred 2</text>
+          <text x="90" y="185" text-anchor="end" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#534AB7">pred 3</text>
+          <text x="90" y="220" text-anchor="end" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#534AB7">pred 4</text>
+          <text x="90" y="255" text-anchor="end" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#534AB7">pred 5</text>
+
+          <!-- Matrix cells: highlighted = matched -->
+          <!-- Row 1 -->
+          <rect x="140" y="96" width="60" height="30" rx="4" fill="#534AB7"/>
+          <text x="170" y="116" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#FFFFFF">0.12</text>
+          <rect x="210" y="96" width="60" height="30" rx="4" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="1"/>
+          <text x="240" y="116" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#9C9A94">1.85</text>
+          <rect x="280" y="96" width="60" height="30" rx="4" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="1"/>
+          <text x="310" y="116" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#9C9A94">2.10</text>
+
+          <!-- Row 2 -->
+          <rect x="140" y="131" width="60" height="30" rx="4" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="1"/>
+          <text x="170" y="151" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#9C9A94">1.73</text>
+          <rect x="210" y="131" width="60" height="30" rx="4" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="1"/>
+          <text x="240" y="151" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#9C9A94">0.91</text>
+          <rect x="280" y="131" width="60" height="30" rx="4" fill="#534AB7"/>
+          <text x="310" y="151" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#FFFFFF">0.23</text>
+
+          <!-- Row 3 -->
+          <rect x="140" y="166" width="60" height="30" rx="4" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="1"/>
+          <text x="170" y="186" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#9C9A94">2.45</text>
+          <rect x="210" y="166" width="60" height="30" rx="4" fill="#534AB7"/>
+          <text x="240" y="186" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#FFFFFF">0.18</text>
+          <rect x="280" y="166" width="60" height="30" rx="4" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="1"/>
+          <text x="310" y="186" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#9C9A94">1.55</text>
+
+          <!-- Row 4: no object -->
+          <rect x="140" y="201" width="60" height="30" rx="4" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="1"/>
+          <text x="170" y="221" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#9C9A94">3.20</text>
+          <rect x="210" y="201" width="60" height="30" rx="4" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="1"/>
+          <text x="240" y="221" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#9C9A94">2.90</text>
+          <rect x="280" y="201" width="60" height="30" rx="4" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="1"/>
+          <text x="310" y="221" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#9C9A94">3.05</text>
+
+          <!-- Row 5: no object -->
+          <rect x="140" y="236" width="60" height="30" rx="4" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="1"/>
+          <text x="170" y="256" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#9C9A94">2.80</text>
+          <rect x="210" y="236" width="60" height="30" rx="4" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="1"/>
+          <text x="240" y="256" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#9C9A94">3.15</text>
+          <rect x="280" y="236" width="60" height="30" rx="4" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="1"/>
+          <text x="310" y="256" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#9C9A94">2.95</text>
+
+          <!-- "no object" labels for rows 4,5 -->
+          <text x="380" y="221" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">→ ∅ (no object)</text>
+          <text x="380" y="256" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">→ ∅ (no object)</text>
+
+          <!-- Right panel: result -->
+          <text x="620" y="58" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#5C5B56">Optimal Assignment (Hungarian)</text>
+
+          <!-- Matched pairs -->
+          <rect x="510" y="90" width="100" height="32" rx="6" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <text x="560" y="111" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#534AB7">pred 1</text>
+
+          <line x1="610" y1="106" x2="640" y2="106" stroke="#534AB7" stroke-width="2" marker-end="url(#ch19-arr2)"/>
+
+          <rect x="650" y="90" width="100" height="32" rx="6" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1.5"/>
+          <text x="700" y="111" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#0F6E56">dog</text>
+
+          <rect x="510" y="140" width="100" height="32" rx="6" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <text x="560" y="161" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#534AB7">pred 2</text>
+
+          <line x1="610" y1="156" x2="640" y2="156" stroke="#534AB7" stroke-width="2" marker-end="url(#ch19-arr2)"/>
+
+          <rect x="650" y="140" width="100" height="32" rx="6" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1.5"/>
+          <text x="700" y="161" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#0F6E56">person</text>
+
+          <rect x="510" y="190" width="100" height="32" rx="6" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <text x="560" y="211" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#534AB7">pred 3</text>
+
+          <line x1="610" y1="206" x2="640" y2="206" stroke="#534AB7" stroke-width="2" marker-end="url(#ch19-arr2)"/>
+
+          <rect x="650" y="190" width="100" height="32" rx="6" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1.5"/>
+          <text x="700" y="211" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#0F6E56">car</text>
+
+          <!-- Unmatched -->
+          <rect x="510" y="240" width="100" height="32" rx="6" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="1"/>
+          <text x="560" y="261" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#9C9A94">pred 4</text>
+          <line x1="610" y1="256" x2="640" y2="256" stroke="#C8C6BE" stroke-width="1" stroke-dasharray="4 3"/>
+          <text x="680" y="261" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#9C9A94">∅</text>
+
+          <rect x="510" y="280" width="100" height="32" rx="6" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="1"/>
+          <text x="560" y="301" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#9C9A94">pred 5</text>
+          <line x1="610" y1="296" x2="640" y2="296" stroke="#C8C6BE" stroke-width="1" stroke-dasharray="4 3"/>
+          <text x="680" y="301" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#9C9A94">∅</text>
+        </svg>
+        <figcaption>Figure 19.2 — Hungarian matching assigns each prediction to at most one ground-truth object. Left: the cost matrix shows matching cost between 5 predictions and 3 objects. Purple cells mark the optimal one-to-one assignment (minimum total cost). Predictions 4 and 5 are assigned to "no object" (∅). This eliminates duplicate detections without NMS.</figcaption>
+      </figure>
+
+      <h3>DETR Limitations</h3>
+
+      <p>DETR's elegance came at a cost. Training required 500 epochs on COCO — roughly 10-20x longer than Faster R-CNN. The global attention in the encoder computed similarity between every pair of spatial positions, which was expensive at high resolutions and diluted fine-grained spatial information needed for small objects. DETR's AP on small objects lagged significantly behind Faster R-CNN. These limitations set the agenda for the next generation of detection transformers.</p>
+
+      <p>The following code demonstrates a simplified DETR decoder with bipartite matching loss.</p>
+
+<pre><code class="language-python">
+import torch
+import torch.nn as nn
+from scipy.optimize import linear_sum_assignment
+
+class SimpleDETRDecoder(nn.Module):
+    def __init__(self, d_model=256, n_queries=100, n_classes=80):
+        super().__init__()
+        self.queries = nn.Embedding(n_queries, d_model)  # learned object queries
+        decoder_layer = nn.TransformerDecoderLayer(d_model, nhead=8, batch_first=True)
+        self.decoder = nn.TransformerDecoder(decoder_layer, num_layers=6)
+        self.class_head = nn.Linear(d_model, n_classes + 1)  # +1 for "no object"
+        self.box_head = nn.Sequential(
+            nn.Linear(d_model, d_model), nn.ReLU(),
+            nn.Linear(d_model, 4)  # (cx, cy, w, h) normalized
+        )
+
+    def forward(self, encoder_memory):
+        # encoder_memory: (batch, hw, d_model) — flattened CNN features
+        B = encoder_memory.size(0)
+        q = self.queries.weight.unsqueeze(0).expand(B, -1, -1)  # (batch, n_queries, d_model)
+        out = self.decoder(q, encoder_memory)         # (batch, n_queries, d_model)
+        logits = self.class_head(out)                  # (batch, n_queries, n_classes+1)
+        boxes = self.box_head(out).sigmoid()           # (batch, n_queries, 4)
+        return logits, boxes
+
+def hungarian_loss(pred_logits, pred_boxes, gt_classes, gt_boxes):
+    # pred_logits: (n_queries, n_classes+1), pred_boxes: (n_queries, 4)
+    # gt_classes: (m,), gt_boxes: (m, 4)
+    n = pred_logits.size(0)
+    m = gt_classes.size(0)
+    # Cost matrix: classification cost + L1 box cost
+    prob = pred_logits.softmax(-1)                     # (n_queries, n_classes+1)
+    cls_cost = -prob[:, gt_classes]                     # (n_queries, m)
+    box_cost = torch.cdist(pred_boxes, gt_boxes, p=1)  # (n_queries, m) — L1 distance
+    cost = cls_cost + 5.0 * box_cost                   # combined matching cost
+    row_idx, col_idx = linear_sum_assignment(cost.detach().cpu().numpy())
+    # Compute loss on matched pairs
+    loss_cls = nn.functional.cross_entropy(pred_logits[row_idx], gt_classes[col_idx])
+    loss_box = nn.functional.l1_loss(pred_boxes[row_idx], gt_boxes[col_idx])
+    return loss_cls + 5.0 * loss_box
+</code></pre>
+
+    </section>
+
+    <!-- ============================================================
+         SECTION 2: Deformable DETR
+         ============================================================ -->
+    <section class="chapter-section" id="deformable-detr">
+      <h2>Deformable DETR: Fixing Attention Cost</h2>
+
+      <p>DETR's encoder computed global self-attention over every spatial position in the feature map. For a typical COCO image with a feature map of $H \times W = 25 \times 34 = 850$ positions, that meant $850^2 \approx 722{,}000$ attention pairs — per head, per layer. At higher resolutions the cost became prohibitive, and the model spent most of its attention budget on uninformative background-to-background pairs.</p>
+
+      <p>Deformable DETR replaced global attention with <strong>deformable attention</strong>: instead of attending to all spatial positions, each query learns a small set of $K$ reference points (typically $K = 4$) and samples features at those locations using bilinear interpolation. The attention is sparse by construction — it looks only where it needs to.</p>
+
+      <h3>Multi-Scale Deformable Attention</h3>
+
+      <p>The real power comes from extending deformable attention across multiple feature scales. Each query samples $K$ reference points from each of $L$ feature pyramid levels, giving it access to both high-resolution details (for small objects) and low-resolution context (for large objects). The total cost per query is $O(LKC)$ — linear in spatial resolution rather than quadratic. Formally:</p>
+
+      $$\text{DeformAttn}(z_q, \hat{p}_q, \{x^l\}_{l=1}^{L}) = \sum_{m=1}^{M} W_m \left[\sum_{l=1}^{L} \sum_{k=1}^{K} A_{mlqk} \cdot x^l(\hat{p}_q + \Delta p_{mlqk})\right]$$
+
+      <p>where $z_q$ is the query feature, $\hat{p}_q$ is its reference point, $A_{mlqk}$ are learned attention weights (scalars, sum to 1 across all $l$ and $k$ for each head $m$; element-wise scaling of the sampled feature), $\Delta p_{mlqk}$ are learned sampling offsets, $x^l(\cdot)$ denotes bilinear interpolation from feature level $l$, and $W_m$ is the per-head projection (matrix multiply, $W_m \in \mathbb{R}^{d \times d_v}$, projecting the $d_v$-dimensional aggregated value to the output space). The result: 10x faster convergence (50 epochs matches DETR at 500) and significantly better small-object detection.</p>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 360" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="ch19-arr3" viewBox="0 0 10 10" refX="9" refY="5"
+              markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+              <path d="M1 1L9 5L1 9" fill="none" stroke="context-stroke"
+                stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </marker>
+          </defs>
+
+          <!-- Panel headers -->
+          <rect x="20" y="12" width="350" height="30" rx="5" fill="#FAECE7" stroke="#F0997B" stroke-width="1"/>
+          <text x="195" y="32" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="600" fill="#993C1D">Global Attention (DETR)</text>
+
+          <rect x="430" y="12" width="350" height="30" rx="5" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="605" y="32" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="600" fill="#0F6E56">Deformable Attention (K=4)</text>
+
+          <!-- Vertical divider -->
+          <line x1="400" y1="8" x2="400" y2="350" stroke="#E5E3DC" stroke-width="1" stroke-dasharray="5 4"/>
+
+          <!-- === LEFT: Global attention grid === -->
+          <!-- 6x6 grid of positions -->
+          <g id="ch19-global-grid">
+            <!-- Grid cells -->
+            <rect x="80" y="70" width="36" height="36" rx="3" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="0.5"/>
+            <rect x="120" y="70" width="36" height="36" rx="3" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="0.5"/>
+            <rect x="160" y="70" width="36" height="36" rx="3" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="0.5"/>
+            <rect x="200" y="70" width="36" height="36" rx="3" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="0.5"/>
+            <rect x="240" y="70" width="36" height="36" rx="3" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="0.5"/>
+            <rect x="280" y="70" width="36" height="36" rx="3" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="0.5"/>
+
+            <rect x="80" y="110" width="36" height="36" rx="3" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="0.5"/>
+            <rect x="120" y="110" width="36" height="36" rx="3" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="0.5"/>
+            <rect x="160" y="110" width="36" height="36" rx="3" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="0.5"/>
+            <rect x="200" y="110" width="36" height="36" rx="3" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="0.5"/>
+            <rect x="240" y="110" width="36" height="36" rx="3" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="0.5"/>
+            <rect x="280" y="110" width="36" height="36" rx="3" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="0.5"/>
+
+            <rect x="80" y="150" width="36" height="36" rx="3" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="0.5"/>
+            <rect x="120" y="150" width="36" height="36" rx="3" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="0.5"/>
+            <!-- Query position - highlighted -->
+            <rect x="160" y="150" width="36" height="36" rx="3" fill="#534AB7"/>
+            <text x="178" y="173" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#FFFFFF">q</text>
+            <rect x="200" y="150" width="36" height="36" rx="3" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="0.5"/>
+            <rect x="240" y="150" width="36" height="36" rx="3" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="0.5"/>
+            <rect x="280" y="150" width="36" height="36" rx="3" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="0.5"/>
+
+            <rect x="80" y="190" width="36" height="36" rx="3" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="0.5"/>
+            <rect x="120" y="190" width="36" height="36" rx="3" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="0.5"/>
+            <rect x="160" y="190" width="36" height="36" rx="3" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="0.5"/>
+            <rect x="200" y="190" width="36" height="36" rx="3" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="0.5"/>
+            <rect x="240" y="190" width="36" height="36" rx="3" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="0.5"/>
+            <rect x="280" y="190" width="36" height="36" rx="3" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="0.5"/>
+
+            <!-- Attention lines from q to ALL cells - thin, faded -->
+            <line x1="178" y1="168" x2="98" y2="88" stroke="#AFA9EC" stroke-width="0.5" opacity="0.3"/>
+            <line x1="178" y1="168" x2="138" y2="88" stroke="#AFA9EC" stroke-width="0.5" opacity="0.3"/>
+            <line x1="178" y1="168" x2="178" y2="88" stroke="#AFA9EC" stroke-width="0.5" opacity="0.3"/>
+            <line x1="178" y1="168" x2="218" y2="88" stroke="#AFA9EC" stroke-width="0.5" opacity="0.3"/>
+            <line x1="178" y1="168" x2="258" y2="88" stroke="#AFA9EC" stroke-width="0.5" opacity="0.3"/>
+            <line x1="178" y1="168" x2="298" y2="88" stroke="#AFA9EC" stroke-width="0.5" opacity="0.3"/>
+            <line x1="178" y1="168" x2="98" y2="128" stroke="#AFA9EC" stroke-width="0.5" opacity="0.3"/>
+            <line x1="178" y1="168" x2="138" y2="128" stroke="#AFA9EC" stroke-width="0.5" opacity="0.3"/>
+            <line x1="178" y1="168" x2="218" y2="128" stroke="#AFA9EC" stroke-width="0.5" opacity="0.3"/>
+            <line x1="178" y1="168" x2="258" y2="128" stroke="#AFA9EC" stroke-width="0.5" opacity="0.3"/>
+            <line x1="178" y1="168" x2="298" y2="128" stroke="#AFA9EC" stroke-width="0.5" opacity="0.3"/>
+            <line x1="178" y1="168" x2="98" y2="168" stroke="#AFA9EC" stroke-width="0.5" opacity="0.3"/>
+            <line x1="178" y1="168" x2="138" y2="168" stroke="#AFA9EC" stroke-width="0.5" opacity="0.3"/>
+            <line x1="178" y1="168" x2="218" y2="168" stroke="#AFA9EC" stroke-width="0.5" opacity="0.3"/>
+            <line x1="178" y1="168" x2="258" y2="168" stroke="#AFA9EC" stroke-width="0.5" opacity="0.3"/>
+            <line x1="178" y1="168" x2="298" y2="168" stroke="#AFA9EC" stroke-width="0.5" opacity="0.3"/>
+            <line x1="178" y1="168" x2="98" y2="208" stroke="#AFA9EC" stroke-width="0.5" opacity="0.3"/>
+            <line x1="178" y1="168" x2="138" y2="208" stroke="#AFA9EC" stroke-width="0.5" opacity="0.3"/>
+            <line x1="178" y1="168" x2="178" y2="208" stroke="#AFA9EC" stroke-width="0.5" opacity="0.3"/>
+            <line x1="178" y1="168" x2="218" y2="208" stroke="#AFA9EC" stroke-width="0.5" opacity="0.3"/>
+            <line x1="178" y1="168" x2="258" y2="208" stroke="#AFA9EC" stroke-width="0.5" opacity="0.3"/>
+            <line x1="178" y1="168" x2="298" y2="208" stroke="#AFA9EC" stroke-width="0.5" opacity="0.3"/>
+          </g>
+
+          <!-- Cost label -->
+          <text x="195" y="248" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#993C1D">O(H²W²) per query</text>
+          <text x="195" y="266" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">Attends to every position</text>
+          <text x="195" y="282" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">Most pairs uninformative</text>
+
+          <!-- === RIGHT: Deformable attention === -->
+          <!-- Three scales -->
+          <text x="605" y="60" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">Multi-scale feature pyramid</text>
+
+          <!-- Scale 1: large (low res) -->
+          <rect x="560" y="74" width="90" height="60" rx="4" fill="#FFFFFF" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="605" y="110" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">1/32 scale</text>
+          <!-- K=4 reference points -->
+          <circle cx="580" cy="90" r="4" fill="#0F6E56"/>
+          <circle cx="620" cy="95" r="4" fill="#0F6E56"/>
+          <circle cx="590" cy="105" r="4" fill="#0F6E56"/>
+          <circle cx="630" cy="85" r="4" fill="#0F6E56"/>
+
+          <!-- Scale 2: medium -->
+          <rect x="480" y="148" width="130" height="80" rx="4" fill="#FFFFFF" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="545" y="208" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">1/16 scale</text>
+          <!-- K=4 reference points -->
+          <circle cx="510" cy="170" r="4" fill="#0F6E56"/>
+          <circle cx="560" cy="180" r="4" fill="#0F6E56"/>
+          <circle cx="530" cy="195" r="4" fill="#0F6E56"/>
+          <circle cx="580" cy="165" r="4" fill="#0F6E56"/>
+
+          <!-- Scale 3: large (high res) -->
+          <rect x="650" y="148" width="130" height="80" rx="4" fill="#FFFFFF" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="715" y="208" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">1/8 scale</text>
+          <!-- K=4 reference points -->
+          <circle cx="680" cy="170" r="4" fill="#0F6E56"/>
+          <circle cx="720" cy="182" r="4" fill="#0F6E56"/>
+          <circle cx="690" cy="198" r="4" fill="#0F6E56"/>
+          <circle cx="740" cy="168" r="4" fill="#0F6E56"/>
+
+          <!-- Query box -->
+          <rect x="570" y="248" width="70" height="36" rx="6" fill="#534AB7"/>
+          <text x="605" y="271" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#FFFFFF">query</text>
+
+          <!-- Lines from query to reference points -->
+          <line x1="605" y1="248" x2="580" y2="94" stroke="#534AB7" stroke-width="2" opacity="0.8"/>
+          <line x1="605" y1="248" x2="620" y2="99" stroke="#534AB7" stroke-width="2" opacity="0.8"/>
+          <line x1="605" y1="248" x2="590" y2="109" stroke="#534AB7" stroke-width="1.5" opacity="0.6"/>
+          <line x1="605" y1="248" x2="630" y2="89" stroke="#534AB7" stroke-width="1.5" opacity="0.6"/>
+
+          <line x1="605" y1="248" x2="510" y2="174" stroke="#534AB7" stroke-width="2" opacity="0.8"/>
+          <line x1="605" y1="248" x2="560" y2="184" stroke="#534AB7" stroke-width="1.5" opacity="0.6"/>
+          <line x1="605" y1="248" x2="530" y2="199" stroke="#534AB7" stroke-width="1.5" opacity="0.6"/>
+          <line x1="605" y1="248" x2="580" y2="169" stroke="#534AB7" stroke-width="2" opacity="0.8"/>
+
+          <line x1="605" y1="248" x2="680" y2="174" stroke="#534AB7" stroke-width="1.5" opacity="0.6"/>
+          <line x1="605" y1="248" x2="720" y2="186" stroke="#534AB7" stroke-width="2" opacity="0.8"/>
+          <line x1="605" y1="248" x2="690" y2="202" stroke="#534AB7" stroke-width="1.5" opacity="0.6"/>
+          <line x1="605" y1="248" x2="740" y2="172" stroke="#534AB7" stroke-width="2" opacity="0.8"/>
+
+          <!-- Cost label -->
+          <text x="605" y="306" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#0F6E56">O(LKC) per query</text>
+          <text x="605" y="324" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">K=4 points × L=3 scales</text>
+          <text x="605" y="340" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">Only samples where it matters</text>
+        </svg>
+        <figcaption>Figure 19.3 — Global attention (left) connects the query to every spatial position, wasting computation on uninformative background pairs. Deformable attention (right) learns K=4 reference points per feature scale, sampling only the relevant locations. Multi-scale sampling gives access to both fine detail (1/8 scale) and broad context (1/32 scale) while keeping cost linear in spatial resolution.</figcaption>
+      </figure>
+
+    </section>
+
+    <!-- ============================================================
+         SECTION 3: The DETR Improvement Arc
+         ============================================================ -->
+    <section class="chapter-section" id="detr-improvement-arc">
+      <h2>The DETR Improvement Arc</h2>
+
+      <p>Between 2022 and 2026, a rapid succession of papers refined the DETR paradigm. Each addressed a specific bottleneck — training signal sparsity, convergence speed, or inference latency — while preserving the core set-prediction idea. The result is a family of detectors that pushed COCO AP from DETR's original 42.0 to over 60, with latencies competitive with YOLO.</p>
+
+      <h3>DN-DETR: Denoising Training</h3>
+
+      <p>The one-to-one Hungarian matching in DETR produces a sparse training signal: each decoder query gets supervision from at most one ground-truth object, and most queries are assigned to "no object." DN-DETR supplements this sparse signal with a <strong>denoising task</strong>. During training, the model adds Gaussian noise to ground-truth bounding boxes — $\tilde{b} = b + \epsilon$, where $\epsilon \sim \mathcal{N}(0, \lambda^2 I)$ (element-wise addition of noise to each box coordinate, both vectors in $\mathbb{R}^4$) — and feeds these noisy boxes as additional decoder queries. The decoder must reconstruct the clean boxes from the noisy inputs. This gives every ground-truth object a dense, direct supervision signal beyond the single matched query, and convergence improves substantially.</p>
+
+      <h3>Co-DETR: Collaborative Hybrid Assignment</h3>
+
+      <p>Co-DETR attacked the sparsity problem from a different angle. The insight: one-to-one matching is essential at inference (to avoid duplicates), but during training, the one-to-many assignment strategy from classical detectors like ATSS produces denser gradients. Co-DETR adds auxiliary decoder heads that use one-to-many matching — each ground-truth object can supervise multiple predictions. These auxiliary heads share the encoder with the primary one-to-one decoder, enriching encoder gradients without affecting inference cost (the auxiliary heads are discarded at test time). The combined loss is:</p>
+
+      $$\mathcal{L} = \mathcal{L}_{\text{one-to-one}} + \sum_{k=1}^{K} \alpha_k \, \mathcal{L}_{\text{one-to-many}}^{(k)}$$
+
+      <p>where each $\alpha_k$ is a scalar weight for auxiliary head $k$ (scalar multiplication). Co-DETR achieved state-of-the-art results on LVIS, the large-vocabulary detection benchmark with 1,200+ categories.</p>
+
+      <h3>DINO (Detection)</h3>
+
+      <p>DINO — the detection model, distinct from the self-supervised method discussed in Chapter 17 — combined denoising training with <strong>contrastive denoising</strong>. It generates both positive queries (slightly noised GT boxes that should reconstruct the original) and negative queries (heavily noised boxes that should predict "no object"). This contrastive signal sharpens the boundary between "close enough to be a match" and "too far to be valid." Combined with a mixed query selection strategy that initializes some object queries from encoder features rather than from scratch, DINO pushed COCO detection to 63.3 AP with a Swin-L backbone.</p>
+
+      <h3>RT-DETR: Real-Time Detection</h3>
+
+      <p>RT-DETR demonstrated that detection transformers could be competitive with YOLO on latency. It replaced the heavyweight encoder-decoder stack with an efficient hybrid encoder that combines CNN-based intra-scale feature extraction with transformer-based cross-scale feature fusion. By also optimizing the decoder and removing NMS entirely, RT-DETR achieved real-time inference while maintaining strong accuracy — the first detection transformer to close the speed gap with one-stage detectors.</p>
+
+      <h3>RF-DETR: Neural Architecture Search for Detection</h3>
+
+      <p>RF-DETR, published at ICLR 2026 by Roboflow, took the real-time line further. It uses a frozen DINOv2 ViT backbone — directly leveraging the powerful self-supervised features from Chapter 18 — and applies <strong>Neural Architecture Search (NAS)</strong> to find the optimal encoder configuration. The search explores thousands of configurations with shared weights, ultimately selecting an architecture that alternates windowed and global attention modules to balance local detail with global context. RF-DETR surpasses 60 mAP on COCO with latencies under 40ms and includes a lightweight segmentation head for instance masks, blurring the traditional boundary between detection and segmentation.</p>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 300" xmlns="http://www.w3.org/2000/svg">
+          <!-- Timeline axis -->
+          <line x1="60" y1="150" x2="760" y2="150" stroke="#C8C6BE" stroke-width="1.5"/>
+
+          <!-- Year labels -->
+          <text x="100" y="175" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">2020</text>
+          <text x="230" y="175" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">2021</text>
+          <text x="370" y="175" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">2022</text>
+          <text x="510" y="175" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">2023</text>
+          <text x="640" y="175" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">2024</text>
+          <text x="730" y="175" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">2026</text>
+
+          <!-- DETR node (architecture - purple) -->
+          <circle cx="100" cy="150" r="8" fill="#534AB7" stroke="#EEEDFE" stroke-width="2"/>
+          <text x="100" y="130" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#534AB7">DETR</text>
+          <text x="100" y="117" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">42.0 AP</text>
+
+          <!-- Deformable DETR (architecture - purple) -->
+          <circle cx="230" cy="150" r="8" fill="#534AB7" stroke="#EEEDFE" stroke-width="2"/>
+          <text x="230" y="196" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#534AB7">Deformable</text>
+          <text x="230" y="210" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">46.2 AP · 10× faster</text>
+
+          <!-- DN-DETR (training - amber) -->
+          <circle cx="370" cy="150" r="8" fill="#854F0B" stroke="#FAEEDA" stroke-width="2"/>
+          <text x="370" y="130" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#854F0B">DN-DETR</text>
+          <text x="370" y="117" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">48.6 AP · denoising</text>
+
+          <!-- Co-DETR + DINO-det (training - amber) -->
+          <circle cx="510" cy="150" r="8" fill="#854F0B" stroke="#FAEEDA" stroke-width="2"/>
+          <text x="480" y="196" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#854F0B">Co-DETR</text>
+          <text x="480" y="210" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">hybrid assign</text>
+
+          <circle cx="560" cy="150" r="8" fill="#854F0B" stroke="#FAEEDA" stroke-width="2"/>
+          <text x="560" y="130" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#854F0B">DINO-det</text>
+          <text x="560" y="117" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">63.3 AP</text>
+
+          <!-- RT-DETR (efficiency - teal) -->
+          <circle cx="640" cy="150" r="8" fill="#0F6E56" stroke="#E1F5EE" stroke-width="2"/>
+          <text x="640" y="196" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#0F6E56">RT-DETR</text>
+          <text x="640" y="210" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">real-time</text>
+
+          <!-- RF-DETR (efficiency - teal) -->
+          <circle cx="730" cy="150" r="8" fill="#0F6E56" stroke="#E1F5EE" stroke-width="2"/>
+          <text x="730" y="130" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#0F6E56">RF-DETR</text>
+          <text x="730" y="117" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">>60 AP · ≤40ms</text>
+
+          <!-- Legend -->
+          <circle cx="200" cy="262" r="6" fill="#534AB7"/>
+          <text x="214" y="266" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#5C5B56">Architecture innovation</text>
+          <circle cx="370" cy="262" r="6" fill="#854F0B"/>
+          <text x="384" y="266" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#5C5B56">Training innovation</text>
+          <circle cx="540" cy="262" r="6" fill="#0F6E56"/>
+          <text x="554" y="266" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#5C5B56">Efficiency innovation</text>
+        </svg>
+        <figcaption>Figure 19.4 — The DETR family tree. Purple nodes mark architectural innovations (new attention mechanisms), amber nodes mark training innovations (denoising, contrastive learning, hybrid assignment), and teal nodes mark efficiency breakthroughs (real-time inference). COCO AP climbed from 42.0 to over 60 in six years while inference latency dropped below 40ms.</figcaption>
+      </figure>
+
+    </section>
+
+    <!-- ============================================================
+         SECTION 4: Open-Vocabulary Detection
+         ============================================================ -->
+    <section class="chapter-section" id="open-vocabulary-detection">
+      <h2>Open-Vocabulary and Unified Detection</h2>
+
+      <p>Every detector discussed so far operates on a fixed vocabulary: the model is trained on COCO's 80 categories or LVIS's 1,200 and can only detect those. But real-world applications need to find objects described in free-form text — "the red coffee mug next to the keyboard" — including objects the model has never seen during training. This requires conditioning detection on language.</p>
+
+      <h3>Grounding DINO</h3>
+
+      <p><strong>Grounding DINO</strong> fuses a text encoder (BERT) with the DINO detection decoder. Text tokens and image features exchange information through bidirectional cross-attention: image features attend to text tokens (to understand what to look for) and text tokens attend to image features (to ground language in visual evidence). At inference, the user provides a text prompt — "all red cars" — and the model localizes matching objects with bounding boxes. The model was trained with ECCV 2024 publication on phrase grounding data, converting closed-set detection into <strong>open-vocabulary grounding</strong>.</p>
+
+      <p>The following code demonstrates the core mechanism — bidirectional cross-attention between text and image features.</p>
+
+<pre><code class="language-python">
+import torch
+import torch.nn as nn
+
+class BidirectionalCrossAttention(nn.Module):
+    """Grounding DINO-style cross-attention between image and text features."""
+    def __init__(self, d_model=256, n_heads=8):
+        super().__init__()
+        self.img_to_text = nn.MultiheadAttention(d_model, n_heads, batch_first=True)
+        self.text_to_img = nn.MultiheadAttention(d_model, n_heads, batch_first=True)
+        self.norm_img = nn.LayerNorm(d_model)
+        self.norm_text = nn.LayerNorm(d_model)
+
+    def forward(self, img_feats, text_feats):
+        # img_feats:  (batch, hw, d_model) — flattened spatial features
+        # text_feats: (batch, n_tokens, d_model) — encoded text prompt
+        # Image queries attend to text keys/values
+        img_cross, _ = self.img_to_text(
+            query=img_feats, key=text_feats, value=text_feats
+        )  # (batch, hw, d_model) — image features enriched with text context
+        img_out = self.norm_img(img_feats + img_cross)
+
+        # Text queries attend to image keys/values
+        text_cross, _ = self.text_to_img(
+            query=text_feats, key=img_feats, value=img_feats
+        )  # (batch, n_tokens, d_model) — text features grounded in visual evidence
+        text_out = self.norm_text(text_feats + text_cross)
+        return img_out, text_out
+
+# Usage: fuse language understanding with spatial features
+cross_attn = BidirectionalCrossAttention(d_model=256)
+img = torch.randn(2, 850, 256)   # (batch, H*W, d_model)
+text = torch.randn(2, 12, 256)    # (batch, n_tokens, d_model)
+img_enhanced, text_grounded = cross_attn(img, text)
+</code></pre>
+
+      <h3>DINO-X: Universal Object-Level Vision</h3>
+
+      <p>DINO-X, from IDEA Research, scaled the Grounding DINO architecture into a <strong>unified vision model</strong> for open-world understanding. Trained on Grounding-100M — over 100 million human-annotated grounding samples — DINO-X supports detection, segmentation, phrase grounding, visual-prompt counting, pose estimation, and region captioning through a single model. It also introduces a <strong>universal object prompt</strong> that enables prompt-free detection: the model can detect everything in an image without any user-specified text. On COCO zero-shot (no COCO training data), DINO-X achieves 56.0 AP — demonstrating that scale and diverse task heads can produce a general-purpose object-level vision system.</p>
+
+      <h3>Florence-2: Vision as Sequence-to-Sequence</h3>
+
+      <p>Florence-2, from Microsoft, took a more radical approach. Instead of adding task-specific heads, it formulates <em>every</em> vision task as a sequence-to-sequence problem. The input is an image plus a text prompt ("detect all objects," "segment the dog," "describe the scene"), and the output is a text sequence that encodes bounding boxes, segmentation masks, or captions as structured tokens. The architecture is a DaViT vision encoder combined with a BERT text encoder feeding into a standard autoregressive transformer decoder. At only 0.2B-0.7B parameters, Florence-2 achieves results competitive with much larger models — proving that you do not need separate heads per task if you can express all outputs as token sequences.</p>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 340" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="ch19-arr4" viewBox="0 0 10 10" refX="9" refY="5"
+              markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+              <path d="M1 1L9 5L1 9" fill="none" stroke="context-stroke"
+                stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </marker>
+          </defs>
+
+          <!-- Three panels -->
+          <!-- Panel 1: Closed-set -->
+          <rect x="20" y="12" width="230" height="26" rx="5" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="1"/>
+          <text x="135" y="30" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#5C5B56">Closed-Set (DINO-det)</text>
+
+          <!-- Image -->
+          <rect x="60" y="52" width="150" height="36" rx="6" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1.5"/>
+          <text x="135" y="75" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#0F6E56">Image Features</text>
+
+          <line x1="135" y1="88" x2="135" y2="108" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch19-arr4)"/>
+
+          <rect x="40" y="108" width="190" height="40" rx="6" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <text x="135" y="133" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#534AB7">Transformer Decoder</text>
+
+          <line x1="135" y1="148" x2="135" y2="168" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch19-arr4)"/>
+
+          <!-- Fixed class head -->
+          <rect x="50" y="168" width="170" height="40" rx="6" fill="#FAECE7" stroke="#F0997B" stroke-width="1.5"/>
+          <text x="135" y="185" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#993C1D">Fixed Class Head</text>
+          <text x="135" y="200" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">80 COCO classes</text>
+
+          <line x1="135" y1="208" x2="135" y2="228" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch19-arr4)"/>
+
+          <text x="135" y="248" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#993C1D">"cat" (0.95)</text>
+          <text x="135" y="264" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#993C1D">"dog" (0.88)</text>
+
+          <!-- Vertical divider 1 -->
+          <line x1="270" y1="8" x2="270" y2="330" stroke="#E5E3DC" stroke-width="1" stroke-dasharray="5 4"/>
+
+          <!-- Panel 2: Grounding DINO -->
+          <rect x="285" y="12" width="230" height="26" rx="5" fill="#E6F1FB" stroke="#85B7EB" stroke-width="1"/>
+          <text x="400" y="30" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#185FA5">Language-Conditioned (Grounding DINO)</text>
+
+          <!-- Image + Text -->
+          <rect x="300" y="52" width="90" height="36" rx="6" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1.5"/>
+          <text x="345" y="75" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#0F6E56">Image</text>
+
+          <rect x="405" y="52" width="90" height="36" rx="6" fill="#E6F1FB" stroke="#85B7EB" stroke-width="1.5"/>
+          <text x="450" y="75" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#185FA5">Text</text>
+
+          <line x1="345" y1="88" x2="400" y2="108" stroke="#9C9A94" stroke-width="1.2" marker-end="url(#ch19-arr4)"/>
+          <line x1="450" y1="88" x2="400" y2="108" stroke="#9C9A94" stroke-width="1.2" marker-end="url(#ch19-arr4)"/>
+
+          <!-- Cross-attention -->
+          <rect x="310" y="108" width="180" height="40" rx="6" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <text x="400" y="126" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#534AB7">Bidirectional</text>
+          <text x="400" y="141" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#534AB7">Cross-Attention</text>
+
+          <line x1="400" y1="148" x2="400" y2="168" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch19-arr4)"/>
+
+          <!-- Language-conditioned score -->
+          <rect x="310" y="168" width="180" height="40" rx="6" fill="#E6F1FB" stroke="#85B7EB" stroke-width="1.5"/>
+          <text x="400" y="185" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#185FA5">Text-Conditioned Score</text>
+          <text x="400" y="200" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">any text prompt</text>
+
+          <line x1="400" y1="208" x2="400" y2="228" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch19-arr4)"/>
+
+          <text x="400" y="248" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#185FA5">"red mug" → [box]</text>
+          <text x="400" y="264" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#185FA5">"keyboard" → [box]</text>
+
+          <!-- Vertical divider 2 -->
+          <line x1="530" y1="8" x2="530" y2="330" stroke="#E5E3DC" stroke-width="1" stroke-dasharray="5 4"/>
+
+          <!-- Panel 3: Florence-2 -->
+          <rect x="545" y="12" width="235" height="26" rx="5" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="662" y="30" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#0F6E56">Unified Seq2Seq (Florence-2)</text>
+
+          <!-- Image + Prompt -->
+          <rect x="560" y="52" width="90" height="36" rx="6" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1.5"/>
+          <text x="605" y="75" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#0F6E56">Image</text>
+
+          <rect x="665" y="52" width="100" height="36" rx="6" fill="#E6F1FB" stroke="#85B7EB" stroke-width="1.5"/>
+          <text x="715" y="75" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#185FA5">Task Prompt</text>
+
+          <line x1="605" y1="88" x2="662" y2="108" stroke="#9C9A94" stroke-width="1.2" marker-end="url(#ch19-arr4)"/>
+          <line x1="715" y1="88" x2="662" y2="108" stroke="#9C9A94" stroke-width="1.2" marker-end="url(#ch19-arr4)"/>
+
+          <!-- Encoder-Decoder -->
+          <rect x="570" y="108" width="185" height="40" rx="6" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <text x="662" y="133" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#534AB7">Seq2Seq Transformer</text>
+
+          <line x1="662" y1="148" x2="662" y2="168" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch19-arr4)"/>
+
+          <!-- Token sequence output -->
+          <rect x="570" y="168" width="185" height="40" rx="6" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1.5"/>
+          <text x="662" y="185" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#0F6E56">Token Sequence</text>
+          <text x="662" y="200" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">boxes, masks, captions</text>
+
+          <line x1="662" y1="208" x2="662" y2="228" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch19-arr4)"/>
+
+          <text x="662" y="248" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#0F6E56">"&lt;det&gt; cat &lt;box&gt; 12 34 98 67"</text>
+          <text x="662" y="264" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#0F6E56">"&lt;cap&gt; a cat on a mat"</text>
+
+          <!-- Bottom labels -->
+          <text x="135" y="300" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#9C9A94">Fixed vocabulary</text>
+          <text x="400" y="300" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#9C9A94">Open vocabulary</text>
+          <text x="662" y="300" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#9C9A94">Any vision task</text>
+        </svg>
+        <figcaption>Figure 19.5 — Evolution from closed-set to universal detection. Left: DINO-det uses a fixed classification head over a predetermined set of categories. Center: Grounding DINO adds bidirectional cross-attention between text and image features, enabling open-vocabulary detection from text prompts. Right: Florence-2 formulates all vision tasks as sequence-to-sequence, generating structured token outputs that encode boxes, masks, or captions from a single architecture.</figcaption>
+      </figure>
+
+    </section>
+
+    <!-- ============================================================
+         SECTION 5: Segmentation Transformers
+         ============================================================ -->
+    <section class="chapter-section" id="segmentation-transformers">
+      <h2>Segmentation Transformers</h2>
+
+      <p>Detection finds bounding boxes. Segmentation goes further — it classifies every pixel. The challenge is that segmentation comes in three flavors: <em>semantic</em> segmentation (label every pixel with a class, but do not distinguish instances), <em>instance</em> segmentation (identify each object instance with its own mask), and <em>panoptic</em> segmentation (both: every pixel gets a class label and an instance ID for "things," and just a class label for "stuff" like sky or road). Historically, each required a different architecture. Transformer-based approaches unified them.</p>
+
+      <h3>SegFormer</h3>
+
+      <p><strong>SegFormer</strong> pairs a hierarchical transformer encoder (the Mix Transformer, or MiT) with an extremely lightweight all-MLP decoder. The encoder produces multi-scale features at 1/4, 1/8, 1/16, and 1/32 resolution — similar to the hierarchical ViTs from Chapter 18 — using overlapping patch embeddings instead of positional encodings. The decoder simply upsamples features from all scales to 1/4 resolution, concatenates them, and passes through two MLPs:</p>
+
+      $$\hat{y} = \text{MLP}\!\left(\text{Concat}(\text{Up}(F_1), \text{Up}(F_2), \text{Up}(F_3), \text{Up}(F_4))\right)$$
+
+      <p>where each $F_i$ is the feature map at scale $i$ (matrix multiply inside the MLP: $W F_{\text{concat}} + b$, with $W \in \mathbb{R}^{C_{\text{out}} \times 4C}$). The simplicity is the point: if the encoder features are good enough, the decoder barely needs to do any work. SegFormer achieved strong results on ADE20K and Cityscapes while being significantly faster than prior approaches.</p>
+
+      <h3>Mask2Former: Universal Segmentation</h3>
+
+      <p><strong>Mask2Former</strong> unified all three segmentation tasks into a single architecture. The core insight: all segmentation tasks are fundamentally mask prediction tasks — the only difference is how you aggregate the masks at the end. The architecture uses a pixel decoder to produce multi-scale features, then a transformer decoder where each query predicts one mask. The critical mechanism is <strong>masked cross-attention</strong>: each query attends only to the spatial region predicted by its mask from the previous decoder layer, not the entire feature map:</p>
+
+      $$\text{MaskedAttn}(Q, K, V) = \text{softmax}\!\left(\frac{QK^\top}{\sqrt{d_k}} + M_{\ell-1}\right)V$$
+
+      <p>where $QK^\top$ is the attention score matrix (matrix multiply, $Q \in \mathbb{R}^{N \times d_k}$, $K \in \mathbb{R}^{HW \times d_k}$, yielding $\mathbb{R}^{N \times HW}$), and $M_{\ell-1}$ is a mask that is $-\infty$ at locations outside the predicted mask from layer $\ell - 1$ (element-wise addition, $M_{\ell-1} \in \mathbb{R}^{N \times HW}$). This constrains each query to refine its own spatial region rather than competing over the entire feature map. The same architecture handles semantic segmentation (57.7 mIoU on ADE20K), instance segmentation (50.1 AP on COCO), and panoptic segmentation (57.8 PQ on COCO) by changing only the loss and post-processing.</p>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 420" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="ch19-arr5" viewBox="0 0 10 10" refX="9" refY="5"
+              markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+              <path d="M1 1L9 5L1 9" fill="none" stroke="context-stroke"
+                stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </marker>
+          </defs>
+
+          <!-- Backbone -->
+          <rect x="80" y="20" width="160" height="40" rx="6" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="1"/>
+          <text x="160" y="45" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="500" fill="#5C5B56">Backbone (Swin/ResNet)</text>
+
+          <line x1="160" y1="60" x2="160" y2="80" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch19-arr5)"/>
+
+          <!-- Pixel Decoder -->
+          <rect x="60" y="80" width="200" height="48" rx="6" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1.5"/>
+          <text x="160" y="102" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="500" fill="#0F6E56">Pixel Decoder (FPN)</text>
+          <text x="160" y="118" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">Multi-scale features</text>
+
+          <!-- Multi-scale outputs -->
+          <line x1="120" y1="128" x2="120" y2="164" stroke="#5DCAA5" stroke-width="1.2" marker-end="url(#ch19-arr5)"/>
+          <line x1="160" y1="128" x2="160" y2="164" stroke="#5DCAA5" stroke-width="1.2" marker-end="url(#ch19-arr5)"/>
+          <line x1="200" y1="128" x2="200" y2="164" stroke="#5DCAA5" stroke-width="1.2" marker-end="url(#ch19-arr5)"/>
+
+          <rect x="96" y="164" width="48" height="24" rx="4" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="120" y="181" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#0F6E56">1/8</text>
+          <rect x="136" y="164" width="48" height="24" rx="4" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="160" y="181" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#0F6E56">1/16</text>
+          <rect x="176" y="164" width="48" height="24" rx="4" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="200" y="181" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#0F6E56">1/32</text>
+
+          <!-- Arrow to transformer decoder -->
+          <line x1="224" y1="176" x2="310" y2="176" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch19-arr5)"/>
+
+          <!-- Transformer Decoder block -->
+          <rect x="310" y="60" width="270" height="260" rx="10" fill="none" stroke="#AFA9EC" stroke-width="1.5" stroke-dasharray="5 4"/>
+          <text x="445" y="80" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#534AB7">Transformer Decoder (× L layers)</text>
+
+          <!-- Query self-attention -->
+          <rect x="330" y="95" width="230" height="36" rx="6" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <text x="445" y="118" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#534AB7">Query Self-Attention</text>
+
+          <line x1="445" y1="131" x2="445" y2="151" stroke="#534AB7" stroke-width="1.5" marker-end="url(#ch19-arr5)"/>
+
+          <!-- Masked cross-attention (key component) -->
+          <rect x="330" y="151" width="230" height="52" rx="6" fill="#534AB7"/>
+          <text x="445" y="174" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#FFFFFF">Masked Cross-Attention</text>
+          <text x="445" y="192" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#AFA9EC">Attend only within predicted mask</text>
+
+          <line x1="445" y1="203" x2="445" y2="223" stroke="#534AB7" stroke-width="1.5" marker-end="url(#ch19-arr5)"/>
+
+          <!-- FFN -->
+          <rect x="330" y="223" width="230" height="36" rx="6" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <text x="445" y="246" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#534AB7">Feed-Forward Network</text>
+
+          <line x1="445" y1="259" x2="445" y2="279" stroke="#534AB7" stroke-width="1.5" marker-end="url(#ch19-arr5)"/>
+
+          <!-- Per-query mask prediction -->
+          <rect x="340" y="279" width="210" height="30" rx="6" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1"/>
+          <text x="445" y="299" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#534AB7">Per-query mask prediction → M_ℓ</text>
+
+          <!-- Arrow back to masked cross-attention (feedback loop) -->
+          <path d="M 560 294 C 590 294, 590 177, 560 177" fill="none" stroke="#AFA9EC" stroke-width="1" stroke-dasharray="4 3" marker-end="url(#ch19-arr5)"/>
+          <text x="600" y="240" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">mask</text>
+          <text x="600" y="252" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">feedback</text>
+
+          <!-- Output -->
+          <line x1="445" y1="320" x2="445" y2="350" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch19-arr5)"/>
+
+          <!-- Three outputs -->
+          <rect x="320" y="350" width="80" height="36" rx="6" fill="#FAECE7" stroke="#F0997B" stroke-width="1"/>
+          <text x="360" y="373" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#993C1D">Semantic</text>
+
+          <rect x="406" y="350" width="80" height="36" rx="6" fill="#FAECE7" stroke="#F0997B" stroke-width="1"/>
+          <text x="446" y="373" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#993C1D">Instance</text>
+
+          <rect x="492" y="350" width="80" height="36" rx="6" fill="#FAECE7" stroke="#F0997B" stroke-width="1"/>
+          <text x="532" y="373" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#993C1D">Panoptic</text>
+
+          <text x="446" y="406" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">Same architecture — different post-processing</text>
+        </svg>
+        <figcaption>Figure 19.6 — Mask2Former architecture. Multi-scale features from the pixel decoder feed into a transformer decoder where each query predicts one mask. The critical innovation is masked cross-attention (solid purple): each query attends only within the spatial region of its predicted mask from the previous layer, then refines that mask. The same architecture handles all three segmentation tasks.</figcaption>
+      </figure>
+
+      <h3>SegGPT: In-Context Segmentation</h3>
+
+      <p><strong>SegGPT</strong> treats segmentation as an in-context learning problem, analogous to few-shot prompting in language models. Given a reference image paired with its segmentation mask (the "context"), the model segments the same concept in a new query image. During training, SegGPT uses a clever proxy task: randomly assign colors to each segment in an image, then train the model to reproduce that coloring. Because the colors are random, the model cannot memorize category-to-color mappings — it must learn to segment based on visual similarity alone. This enables zero-shot transfer to novel object categories through visual prompting.</p>
+
+    </section>
+
+    <!-- ============================================================
+         SECTION 6: Segment Anything
+         ============================================================ -->
+    <section class="chapter-section" id="segment-anything">
+      <h2>Segment Anything: Promptable Segmentation</h2>
+
+      <p>The segmentation architectures above still require training data with category labels. <strong>SAM (Segment Anything Model)</strong> asked a different question: can you build a single model that segments any object in any image, given only a spatial prompt — a click, a bounding box, or a rough mask? The answer required not just a new architecture but a new dataset: SA-1B, containing over 1 billion masks on 11 million images, generated through a human-in-the-loop data engine where SAM's own predictions were iteratively refined by human annotators.</p>
+
+      <h3>SAM Architecture</h3>
+
+      <p>SAM has three components. The <strong>image encoder</strong> is a heavyweight ViT-H (632M parameters) that runs once per image and produces dense feature maps. The <strong>prompt encoder</strong> converts spatial prompts — points, boxes, or masks — into token embeddings using learned positional encodings for points/boxes and convolutions for mask prompts. The <strong>mask decoder</strong> is a lightweight two-layer transformer decoder (only ~4M parameters) that takes prompt tokens as queries, cross-attends to image features, and outputs mask logits through a dot product:</p>
+
+      $$M = \text{Sigmoid}(q_{\text{out}}^\top \text{Up}(f_{\text{img}}))$$
+
+      <p>where $q_{\text{out}}^\top \text{Up}(f_{\text{img}})$ is a dot product between the decoder output token $q_{\text{out}} \in \mathbb{R}^{C}$ and each spatial position in the upsampled image features $\text{Up}(f_{\text{img}}) \in \mathbb{R}^{C \times H \times W}$ (dot product over the channel dimension, yielding a scalar per spatial position, resulting in a mask of shape $\mathbb{R}^{H \times W}$). The image encoder runs once; the mask decoder runs per prompt in milliseconds. This asymmetry is deliberate — it enables interactive use where the user clicks multiple times on the same image.</p>
+
+      <p>The following code demonstrates SAM's lightweight mask decoder.</p>
+
+<pre><code class="language-python">
+import torch
+import torch.nn as nn
+
+class SAMStyleMaskDecoder(nn.Module):
+    """Simplified SAM mask decoder: 2-layer transformer + dot-product mask."""
+    def __init__(self, d_model=256, n_heads=8, n_mask_tokens=3):
+        super().__init__()
+        # Two transformer decoder layers (lightweight)
+        decoder_layer = nn.TransformerDecoderLayer(d_model, n_heads, batch_first=True)
+        self.decoder = nn.TransformerDecoder(decoder_layer, num_layers=2)
+        # Mask output tokens (predict multiple masks for ambiguity)
+        self.mask_tokens = nn.Embedding(n_mask_tokens, d_model)
+        # Upsampling: 16x16 → 64x64 feature map
+        self.upsample = nn.Sequential(
+            nn.ConvTranspose2d(d_model, d_model // 4, kernel_size=2, stride=2),
+            nn.GELU(),
+            nn.ConvTranspose2d(d_model // 4, d_model // 8, kernel_size=2, stride=2),
+        )
+        self.mask_proj = nn.Linear(d_model, d_model // 8)
+
+    def forward(self, img_embed, prompt_tokens):
+        # img_embed:     (batch, hw, d_model) — from frozen image encoder
+        # prompt_tokens: (batch, n_prompts, d_model) — encoded clicks/boxes
+        B, hw, C = img_embed.shape
+        H = W = int(hw ** 0.5)
+        mask_tok = self.mask_tokens.weight.unsqueeze(0).expand(B, -1, -1)
+        queries = torch.cat([mask_tok, prompt_tokens], dim=1)  # (batch, n_mask+n_prompts, d_model)
+        out = self.decoder(queries, img_embed)                 # (batch, n_mask+n_prompts, d_model)
+        mask_out = out[:, :self.mask_tokens.num_embeddings]    # (batch, n_mask, d_model)
+        # Reshape image features and upsample
+        img_2d = img_embed.transpose(1, 2).view(B, C, H, W)   # (batch, d_model, H, W)
+        img_up = self.upsample(img_2d)                         # (batch, d_model//8, 4H, 4W)
+        # Dot product: mask tokens × upsampled features → spatial masks
+        mask_out = self.mask_proj(mask_out)                    # (batch, n_mask, d_model//8)
+        masks = torch.einsum('bmc,bchw->bmhw', mask_out, img_up)  # (batch, n_mask, 4H, 4W)
+        return masks.sigmoid()
+</code></pre>
+
+      <h3>SAM 2: Extending to Video</h3>
+
+      <p><strong>SAM 2</strong> extended SAM from images to video with three additions. A <strong>memory encoder</strong> compresses the model's predictions on each frame into compact memory tokens. A <strong>memory bank</strong> stores these tokens from recent frames (typically the last 6-8 frames plus any user-prompted frames). And <strong>memory attention</strong> lets the current frame's features attend to stored memories, enabling temporal consistency — if the model segmented a dog in frame 10, it can recall that information when processing frame 15:</p>
+
+      $$\text{MemAttn}(z_t, M_{1:t-1}) = \text{Attention}(z_t,\; [z_t;\, M_{1:t-1}],\; [z_t;\, M_{1:t-1}])$$
+
+      <p>where $z_t$ are the current frame's features and $M_{1:t-1}$ are stored memory tokens (matrix multiply inside the attention: $z_t [z_t; M_{1:t-1}]^\top$ computes attention scores, $\mathbb{R}^{HW \times d} \times \mathbb{R}^{d \times (HW + |\text{mem}|)} \to \mathbb{R}^{HW \times (HW + |\text{mem}|)}$). The user can provide prompts on any frame — click on frame 1 to select a person, and SAM 2 tracks them through the entire video at 44 FPS.</p>
+
+      <h3>Efficient-SAM2: Post-Training Acceleration</h3>
+
+      <p><strong>Efficient-SAM2</strong>, published at ICLR 2026, accelerates SAM 2 without retraining the model. The authors observed that SAM 2 exhibits sparse perception patterns: the mask decoder's attention concentrates on foreground objects, and only a small subset of memory tokens contribute meaningfully to memory attention. Efficient-SAM2 exploits this with two techniques. <strong>Sparse Window Routing (SWR)</strong> in the image encoder routes only windows containing objects through the full ViT — background windows get a cheaper approximation. <strong>Sparse Memory Retrieval (SMR)</strong> in memory attention selects only the most relevant memory tokens per query instead of attending to all stored memories. Together, these achieve a 1.68x speedup on SAM 2.1-L with only 1.0% accuracy drop on the SA-V benchmark.</p>
+
+      <h3>SAM 3: Segment Anything with Concepts</h3>
+
+      <p>SAM and SAM 2 require the user to point at every instance they want to segment. <strong>SAM 3</strong>, presented at ICLR 2026, introduced <strong>concept-prompted segmentation</strong>: instead of pointing, the user specifies a concept — a short noun phrase like "yellow school bus," an image exemplar, or both — and SAM 3 finds and segments <em>all</em> instances of that concept in the image or video. The architecture uses a dual encoder-decoder transformer: one path processes the concept prompt, the other processes the image, with cross-attention for alignment. A dedicated presence head predicts whether a concept exists in the frame before attempting localization, improving detection accuracy. SAM 3 was trained on the new SA-Co dataset (4M unique concept labels with hard negatives) and evaluated on the SA-Co benchmark (214K unique concepts, 124K images, 1.7K videos), where it doubled the accuracy of prior concept-segmentation systems.</p>
+
+      <h3>Grounded SAM 2: Detection Meets Segmentation</h3>
+
+      <p><strong>Grounded SAM 2</strong> is not a single model but a pipeline that ties the detection and segmentation stories together. An open-vocabulary detector — Grounding DINO, DINO-X, or Florence-2 — takes a text prompt and produces bounding boxes. These boxes serve as spatial prompts to SAM 2, which generates precise masks and tracks them across video frames. The result is an end-to-end system for open-set detection, segmentation, and tracking: describe what you want in natural language, and get pixel-precise, temporally consistent masks throughout a video. This pipeline represents the practical convergence of the detection and segmentation lines traced throughout this chapter.</p>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 500" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="ch19-arr6" viewBox="0 0 10 10" refX="9" refY="5"
+              markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+              <path d="M1 1L9 5L1 9" fill="none" stroke="context-stroke"
+                stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </marker>
+          </defs>
+
+          <text x="400" y="24" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="600" fill="#1A1A18">The SAM Family: From Clicks to Concepts</text>
+
+          <!-- SAM (top) -->
+          <rect x="250" y="42" width="300" height="68" rx="8" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <text x="400" y="64" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="600" fill="#534AB7">SAM (2023)</text>
+          <text x="400" y="82" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#5C5B56">Image Encoder + Prompt Encoder + Mask Decoder</text>
+          <text x="400" y="98" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">Point/box/mask prompts · SA-1B (1B masks)</text>
+
+          <line x1="400" y1="110" x2="400" y2="136" stroke="#534AB7" stroke-width="2" marker-end="url(#ch19-arr6)"/>
+
+          <!-- SAM 2 -->
+          <rect x="220" y="136" width="360" height="78" rx="8" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <text x="400" y="158" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="600" fill="#534AB7">SAM 2 (2024)</text>
+          <text x="400" y="176" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#5C5B56">+ Memory Encoder + Memory Bank + Memory Attention</text>
+          <text x="400" y="194" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">Image + video segmentation · 44 FPS · SA-V dataset</text>
+          <text x="400" y="208" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">Prompt any frame → track through video</text>
+
+          <!-- Fork: Efficient-SAM2 (left) and SAM 3 (right) -->
+          <line x1="320" y1="214" x2="210" y2="252" stroke="#0F6E56" stroke-width="1.5" marker-end="url(#ch19-arr6)"/>
+          <line x1="480" y1="214" x2="590" y2="252" stroke="#534AB7" stroke-width="1.5" marker-end="url(#ch19-arr6)"/>
+
+          <!-- Efficient-SAM2 (left) -->
+          <rect x="70" y="252" width="280" height="68" rx="8" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1.5"/>
+          <text x="210" y="274" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="600" fill="#0F6E56">Efficient-SAM2 (ICLR 2026)</text>
+          <text x="210" y="292" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#5C5B56">Sparse Window Routing + Sparse Memory Retrieval</text>
+          <text x="210" y="308" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">1.68× speedup · −1.0% accuracy · post-training</text>
+
+          <!-- SAM 3 (right) -->
+          <rect x="450" y="252" width="300" height="68" rx="8" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <text x="600" y="274" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="600" fill="#534AB7">SAM 3 (ICLR 2026)</text>
+          <text x="600" y="292" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#5C5B56">Dual Encoder-Decoder + Concept Prompts</text>
+          <text x="600" y="308" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">Text/image concepts · SA-Co (4M labels) · 2× accuracy</text>
+
+          <!-- Grounded SAM 2 (bottom, spanning both) -->
+          <line x1="400" y1="214" x2="400" y2="352" stroke="#854F0B" stroke-width="1.5" marker-end="url(#ch19-arr6)"/>
+
+          <rect x="170" y="356" width="460" height="78" rx="8" fill="#FAEEDA" stroke="#EF9F27" stroke-width="1.5"/>
+          <text x="400" y="378" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="600" fill="#854F0B">Grounded SAM 2 (Pipeline)</text>
+          <text x="400" y="396" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#5C5B56">Open-vocab Detector → box prompts → SAM 2 → tracked masks</text>
+          <text x="400" y="414" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">Grounding DINO / DINO-X / Florence-2 as detector</text>
+          <text x="400" y="428" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">Text prompt → detect → segment → track (end-to-end)</text>
+
+          <!-- Legend -->
+          <rect x="210" y="460" width="12" height="12" rx="2" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1"/>
+          <text x="228" y="471" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#5C5B56">Capability expansion</text>
+          <rect x="370" y="460" width="12" height="12" rx="2" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="388" y="471" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#5C5B56">Efficiency</text>
+          <rect x="500" y="460" width="12" height="12" rx="2" fill="#FAEEDA" stroke="#EF9F27" stroke-width="1"/>
+          <text x="518" y="471" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#5C5B56">System integration</text>
+        </svg>
+        <figcaption>Figure 19.7 — The SAM family evolution. SAM introduced promptable image segmentation. SAM 2 added memory for video. The family then branched: Efficient-SAM2 optimizes runtime through sparse computation (teal), SAM 3 extends prompts from spatial clicks to semantic concepts (purple), and Grounded SAM 2 composes open-vocabulary detection with SAM 2 for language-driven segmentation and tracking (amber).</figcaption>
+      </figure>
+
+      <!-- Interactive widget: SAM prompt types -->
+      <figure class="diagram-figure diagram-interactive">
+        <div class="widget-container" id="widget-ch19-sam-prompts">
+          <style>
+            #widget-ch19-sam-prompts .controls { display: flex; gap: 1.2rem; padding: 0.5rem 0; flex-wrap: wrap; }
+            #widget-ch19-sam-prompts .controls label { font-family: system-ui, -apple-system, sans-serif; font-size: 13px; color: #5C5B56; display: flex; align-items: center; gap: 6px; cursor: pointer; }
+            #widget-ch19-sam-prompts .controls input[type="radio"] { accent-color: #534AB7; }
+            #widget-ch19-sam-prompts .grid-cell { transition: fill 0.2s, opacity 0.2s; }
+          </style>
+
+          <div class="controls">
+            <label><input type="radio" name="ch19-prompt-type" value="point" checked onchange="ch19UpdatePrompt('point')"> Point prompt (SAM)</label>
+            <label><input type="radio" name="ch19-prompt-type" value="box" onchange="ch19UpdatePrompt('box')"> Box prompt (SAM)</label>
+            <label><input type="radio" name="ch19-prompt-type" value="concept" onchange="ch19UpdatePrompt('concept')"> Concept prompt (SAM 3)</label>
+          </div>
+
+          <svg id="ch19-prompt-svg" width="100%" viewBox="0 0 800 280">
+            <!-- 8x8 grid representing image features -->
+            <!-- Row 0 -->
+            <rect class="grid-cell" id="ch19-c-0-0" x="200" y="30" width="48" height="48" rx="4" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="0.5"/>
+            <rect class="grid-cell" id="ch19-c-0-1" x="252" y="30" width="48" height="48" rx="4" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="0.5"/>
+            <rect class="grid-cell" id="ch19-c-0-2" x="304" y="30" width="48" height="48" rx="4" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="0.5"/>
+            <rect class="grid-cell" id="ch19-c-0-3" x="356" y="30" width="48" height="48" rx="4" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="0.5"/>
+            <rect class="grid-cell" id="ch19-c-0-4" x="408" y="30" width="48" height="48" rx="4" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="0.5"/>
+            <rect class="grid-cell" id="ch19-c-0-5" x="460" y="30" width="48" height="48" rx="4" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="0.5"/>
+            <!-- Row 1 -->
+            <rect class="grid-cell" id="ch19-c-1-0" x="200" y="82" width="48" height="48" rx="4" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="0.5"/>
+            <rect class="grid-cell" id="ch19-c-1-1" x="252" y="82" width="48" height="48" rx="4" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="0.5"/>
+            <rect class="grid-cell" id="ch19-c-1-2" x="304" y="82" width="48" height="48" rx="4" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="0.5"/>
+            <rect class="grid-cell" id="ch19-c-1-3" x="356" y="82" width="48" height="48" rx="4" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="0.5"/>
+            <rect class="grid-cell" id="ch19-c-1-4" x="408" y="82" width="48" height="48" rx="4" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="0.5"/>
+            <rect class="grid-cell" id="ch19-c-1-5" x="460" y="82" width="48" height="48" rx="4" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="0.5"/>
+            <!-- Row 2 -->
+            <rect class="grid-cell" id="ch19-c-2-0" x="200" y="134" width="48" height="48" rx="4" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="0.5"/>
+            <rect class="grid-cell" id="ch19-c-2-1" x="252" y="134" width="48" height="48" rx="4" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="0.5"/>
+            <rect class="grid-cell" id="ch19-c-2-2" x="304" y="134" width="48" height="48" rx="4" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="0.5"/>
+            <rect class="grid-cell" id="ch19-c-2-3" x="356" y="134" width="48" height="48" rx="4" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="0.5"/>
+            <rect class="grid-cell" id="ch19-c-2-4" x="408" y="134" width="48" height="48" rx="4" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="0.5"/>
+            <rect class="grid-cell" id="ch19-c-2-5" x="460" y="134" width="48" height="48" rx="4" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="0.5"/>
+            <!-- Row 3 -->
+            <rect class="grid-cell" id="ch19-c-3-0" x="200" y="186" width="48" height="48" rx="4" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="0.5"/>
+            <rect class="grid-cell" id="ch19-c-3-1" x="252" y="186" width="48" height="48" rx="4" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="0.5"/>
+            <rect class="grid-cell" id="ch19-c-3-2" x="304" y="186" width="48" height="48" rx="4" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="0.5"/>
+            <rect class="grid-cell" id="ch19-c-3-3" x="356" y="186" width="48" height="48" rx="4" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="0.5"/>
+            <rect class="grid-cell" id="ch19-c-3-4" x="408" y="186" width="48" height="48" rx="4" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="0.5"/>
+            <rect class="grid-cell" id="ch19-c-3-5" x="460" y="186" width="48" height="48" rx="4" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="0.5"/>
+
+            <!-- Prompt indicator (updated by JS) -->
+            <circle id="ch19-point-indicator" cx="328" cy="160" r="8" fill="#534AB7" stroke="#FFFFFF" stroke-width="2" opacity="1"/>
+            <rect id="ch19-box-indicator" x="248" y="78" width="160" height="112" rx="4" fill="none" stroke="#534AB7" stroke-width="2.5" stroke-dasharray="6 3" opacity="0"/>
+            <text id="ch19-concept-label" x="400" y="10" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="500" fill="#534AB7" opacity="0">"yellow school bus"</text>
+
+            <!-- Labels -->
+            <text x="130" y="60" text-anchor="end" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">Image</text>
+            <text x="130" y="76" text-anchor="end" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">features</text>
+
+            <!-- Right side: prompt encoder output -->
+            <text x="570" y="100" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#534AB7" id="ch19-prompt-desc">Point → positional embedding</text>
+            <text x="570" y="118" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94" id="ch19-prompt-detail">Single query token attends to image</text>
+            <text x="570" y="148" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#5C5B56" id="ch19-result-label">Result: single mask at click location</text>
+          </svg>
+
+          <p style="font-family:system-ui, -apple-system, sans-serif; font-size:13px; color:#9C9A94; font-style:italic;
+                    padding:0.5rem 0 0.5rem;" id="ch19-observation">
+            Point prompts generate a single positional embedding. The mask decoder cross-attends from this token to all image features, producing a mask centered on the clicked location.
+          </p>
+        </div>
+
+        <script>
+          function ch19UpdatePrompt(type) {
+            var cells = document.querySelectorAll('#widget-ch19-sam-prompts .grid-cell');
+            var point = document.getElementById('ch19-point-indicator');
+            var box = document.getElementById('ch19-box-indicator');
+            var concept = document.getElementById('ch19-concept-label');
+            var desc = document.getElementById('ch19-prompt-desc');
+            var detail = document.getElementById('ch19-prompt-detail');
+            var result = document.getElementById('ch19-result-label');
+            var obs = document.getElementById('ch19-observation');
+
+            // Reset all cells
+            cells.forEach(function(c) { c.setAttribute('fill', '#F1EFE8'); c.setAttribute('opacity', '1'); });
+            point.setAttribute('opacity', '0');
+            box.setAttribute('opacity', '0');
+            concept.setAttribute('opacity', '0');
+
+            if (type === 'point') {
+              point.setAttribute('opacity', '1');
+              // Highlight cells near the point (2,2) and (1,2)
+              ['ch19-c-1-2', 'ch19-c-2-1', 'ch19-c-2-2', 'ch19-c-2-3', 'ch19-c-1-1'].forEach(function(id) {
+                var el = document.getElementById(id);
+                if (el) el.setAttribute('fill', '#EEEDFE');
+              });
+              ['ch19-c-2-2'].forEach(function(id) {
+                var el = document.getElementById(id);
+                if (el) el.setAttribute('fill', '#534AB7');
+              });
+              desc.textContent = 'Point → positional embedding';
+              detail.textContent = 'Single query token attends to image';
+              result.textContent = 'Result: single mask at click location';
+              obs.textContent = 'Point prompts generate a single positional embedding. The mask decoder cross-attends from this token to all image features, producing a mask centered on the clicked location.';
+            } else if (type === 'box') {
+              box.setAttribute('opacity', '1');
+              ['ch19-c-1-1', 'ch19-c-1-2', 'ch19-c-1-3', 'ch19-c-1-4',
+               'ch19-c-2-1', 'ch19-c-2-2', 'ch19-c-2-3', 'ch19-c-2-4'].forEach(function(id) {
+                var el = document.getElementById(id);
+                if (el) el.setAttribute('fill', '#EEEDFE');
+              });
+              desc.textContent = 'Box → corner embeddings (2 points)';
+              detail.textContent = 'Two tokens define the spatial region';
+              result.textContent = 'Result: mask constrained within the box';
+              obs.textContent = 'Box prompts encode two corner points as positional embeddings. The decoder focuses its attention within the bounded region, producing a tighter mask than a single point.';
+            } else {
+              concept.setAttribute('opacity', '1');
+              // Highlight two separate clusters (concept matches)
+              ['ch19-c-0-1', 'ch19-c-0-2', 'ch19-c-1-1', 'ch19-c-1-2'].forEach(function(id) {
+                var el = document.getElementById(id);
+                if (el) el.setAttribute('fill', '#534AB7');
+              });
+              ['ch19-c-2-4', 'ch19-c-2-5', 'ch19-c-3-4', 'ch19-c-3-5'].forEach(function(id) {
+                var el = document.getElementById(id);
+                if (el) el.setAttribute('fill', '#534AB7');
+              });
+              desc.textContent = 'Concept → text/image encoding';
+              detail.textContent = 'Dual encoder finds ALL matching instances';
+              result.textContent = 'Result: masks for every instance of the concept';
+              obs.textContent = 'SAM 3 concept prompts encode a text phrase or image exemplar. The dual encoder-decoder finds ALL matching instances — here, two separate "yellow school bus" instances are detected and segmented without any spatial clicks.';
+            }
+          }
+          ch19UpdatePrompt('point');
+        </script>
+
+        <figcaption>Figure 19.8 — Interactive: SAM prompt types. Select a prompt mode to see how different inputs produce different segmentation behaviors. Point prompts (SAM) produce a single mask at the click location. Box prompts constrain the mask to a bounding region. Concept prompts (SAM 3) find all instances of a described concept without any spatial input.</figcaption>
+      </figure>
+
+    </section>
+
+    <!-- ============================================================
+         SECTION 7: DINO and DINOv2 for Dense Prediction
+         ============================================================ -->
+    <section class="chapter-section" id="dino-dense-prediction">
+      <h2>DINO and DINOv2 for Dense Prediction</h2>
+
+      <p>The most striking demonstration of transformers for dense prediction requires no detection or segmentation architecture at all. The self-supervised DINO and DINOv2 features from Chapter 17 turn out to contain rich spatial information that was never explicitly trained for.</p>
+
+      <h3>Emergent Segmentation from Attention Maps</h3>
+
+      <p>When you visualize the CLS token's attention map from a DINO ViT, the attention spontaneously segments foreground objects from background — without any segmentation training. The self-distillation objective forces the student to match the teacher's representation, which implicitly requires understanding object boundaries. These attention maps can be used directly for unsupervised object discovery, or as pseudo-labels for training segmentation models without manual annotation.</p>
+
+      <h3>DINOv2 + Linear Probes</h3>
+
+      <p>DINOv2's features are even more structured. A <em>frozen</em> DINOv2 ViT-g backbone with a single linear layer achieves strong results on monocular depth estimation, semantic segmentation, and surface normal estimation. The features are so well-organized that a linear probe suffices — no fine-tuning, no complex decoder. This connects back to Chapter 18's central lesson: when pretraining is good enough, the architecture of the downstream head matters less and less. The features encode 3D structure, semantic categories, and fine spatial detail without ever being asked to.</p>
+
+      <h3>Depth Pro: Zero-Shot Metric Depth</h3>
+
+      <p><strong>Depth Pro</strong>, from Apple, demonstrates this principle at its most extreme. It uses DINOv2 features from multiple scales, processing overlapping patches at different resolutions with a shared ViT encoder. A global context branch captures the overall scene structure (for metric scale estimation), while the patch branches capture fine spatial detail. A lightweight DPT-style decoder combines these into sharp, metric depth maps — meaning the predicted depths have real-world scale, not just relative ordering. Depth Pro produces 2.25-megapixel depth maps in 0.3 seconds on a single GPU, without requiring camera intrinsics or any metadata. The 3D understanding was never supervised — it emerged from the DINOv2 pretraining.</p>
+
+      <div class="callout callout-insight">
+        <div class="callout-title">Key Insight</div>
+        <p>The convergence story of this chapter runs deeper than architecture. Detection evolved from hand-engineered pipelines to clean set prediction. Segmentation evolved from task-specific heads to universal promptable systems. And self-supervised pretraining quietly learned both detection and segmentation features without being asked to. The trajectory points toward a future where the task-specific head becomes trivial — perhaps just a linear layer — and all the intelligence lives in the foundation model's features.</p>
+      </div>
+
+      <p>In the next chapter, we turn to video: SAM 2 already crossed this boundary, and the next chapter will explore how transformers handle the temporal dimension systematically — from video classification and action recognition to video generation.</p>
+
+    </section>
+
+  </article>
+
+  <footer class="chapter-footer">
+    <div class="footer-nav">
+      <a href="ch18.html">← Previous: Hierarchical Vision Transformers</a>
+      <a href="ch20.html">Next: Image Generation with Transformers →</a>
+    </div>
+  </footer>
+
+</body>
+</html>

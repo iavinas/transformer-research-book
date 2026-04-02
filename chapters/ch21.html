@@ -1,0 +1,1098 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Chapter 21: Video Transformers — Transformer Research Book</title>
+  <link rel="stylesheet" href="../assets/style.css">
+  <link rel="stylesheet" href="../assets/math.css">
+  <link rel="stylesheet" href="../assets/prism.css">
+  <!-- KaTeX for math rendering -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"
+    onload="renderMathInElement(document.body, {
+      delimiters: [
+        {left: '$$', right: '$$', display: true},
+        {left: '$', right: '$', display: false}
+      ]
+    })">
+  </script>
+  <!-- Prism for code blocks -->
+  <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/prism.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-python.min.js"></script>
+</head>
+<body>
+  <nav class="chapter-nav">
+    <a href="../index.html" class="nav-home">← Table of Contents</a>
+    <span class="nav-chapter">Chapter 21</span>
+    <div style="display:flex; align-items:center; gap:1rem;">
+      <button class="theme-toggle" onclick="toggleTheme()" aria-label="Toggle dark mode">
+        <span class="icon-moon">&#9789;</span><span class="icon-sun">&#9788;</span>
+      </button>
+      <a href="ch22.html" class="nav-next">Next Chapter →</a>
+    </div>
+  </nav>
+  <script>
+    function toggleTheme() {
+      document.documentElement.classList.toggle('dark');
+      localStorage.setItem('theme', document.documentElement.classList.contains('dark') ? 'dark' : 'light');
+    }
+    if (localStorage.getItem('theme') === 'dark') document.documentElement.classList.add('dark');
+  </script>
+
+  <article class="chapter">
+
+    <header class="chapter-header">
+      <div class="chapter-number">Chapter 21</div>
+      <h1 class="chapter-title">Video Transformers</h1>
+      <p class="chapter-lead">A single image at 224&times;224 with 16&times;16 patches produces 196 tokens. A 16-frame video clip at the same resolution produces 3,136 tokens — and full self-attention over those tokens costs 64 times more than the image case, scaling quadratically. At 32 frames the cost balloons to 256 times, and at 64 frames it becomes entirely intractable. This computational wall forced the field to invent every trick in this chapter: factorized attention, 3D window partitioning, aggressive masking, and token compression. By the end, you will understand not only how video transformers manage the temporal dimension, but how self-supervised pretraining on video evolved from pixel reconstruction toward genuine world models — systems that predict how the physical world will change and can even guide a robot's actions.</p>
+    </header>
+
+    <!-- ============================================================
+         SECTION 1: The Video Understanding Challenge
+         ============================================================ -->
+    <section class="chapter-section" id="video-understanding-challenge">
+      <h2>The Video Understanding Challenge</h2>
+
+      <p>Video adds a temporal dimension that fundamentally changes the computational picture. A ViT processing a single 224&times;224 image with 16&times;16 patches operates on $n = 14 \times 14 = 196$ tokens. Self-attention costs $O(n^2 d)$, which is roughly 38,000 attention pairs per layer. For a 16-frame video clip tokenized the same way, the token count becomes $T \times n = 16 \times 196 = 3{,}136$, and the attention cost explodes:</p>
+
+      $$\text{Cost}_{\text{video}} = O\!\left((T \cdot H' \cdot W')^2 \cdot d\right) \quad \text{where } H' = \frac{H}{p},\; W' = \frac{W}{p}$$
+
+      <p>That is $3{,}136^2 \approx 9.8$ million attention pairs per layer (scalar multiplication of the token count squared by the head dimension) — a 256-fold increase over a single image. At 32 frames: ~39 million. At 64 frames: ~157 million. The quadratic wall makes naive ViT on video impractical.</p>
+
+      <p>Beyond computation, video understanding demands temporal reasoning that images cannot test. Three benchmark families capture different aspects. <strong>Kinetics</strong> (400/600/700 classes) tests appearance-driven recognition — "what is happening?" — where a single frame often suffices. <strong>Something-Something V2</strong> tests motion-driven understanding — "how is this happening?" — where the temporal ordering of frames is essential (pushing something left vs. right looks identical in any single frame). <strong>Epic-Kitchens</strong> and <strong>HowTo100M</strong> test procedural understanding — "why is this happening?" — requiring reasoning about goals, steps, and causal structure over minutes or hours.</p>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 300" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="ch21-arr" viewBox="0 0 10 10" refX="9" refY="5"
+              markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+              <path d="M1 1L9 5L1 9" fill="none" stroke="context-stroke"
+                stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </marker>
+          </defs>
+
+          <text x="400" y="24" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="600" fill="#1A1A18">The Video Token Explosion</text>
+
+          <!-- Image ViT -->
+          <rect x="40" y="50" width="80" height="80" rx="4" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1.5"/>
+          <text x="80" y="80" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#0F6E56">14×14</text>
+          <text x="80" y="96" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#0F6E56">patches</text>
+          <text x="80" y="145" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#1A1A18">1 frame</text>
+          <text x="80" y="162" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#5C5B56">196 tokens</text>
+          <text x="80" y="178" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">38K pairs</text>
+
+          <!-- 8 frames -->
+          <g transform="translate(190, 50)">
+            <rect x="0" y="0" width="80" height="80" rx="4" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+            <rect x="5" y="-5" width="80" height="80" rx="4" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+            <rect x="10" y="-10" width="80" height="80" rx="4" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1.5"/>
+            <text x="50" y="28" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#0F6E56">×8</text>
+          </g>
+          <text x="240" y="145" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#1A1A18">8 frames</text>
+          <text x="240" y="162" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#5C5B56">1,568 tokens</text>
+          <text x="240" y="178" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#854F0B">2.5M pairs (64×)</text>
+
+          <!-- 16 frames -->
+          <g transform="translate(370, 50)">
+            <rect x="0" y="0" width="80" height="80" rx="4" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1"/>
+            <rect x="4" y="-4" width="80" height="80" rx="4" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1"/>
+            <rect x="8" y="-8" width="80" height="80" rx="4" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1"/>
+            <rect x="12" y="-12" width="80" height="80" rx="4" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+            <text x="52" y="26" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#534AB7">×16</text>
+          </g>
+          <text x="430" y="145" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#1A1A18">16 frames</text>
+          <text x="430" y="162" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#5C5B56">3,136 tokens</text>
+          <text x="430" y="178" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#993C1D">9.8M pairs (256×)</text>
+
+          <!-- 32 frames -->
+          <g transform="translate(560, 50)">
+            <rect x="0" y="0" width="80" height="80" rx="4" fill="#FAECE7" stroke="#F0997B" stroke-width="1"/>
+            <rect x="3" y="-3" width="80" height="80" rx="4" fill="#FAECE7" stroke="#F0997B" stroke-width="1"/>
+            <rect x="6" y="-6" width="80" height="80" rx="4" fill="#FAECE7" stroke="#F0997B" stroke-width="1"/>
+            <rect x="9" y="-9" width="80" height="80" rx="4" fill="#FAECE7" stroke="#F0997B" stroke-width="1"/>
+            <rect x="12" y="-12" width="80" height="80" rx="4" fill="#FAECE7" stroke="#F0997B" stroke-width="1.5"/>
+            <text x="52" y="24" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#993C1D">×32</text>
+          </g>
+          <text x="620" y="145" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#1A1A18">32 frames</text>
+          <text x="620" y="162" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#5C5B56">6,272 tokens</text>
+          <text x="620" y="178" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#993C1D">39M pairs (1024×)</text>
+
+          <!-- Cost growth bars -->
+          <text x="80" y="210" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#9C9A94">Relative cost</text>
+          <rect x="60" y="220" width="40" height="8" rx="2" fill="#5DCAA5"/>
+          <text x="115" y="228" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">1×</text>
+
+          <rect x="220" y="220" width="80" height="8" rx="2" fill="#EF9F27"/>
+          <text x="315" y="228" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">64×</text>
+
+          <rect x="390" y="220" width="120" height="8" rx="2" fill="#534AB7"/>
+          <text x="525" y="228" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">256×</text>
+
+          <rect x="560" y="220" width="180" height="8" rx="2" fill="#993C1D"/>
+          <text x="755" y="228" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">1024×</text>
+
+          <!-- Bottom note -->
+          <text x="400" y="270" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#5C5B56">Full self-attention cost scales as O(T²) relative to a single image</text>
+          <text x="400" y="288" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">Every doubling of frames quadruples the compute</text>
+        </svg>
+        <figcaption>Figure 21.1 — The video token explosion. A single image produces 196 tokens and ~38K attention pairs. Adding frames multiplies the token count linearly but the attention cost quadratically: 16 frames cost 256 times more than a single image. This quadratic wall motivates every architectural choice in this chapter.</figcaption>
+      </figure>
+
+      <p>The rest of this chapter traces how the field attacked this wall: first by factorizing attention along space and time (TimeSformer, ViViT), then by combining factorization with hierarchy (Video Swin, Hiera), then by developing powerful self-supervised objectives that obviate the need for expensive video labels (VideoMAE, V-JEPA), and finally by scaling toward unified video foundation models and the token compression techniques that make them deployable.</p>
+
+    </section>
+
+    <!-- ============================================================
+         SECTION 2: TimeSformer
+         ============================================================ -->
+    <section class="chapter-section" id="timesformer">
+      <h2>TimeSformer</h2>
+
+      <p>The first insight for taming video attention is factorization: instead of computing attention over all $T \times H' \times W'$ tokens simultaneously, decompose the operation into spatial attention (within each frame) and temporal attention (across frames at each spatial position). TimeSformer explored five attention schemes and found that <strong>divided space-time attention</strong> — spatial attention followed by temporal attention — offered the best trade-off between accuracy and efficiency.</p>
+
+      <h3>Divided Space-Time Attention</h3>
+
+      <p>In divided attention, each transformer layer applies two separate attention operations. First, spatial attention: for each frame $t$, the $H' \times W'$ patch tokens attend to each other. This captures "what is in this frame" — object identity, spatial relationships, scene layout. Second, temporal attention: for each spatial position $(h, w)$, the $T$ tokens at that position across all frames attend to each other. This captures "how this location changes" — motion, appearance evolution, state transitions. The residual update for token $i$ at layer $\ell$ is:</p>
+
+      $$z_i^{(\ell)} = z_i^{(\ell-1)} + \text{SpatialAttn}\!\left(z_i^{(\ell-1)}\right) + \text{TemporalAttn}\!\left(z_i^{(\ell-1)} + \text{SpatialAttn}(z_i^{(\ell-1)})\right)$$
+
+      <p>The cost drops from $O((T \cdot H' \cdot W')^2)$ for joint attention to $O(T \cdot (H' W')^2 + H' W' \cdot T^2)$ for divided attention — linear rather than quadratic in the cross-dimension terms. For 16 frames of 196 patches, joint attention costs ~9.8M pairs; divided attention costs ~660K pairs, a 15x reduction. TimeSformer's subtitle asked "Is space-time attention all you need for video understanding?" — and for classification at least, the answer was yes: factorized attention on frame-level patches, with no convolutions or handcrafted temporal pooling, matched 3D CNN baselines on Kinetics.</p>
+
+      <p>The following code implements divided space-time attention.</p>
+
+<pre><code class="language-python">
+import torch
+import torch.nn as nn
+
+class DividedSpaceTimeAttention(nn.Module):
+    """TimeSformer-style divided space-time attention."""
+    def __init__(self, d_model=768, n_heads=12, n_frames=16, n_patches=196):
+        super().__init__()
+        self.n_frames = n_frames
+        self.n_patches = n_patches
+        self.spatial_attn = nn.MultiheadAttention(d_model, n_heads, batch_first=True)
+        self.temporal_attn = nn.MultiheadAttention(d_model, n_heads, batch_first=True)
+        self.norm_s = nn.LayerNorm(d_model)
+        self.norm_t = nn.LayerNorm(d_model)
+
+    def forward(self, x):
+        B, N, C = x.shape  # (batch, T*n_patches, d_model)
+        T, P = self.n_frames, self.n_patches
+        # Step 1: Spatial attention — each frame attends within itself
+        x_s = x.view(B * T, P, C)                         # (batch*T, n_patches, d_model)
+        x_s = self.norm_s(x_s)
+        attn_s, _ = self.spatial_attn(x_s, x_s, x_s)      # (batch*T, n_patches, d_model)
+        x = x + attn_s.view(B, N, C)                      # residual connection
+        # Step 2: Temporal attention — each spatial position attends across frames
+        x_t = x.view(B, T, P, C).permute(0, 2, 1, 3)     # (batch, n_patches, T, d_model)
+        x_t = x_t.reshape(B * P, T, C)                    # (batch*n_patches, T, d_model)
+        x_t = self.norm_t(x_t)
+        attn_t, _ = self.temporal_attn(x_t, x_t, x_t)     # (batch*n_patches, T, d_model)
+        attn_t = attn_t.view(B, P, T, C).permute(0, 2, 1, 3).reshape(B, N, C)
+        x = x + attn_t                                    # residual connection
+        return x  # (batch, T*n_patches, d_model)
+</code></pre>
+
+      <figure class="diagram-figure diagram-interactive">
+        <div class="widget-container" id="widget-ch21-attention-schemes">
+          <style>
+            #widget-ch21-attention-schemes .controls { display: flex; gap: 1rem; padding: 0.5rem 0; flex-wrap: wrap; }
+            #widget-ch21-attention-schemes .controls label { font-family: system-ui, -apple-system, sans-serif; font-size: 12px; color: #5C5B56; display: flex; align-items: center; gap: 5px; cursor: pointer; }
+            #widget-ch21-attention-schemes .controls input[type="radio"] { accent-color: #534AB7; }
+          </style>
+
+          <div class="controls">
+            <label><input type="radio" name="ch21-attn-scheme" value="space" checked onchange="ch20UpdateScheme('space')"> Space-only</label>
+            <label><input type="radio" name="ch21-attn-scheme" value="joint" onchange="ch20UpdateScheme('joint')"> Joint space-time</label>
+            <label><input type="radio" name="ch21-attn-scheme" value="divided" onchange="ch20UpdateScheme('divided')"> Divided (S→T)</label>
+          </div>
+
+          <svg id="ch21-attn-svg" width="100%" viewBox="0 0 800 260">
+            <!-- 4 frames x 4x3 patches shown as grids -->
+            <!-- Frame labels -->
+            <text x="140" y="22" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#5C5B56">Frame 1</text>
+            <text x="300" y="22" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#5C5B56">Frame 2</text>
+            <text x="460" y="22" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#5C5B56">Frame 3</text>
+            <text x="620" y="22" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#5C5B56">Frame 4</text>
+
+            <!-- Frame 1 grid -->
+            <g id="ch21-f1">
+              <rect class="ch21-cell" id="ch21-f1-r0c0" x="80" y="32" width="38" height="38" rx="3" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="0.5"/>
+              <rect class="ch21-cell" id="ch21-f1-r0c1" x="122" y="32" width="38" height="38" rx="3" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="0.5"/>
+              <rect class="ch21-cell" id="ch21-f1-r0c2" x="164" y="32" width="38" height="38" rx="3" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="0.5"/>
+              <rect class="ch21-cell" id="ch21-f1-r1c0" x="80" y="74" width="38" height="38" rx="3" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="0.5"/>
+              <rect class="ch21-cell" id="ch21-f1-r1c1" x="122" y="74" width="38" height="38" rx="3" fill="#534AB7"/>
+              <rect class="ch21-cell" id="ch21-f1-r1c2" x="164" y="74" width="38" height="38" rx="3" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="0.5"/>
+              <rect class="ch21-cell" id="ch21-f1-r2c0" x="80" y="116" width="38" height="38" rx="3" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="0.5"/>
+              <rect class="ch21-cell" id="ch21-f1-r2c1" x="122" y="116" width="38" height="38" rx="3" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="0.5"/>
+              <rect class="ch21-cell" id="ch21-f1-r2c2" x="164" y="116" width="38" height="38" rx="3" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="0.5"/>
+            </g>
+
+            <!-- Frame 2 grid -->
+            <g id="ch21-f2">
+              <rect class="ch21-cell" id="ch21-f2-r0c0" x="240" y="32" width="38" height="38" rx="3" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="0.5"/>
+              <rect class="ch21-cell" id="ch21-f2-r0c1" x="282" y="32" width="38" height="38" rx="3" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="0.5"/>
+              <rect class="ch21-cell" id="ch21-f2-r0c2" x="324" y="32" width="38" height="38" rx="3" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="0.5"/>
+              <rect class="ch21-cell" id="ch21-f2-r1c0" x="240" y="74" width="38" height="38" rx="3" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="0.5"/>
+              <rect class="ch21-cell" id="ch21-f2-r1c1" x="282" y="74" width="38" height="38" rx="3" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="0.5"/>
+              <rect class="ch21-cell" id="ch21-f2-r1c2" x="324" y="74" width="38" height="38" rx="3" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="0.5"/>
+              <rect class="ch21-cell" id="ch21-f2-r2c0" x="240" y="116" width="38" height="38" rx="3" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="0.5"/>
+              <rect class="ch21-cell" id="ch21-f2-r2c1" x="282" y="116" width="38" height="38" rx="3" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="0.5"/>
+              <rect class="ch21-cell" id="ch21-f2-r2c2" x="324" y="116" width="38" height="38" rx="3" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="0.5"/>
+            </g>
+
+            <!-- Frame 3 grid -->
+            <g id="ch21-f3">
+              <rect class="ch21-cell" id="ch21-f3-r0c0" x="400" y="32" width="38" height="38" rx="3" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="0.5"/>
+              <rect class="ch21-cell" id="ch21-f3-r0c1" x="442" y="32" width="38" height="38" rx="3" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="0.5"/>
+              <rect class="ch21-cell" id="ch21-f3-r0c2" x="484" y="32" width="38" height="38" rx="3" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="0.5"/>
+              <rect class="ch21-cell" id="ch21-f3-r1c0" x="400" y="74" width="38" height="38" rx="3" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="0.5"/>
+              <rect class="ch21-cell" id="ch21-f3-r1c1" x="442" y="74" width="38" height="38" rx="3" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="0.5"/>
+              <rect class="ch21-cell" id="ch21-f3-r1c2" x="484" y="74" width="38" height="38" rx="3" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="0.5"/>
+              <rect class="ch21-cell" id="ch21-f3-r2c0" x="400" y="116" width="38" height="38" rx="3" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="0.5"/>
+              <rect class="ch21-cell" id="ch21-f3-r2c1" x="442" y="116" width="38" height="38" rx="3" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="0.5"/>
+              <rect class="ch21-cell" id="ch21-f3-r2c2" x="484" y="116" width="38" height="38" rx="3" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="0.5"/>
+            </g>
+
+            <!-- Frame 4 grid -->
+            <g id="ch21-f4">
+              <rect class="ch21-cell" id="ch21-f4-r0c0" x="560" y="32" width="38" height="38" rx="3" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="0.5"/>
+              <rect class="ch21-cell" id="ch21-f4-r0c1" x="602" y="32" width="38" height="38" rx="3" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="0.5"/>
+              <rect class="ch21-cell" id="ch21-f4-r0c2" x="644" y="32" width="38" height="38" rx="3" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="0.5"/>
+              <rect class="ch21-cell" id="ch21-f4-r1c0" x="560" y="74" width="38" height="38" rx="3" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="0.5"/>
+              <rect class="ch21-cell" id="ch21-f4-r1c1" x="602" y="74" width="38" height="38" rx="3" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="0.5"/>
+              <rect class="ch21-cell" id="ch21-f4-r1c2" x="644" y="74" width="38" height="38" rx="3" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="0.5"/>
+              <rect class="ch21-cell" id="ch21-f4-r2c0" x="560" y="116" width="38" height="38" rx="3" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="0.5"/>
+              <rect class="ch21-cell" id="ch21-f4-r2c1" x="602" y="116" width="38" height="38" rx="3" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="0.5"/>
+              <rect class="ch21-cell" id="ch21-f4-r2c2" x="644" y="116" width="38" height="38" rx="3" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="0.5"/>
+            </g>
+
+            <!-- Query indicator -->
+            <text x="141" y="98" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#FFFFFF" id="ch21-q-label">q</text>
+
+            <!-- Info text -->
+            <text x="400" y="185" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="500" fill="#534AB7" id="ch21-scheme-name">Space-only Attention</text>
+            <text x="400" y="205" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#5C5B56" id="ch21-scheme-cost">Cost: O(T · (H'W')²) — no temporal reasoning</text>
+            <text x="400" y="225" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94" id="ch21-scheme-desc">Each frame attends within itself. No information flows across time.</text>
+          </svg>
+
+          <p style="font-family:system-ui,-apple-system,sans-serif; font-size:13px; color:#9C9A94; font-style:italic; padding:0.5rem 0 0.5rem;" id="ch21-attn-obs">
+            Space-only attention treats each frame independently. Good for appearance recognition (Kinetics), poor for temporal reasoning (Something-Something V2).
+          </p>
+        </div>
+
+        <script>
+          function ch20UpdateScheme(scheme) {
+            var cells = document.querySelectorAll('#widget-ch21-attention-schemes .ch21-cell');
+            cells.forEach(function(c) { c.setAttribute('fill', '#F1EFE8'); c.setAttribute('stroke', '#E5E3DC'); c.setAttribute('stroke-width', '0.5'); });
+            // Always highlight query cell
+            document.getElementById('ch21-f1-r1c1').setAttribute('fill', '#534AB7');
+            document.getElementById('ch21-f1-r1c1').setAttribute('stroke', '#534AB7');
+
+            var name = document.getElementById('ch21-scheme-name');
+            var cost = document.getElementById('ch21-scheme-cost');
+            var desc = document.getElementById('ch21-scheme-desc');
+            var obs = document.getElementById('ch21-attn-obs');
+
+            if (scheme === 'space') {
+              // Highlight all cells in frame 1 (spatial neighbors)
+              ['ch21-f1-r0c0','ch21-f1-r0c1','ch21-f1-r0c2','ch21-f1-r1c0','ch21-f1-r1c2','ch21-f1-r2c0','ch21-f1-r2c1','ch21-f1-r2c2'].forEach(function(id) {
+                document.getElementById(id).setAttribute('fill', '#EEEDFE');
+              });
+              name.textContent = 'Space-only Attention';
+              cost.textContent = "Cost: O(T · (H'W')²) — no temporal reasoning";
+              desc.textContent = 'Each frame attends within itself. No information flows across time.';
+              obs.textContent = "Space-only attention treats each frame independently. Good for appearance recognition (Kinetics), poor for temporal reasoning (Something-Something V2).";
+            } else if (scheme === 'joint') {
+              // Highlight ALL cells in ALL frames
+              cells.forEach(function(c) { c.setAttribute('fill', '#EEEDFE'); });
+              document.getElementById('ch21-f1-r1c1').setAttribute('fill', '#534AB7');
+              name.textContent = 'Joint Space-Time Attention';
+              cost.textContent = "Cost: O((T · H'W')²) — full quadratic, 15× more than divided";
+              desc.textContent = 'Every token attends to every other token across all frames. Maximum expressiveness, maximum cost.';
+              obs.textContent = "Joint attention is the most expressive but most expensive scheme. Each token sees all spatial positions across all frames — but most attention pairs are uninformative (background-to-background across time).";
+            } else {
+              // Divided: spatial (frame 1) + temporal (r1c1 across frames)
+              ['ch21-f1-r0c0','ch21-f1-r0c1','ch21-f1-r0c2','ch21-f1-r1c0','ch21-f1-r1c2','ch21-f1-r2c0','ch21-f1-r2c1','ch21-f1-r2c2'].forEach(function(id) {
+                document.getElementById(id).setAttribute('fill', '#EEEDFE');
+              });
+              ['ch21-f2-r1c1','ch21-f3-r1c1','ch21-f4-r1c1'].forEach(function(id) {
+                document.getElementById(id).setAttribute('fill', '#AFA9EC');
+                document.getElementById(id).setAttribute('stroke', '#534AB7');
+                document.getElementById(id).setAttribute('stroke-width', '1.5');
+              });
+              name.textContent = 'Divided Space-Time Attention (S → T)';
+              cost.textContent = "Cost: O(T·(H'W')² + H'W'·T²) — 15× cheaper than joint";
+              desc.textContent = 'Step 1: spatial attention within frame (light purple). Step 2: temporal attention at same position across frames (medium purple).';
+              obs.textContent = "Divided attention factorizes the O((THW)²) cost into two manageable pieces. Spatial attention handles 'what is here?' and temporal attention handles 'how does this position change?' — achieving the best accuracy-efficiency trade-off.";
+            }
+          }
+          ch20UpdateScheme('space');
+        </script>
+
+        <figcaption>Figure 21.2 — Interactive: TimeSformer attention schemes. Select a scheme to see which tokens the query (solid purple in frame 1) attends to. Space-only attends within the frame. Joint attends to everything. Divided first attends spatially within the frame, then temporally at the same spatial position across frames — achieving the best trade-off.</figcaption>
+      </figure>
+
+    </section>
+
+    <!-- ============================================================
+         SECTION 3: ViViT
+         ============================================================ -->
+    <section class="chapter-section" id="vivit">
+      <h2>ViViT</h2>
+
+      <p>TimeSformer tokenizes each frame independently — every spatial patch at every timestep becomes its own token, carrying no temporal information until attention mixes the tokens. ViViT introduced a more fundamental change: <strong>tubelet embedding</strong>, which tokenizes the video volume in 3D.</p>
+
+      <h3>Tubelet Embedding</h3>
+
+      <p>Instead of extracting 2D patches from each frame independently, tubelet embedding extracts 3D patches of size $t \times h \times w$ from the video tensor $V \in \mathbb{R}^{T \times H \times W \times 3}$. Each tubelet is linearly projected to produce one token:</p>
+
+      $$z_i = E\, \text{tube}_i + e_{\text{pos},i}$$
+
+      <p>where $E \in \mathbb{R}^{d \times (t \cdot h \cdot w \cdot 3)}$ is the projection matrix (matrix multiply, projecting the flattened 3D patch of $t \cdot h \cdot w \cdot 3$ scalars into a $d$-dimensional embedding), and $e_{\text{pos},i}$ is a learned positional encoding. With $t = 2$, the total token count is halved compared to frame-level tokenization, and each token already encodes local motion — two frames of visual change are baked into the token before any attention is computed.</p>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 280" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="ch21-arr2" viewBox="0 0 10 10" refX="9" refY="5"
+              markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+              <path d="M1 1L9 5L1 9" fill="none" stroke="context-stroke"
+                stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </marker>
+          </defs>
+
+          <!-- Panel headers -->
+          <rect x="20" y="10" width="350" height="28" rx="5" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="1"/>
+          <text x="195" y="29" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#5C5B56">Frame-Level Patches</text>
+
+          <rect x="430" y="10" width="350" height="28" rx="5" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1"/>
+          <text x="605" y="29" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#534AB7">Tubelet Embedding (t=2)</text>
+
+          <line x1="400" y1="6" x2="400" y2="270" stroke="#E5E3DC" stroke-width="1" stroke-dasharray="5 4"/>
+
+          <!-- LEFT: Frame-level patches -->
+          <!-- 4 frames stacked -->
+          <rect x="80" y="54" width="100" height="30" rx="4" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="130" y="74" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#0F6E56">Frame 1</text>
+
+          <rect x="80" y="90" width="100" height="30" rx="4" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="130" y="110" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#0F6E56">Frame 2</text>
+
+          <rect x="80" y="126" width="100" height="30" rx="4" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="130" y="146" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#0F6E56">Frame 3</text>
+
+          <rect x="80" y="162" width="100" height="30" rx="4" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="130" y="182" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#0F6E56">Frame 4</text>
+
+          <!-- Arrows to tokens -->
+          <line x1="180" y1="69" x2="220" y2="69" stroke="#9C9A94" stroke-width="1" marker-end="url(#ch21-arr2)"/>
+          <line x1="180" y1="105" x2="220" y2="105" stroke="#9C9A94" stroke-width="1" marker-end="url(#ch21-arr2)"/>
+          <line x1="180" y1="141" x2="220" y2="141" stroke="#9C9A94" stroke-width="1" marker-end="url(#ch21-arr2)"/>
+          <line x1="180" y1="177" x2="220" y2="177" stroke="#9C9A94" stroke-width="1" marker-end="url(#ch21-arr2)"/>
+
+          <!-- Token groups -->
+          <rect x="225" y="58" width="24" height="22" rx="3" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="0.5"/>
+          <rect x="253" y="58" width="24" height="22" rx="3" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="0.5"/>
+          <rect x="281" y="58" width="24" height="22" rx="3" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="0.5"/>
+          <rect x="309" y="58" width="24" height="22" rx="3" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="0.5"/>
+
+          <rect x="225" y="94" width="24" height="22" rx="3" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="0.5"/>
+          <rect x="253" y="94" width="24" height="22" rx="3" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="0.5"/>
+          <rect x="281" y="94" width="24" height="22" rx="3" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="0.5"/>
+          <rect x="309" y="94" width="24" height="22" rx="3" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="0.5"/>
+
+          <rect x="225" y="130" width="24" height="22" rx="3" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="0.5"/>
+          <rect x="253" y="130" width="24" height="22" rx="3" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="0.5"/>
+          <rect x="281" y="130" width="24" height="22" rx="3" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="0.5"/>
+          <rect x="309" y="130" width="24" height="22" rx="3" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="0.5"/>
+
+          <rect x="225" y="166" width="24" height="22" rx="3" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="0.5"/>
+          <rect x="253" y="166" width="24" height="22" rx="3" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="0.5"/>
+          <rect x="281" y="166" width="24" height="22" rx="3" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="0.5"/>
+          <rect x="309" y="166" width="24" height="22" rx="3" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="0.5"/>
+
+          <text x="280" y="212" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#5C5B56">T × n tokens</text>
+          <text x="280" y="228" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">No temporal info per token</text>
+
+          <!-- RIGHT: Tubelet embedding -->
+          <!-- 2 tubelet groups spanning 2 frames each -->
+          <rect x="480" y="54" width="100" height="66" rx="4" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <text x="530" y="82" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#534AB7">Frames 1-2</text>
+          <text x="530" y="96" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#534AB7">t=2 tubelets</text>
+
+          <rect x="480" y="126" width="100" height="66" rx="4" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <text x="530" y="154" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#534AB7">Frames 3-4</text>
+          <text x="530" y="168" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#534AB7">t=2 tubelets</text>
+
+          <!-- Arrows to tokens -->
+          <line x1="580" y1="87" x2="620" y2="87" stroke="#534AB7" stroke-width="1.5" marker-end="url(#ch21-arr2)"/>
+          <line x1="580" y1="159" x2="620" y2="159" stroke="#534AB7" stroke-width="1.5" marker-end="url(#ch21-arr2)"/>
+
+          <!-- Fewer tokens -->
+          <rect x="625" y="72" width="28" height="30" rx="3" fill="#AFA9EC" stroke="#534AB7" stroke-width="1"/>
+          <rect x="657" y="72" width="28" height="30" rx="3" fill="#AFA9EC" stroke="#534AB7" stroke-width="1"/>
+          <rect x="689" y="72" width="28" height="30" rx="3" fill="#AFA9EC" stroke="#534AB7" stroke-width="1"/>
+          <rect x="721" y="72" width="28" height="30" rx="3" fill="#AFA9EC" stroke="#534AB7" stroke-width="1"/>
+
+          <rect x="625" y="144" width="28" height="30" rx="3" fill="#AFA9EC" stroke="#534AB7" stroke-width="1"/>
+          <rect x="657" y="144" width="28" height="30" rx="3" fill="#AFA9EC" stroke="#534AB7" stroke-width="1"/>
+          <rect x="689" y="144" width="28" height="30" rx="3" fill="#AFA9EC" stroke="#534AB7" stroke-width="1"/>
+          <rect x="721" y="144" width="28" height="30" rx="3" fill="#AFA9EC" stroke="#534AB7" stroke-width="1"/>
+
+          <text x="680" y="212" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#534AB7">(T/t) × n tokens</text>
+          <text x="680" y="228" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">Local motion encoded per token</text>
+
+          <!-- Bottom comparison -->
+          <text x="195" y="258" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#993C1D">4 × 4 = 16 tokens</text>
+          <text x="605" y="258" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#0F6E56">2 × 4 = 8 tokens (2× reduction)</text>
+        </svg>
+        <figcaption>Figure 21.3 — Frame-level patches (left) produce one token per patch per frame with no temporal information. Tubelet embedding (right) extracts 3D patches spanning t=2 frames, halving the token count and encoding local motion directly into each token representation.</figcaption>
+      </figure>
+
+      <h3>Model Variants and Initialization</h3>
+
+      <p>ViViT explored four model variants trading off expressiveness and efficiency. The full spatiotemporal transformer applies attention over all tubelet tokens — most expressive but most expensive. The factorized encoder runs a spatial ViT per frame, then feeds each frame's CLS token into a temporal transformer — cheapest but limited cross-frame spatial interaction. The factorized self-attention and factorized dot-product variants sit in between, decomposing the attention operation itself rather than the model.</p>
+
+      <p>A critical practical contribution was the initialization strategy: inflate a pretrained 2D patch embedding $E_{2D} \in \mathbb{R}^{d \times (h \cdot w \cdot 3)}$ to 3D by replicating it $t$ times along the temporal dimension and dividing by $t$: $E_{3D} = \frac{1}{t}[E_{2D}; E_{2D}; \ldots; E_{2D}]$. This "central frame initialization" lets the model start from a strong image-pretrained checkpoint and learn temporal dynamics during fine-tuning, rather than training from scratch on expensive video data.</p>
+
+    </section>
+
+    <!-- ============================================================
+         SECTION 4: Hierarchical Video Backbones
+         ============================================================ -->
+    <section class="chapter-section" id="hierarchical-video">
+      <h2>Video Swin Transformer and Hierarchical Video Backbones</h2>
+
+      <p>TimeSformer and ViViT process all patches at a single resolution. Dense prediction tasks — action detection, video object segmentation, temporal grounding — require multi-scale features. Chapter 18 showed how hierarchical ViTs (Swin, Hiera) produce multi-scale features for images. The same principles extend to video, with the added complexity of a third dimension.</p>
+
+      <h3>Video Swin Transformer</h3>
+
+      <p><strong>Video Swin</strong> extends Swin's shifted window attention to 3D. Each attention window spans $M_t \times M_h \times M_w$ tokens (e.g., $2 \times 7 \times 7 = 98$ tokens per window). Attention is computed within each window, keeping cost linear in the total token count. The 3D cyclic shift alternates the window positions along temporal, height, and width dimensions in successive layers, enabling cross-window information flow without global attention. The cost per layer is:</p>
+
+      $$\text{Cost}_{\text{3D-window}} = O\!\left(T \cdot H' \cdot W' \cdot M_t \cdot M_h \cdot M_w \cdot d\right)$$
+
+      <p>where the product $M_t \cdot M_h \cdot M_w$ is the window size (scalar multiplication of the three window dimensions, yielding the number of tokens per window). This is linear in the total token count $T \cdot H' \cdot W'$, in contrast to the quadratic cost of global attention. Video Swin achieves strong results on both Kinetics-400 (appearance) and Something-Something V2 (motion), demonstrating that 3D locality captures temporal dynamics well.</p>
+
+      <h3>Hiera for Video</h3>
+
+      <p>Chapter 18 introduced Hiera — a hierarchical ViT that stripped away Swin's complexity (shifted windows, relative position bias, attention masking) and relied on MAE pretraining to learn the spatial inductive biases that architecture had previously provided. The same thesis applies to video, and the results are even more striking.</p>
+
+      <p>Hiera for video uses <strong>mask unit attention</strong>: tokens are grouped into "mask units" that pool across both space and time. Early stages use local 3D windows (unshifted — no cyclic shifting needed). Late stages use global attention. The entire architecture is a pure hierarchical ViT with no convolutions, no shifted windows, no relative position bias. With VideoMAE-style pretraining, this simplified architecture achieves 87.3% on Kinetics-400 — matching or exceeding Video Swin while running significantly faster. This confirms the simplicity thesis from Chapter 18: self-supervised pretraining can replace hand-crafted architectural inductive biases, and the advantage is even larger in video, where architectural complexity compounds across the temporal dimension.</p>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 320" xmlns="http://www.w3.org/2000/svg">
+          <!-- Panel headers -->
+          <rect x="20" y="10" width="350" height="28" rx="5" fill="#FAEEDA" stroke="#EF9F27" stroke-width="1"/>
+          <text x="195" y="29" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#854F0B">Video Swin Transformer</text>
+
+          <rect x="430" y="10" width="350" height="28" rx="5" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="605" y="29" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#0F6E56">Hiera for Video</text>
+
+          <line x1="400" y1="6" x2="400" y2="310" stroke="#E5E3DC" stroke-width="1" stroke-dasharray="5 4"/>
+
+          <!-- LEFT: Video Swin components -->
+          <rect x="50" y="55" width="300" height="36" rx="6" fill="#FAEEDA" stroke="#EF9F27" stroke-width="1.5"/>
+          <text x="200" y="78" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#854F0B">3D Shifted Window Attention</text>
+
+          <rect x="50" y="100" width="300" height="36" rx="6" fill="#FAEEDA" stroke="#EF9F27" stroke-width="1"/>
+          <text x="200" y="123" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#854F0B">Relative Position Bias (3D table)</text>
+
+          <rect x="50" y="145" width="300" height="36" rx="6" fill="#FAEEDA" stroke="#EF9F27" stroke-width="1"/>
+          <text x="200" y="168" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#854F0B">Attention Masking (cyclic shift)</text>
+
+          <rect x="50" y="190" width="300" height="36" rx="6" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="1"/>
+          <text x="200" y="213" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#5C5B56">Supervised Pretraining</text>
+
+          <text x="200" y="252" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#854F0B">84.9% K400</text>
+          <text x="200" y="270" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">Complex, many hyperparameters</text>
+
+          <!-- RIGHT: Hiera components -->
+          <rect x="460" y="55" width="300" height="36" rx="6" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1.5"/>
+          <text x="610" y="78" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#0F6E56">Unshifted 3D Window → Global Attention</text>
+
+          <rect x="460" y="100" width="300" height="36" rx="6" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="1" stroke-dasharray="4 3"/>
+          <text x="610" y="123" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#9C9A94">No position bias (removed)</text>
+
+          <rect x="460" y="145" width="300" height="36" rx="6" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="1" stroke-dasharray="4 3"/>
+          <text x="610" y="168" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#9C9A94">No attention masking (removed)</text>
+
+          <rect x="460" y="190" width="300" height="36" rx="6" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <text x="610" y="213" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#534AB7">MAE Pretraining (VideoMAE)</text>
+
+          <text x="610" y="252" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#0F6E56">87.3% K400</text>
+          <text x="610" y="270" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">Simple, faster, higher accuracy</text>
+
+          <!-- Arrows indicating removal -->
+          <text x="390" y="123" text-anchor="end" font-family="system-ui, -apple-system, sans-serif" font-size="16" font-weight="400" fill="#993C1D">✕</text>
+          <text x="390" y="168" text-anchor="end" font-family="system-ui, -apple-system, sans-serif" font-size="16" font-weight="400" fill="#993C1D">✕</text>
+
+          <!-- Bottom comparison -->
+          <text x="200" y="300" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">Architecture encodes inductive bias</text>
+          <text x="610" y="300" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">Pretraining learns inductive bias</text>
+        </svg>
+        <figcaption>Figure 21.4 — Video Swin (left) uses shifted 3D windows, relative position bias, and attention masking — three architectural components that encode spatiotemporal locality. Hiera for video (right) removes all three and relies on MAE pretraining to learn the same biases from data. The simpler model is faster and more accurate (87.3% vs 84.9% on Kinetics-400).</figcaption>
+      </figure>
+
+      <p>The following code shows 3D window partitioning and Hiera-style video attention.</p>
+
+<pre><code class="language-python">
+import torch
+import torch.nn as nn
+
+def window_partition_3d(x, window_size):
+    """Partition (B, T, H, W, C) into non-overlapping 3D windows."""
+    B, T, H, W, C = x.shape
+    Mt, Mh, Mw = window_size
+    x = x.view(B, T // Mt, Mt, H // Mh, Mh, W // Mw, Mw, C)
+    windows = x.permute(0, 1, 3, 5, 2, 4, 6, 7)  # (B, nT, nH, nW, Mt, Mh, Mw, C)
+    windows = windows.reshape(-1, Mt * Mh * Mw, C) # (num_windows*B, window_tokens, C)
+    return windows
+
+class VideoHieraBlock(nn.Module):
+    """Hiera-style video attention: local 3D windows, no shift, no position bias."""
+    def __init__(self, d_model=768, n_heads=12, window_size=(2, 7, 7)):
+        super().__init__()
+        self.window_size = window_size
+        self.norm = nn.LayerNorm(d_model)
+        self.attn = nn.MultiheadAttention(d_model, n_heads, batch_first=True)
+        self.ffn = nn.Sequential(
+            nn.Linear(d_model, 4 * d_model), nn.GELU(),
+            nn.Linear(4 * d_model, d_model)
+        )
+        self.norm2 = nn.LayerNorm(d_model)
+
+    def forward(self, x):
+        B, T, H, W, C = x.shape
+        Mt, Mh, Mw = self.window_size
+        # Window partition — no shift, no masking
+        windows = window_partition_3d(self.norm(x), (Mt, Mh, Mw))  # (nW*B, Mt*Mh*Mw, C)
+        attn_out, _ = self.attn(windows, windows, windows)          # attention within windows
+        # Reverse partition
+        nT, nH, nW = T // Mt, H // Mh, W // Mw
+        attn_out = attn_out.view(B, nT, nH, nW, Mt, Mh, Mw, C)
+        attn_out = attn_out.permute(0, 1, 4, 2, 5, 3, 6, 7).reshape(B, T, H, W, C)
+        x = x + attn_out
+        x = x + self.ffn(self.norm2(x))
+        return x  # (B, T, H, W, C)
+</code></pre>
+
+    </section>
+
+    <!-- ============================================================
+         SECTION 5: Self-Supervised Video Pretraining
+         ============================================================ -->
+    <section class="chapter-section" id="self-supervised-video">
+      <h2>Self-Supervised Video Pretraining</h2>
+
+      <p>Labeled video data is expensive — annotating actions in video requires watching the video, not just glancing at a frame. Self-supervised pretraining sidesteps this by learning representations from unlabeled video. Three paradigms emerged, each answering the question "what should the model predict?" differently: pixels, features, or world dynamics.</p>
+
+      <h3>VideoMAE: Masked Pixel Reconstruction</h3>
+
+      <p><strong>VideoMAE</strong> applies the masked autoencoder framework to video. The model masks a large fraction of spatiotemporal patches and trains the encoder to produce representations from which a lightweight decoder can reconstruct the original pixel values. The critical design choice is the masking ratio: VideoMAE uses <strong>90% masking</strong> with <strong>tube masking</strong> — the same spatial positions are masked across all frames.</p>
+
+      <p>Why 90%? Video has extreme temporal redundancy. Adjacent frames typically share over 95% of their pixel content. At lower masking ratios (50-75%), the model can reconstruct masked patches by copying from temporal neighbors — learning nothing about visual semantics. Tube masking forces the model to use spatial context from distant patches rather than temporal shortcuts, because if a position is masked, it is masked in every frame.</p>
+
+      <h3>VideoMAE V2: Scaling with Dual Masking</h3>
+
+      <p><strong>VideoMAE V2</strong> addressed the scaling bottleneck. Even with 90% masking, the encoder still processes 10% of a potentially huge token count. VideoMAE V2 introduces <strong>dual masking</strong>: the encoder operates on one subset of visible tokens, and the decoder operates on a different, even sparser subset. This decouples encoder and decoder compute, enabling independent scaling. The result: efficient pretraining of billion-parameter video encoders (ViT-g scale) that would be impractical with the original VideoMAE recipe.</p>
+
+      <figure class="diagram-figure diagram-interactive">
+        <div class="widget-container" id="widget-ch21-tube-masking">
+          <style>
+            #widget-ch21-tube-masking .controls { display: flex; gap: 1.2rem; padding: 0.5rem 0; flex-wrap: wrap; }
+            #widget-ch21-tube-masking .controls label { font-family: system-ui, -apple-system, sans-serif; font-size: 13px; color: #5C5B56; display: flex; align-items: center; gap: 6px; cursor: pointer; }
+            #widget-ch21-tube-masking .controls input[type="radio"] { accent-color: #534AB7; }
+            #widget-ch21-tube-masking .patch { transition: fill 0.3s, opacity 0.3s; }
+          </style>
+
+          <div class="controls">
+            <label><input type="radio" name="ch21-mask-type" value="tube" checked onchange="ch20UpdateMask('tube')"> Tube masking (VideoMAE)</label>
+            <label><input type="radio" name="ch21-mask-type" value="random" onchange="ch20UpdateMask('random')"> Random masking</label>
+            <label style="margin-left:1rem;">
+              Ratio <span id="ch21-ratio-val">90%</span>
+              <input type="range" min="50" max="95" step="5" value="90"
+                style="width:120px; accent-color:#534AB7;"
+                oninput="document.getElementById('ch21-ratio-val').textContent=this.value+'%'; ch20UpdateMask(document.querySelector('input[name=ch21-mask-type]:checked').value, parseInt(this.value))">
+            </label>
+          </div>
+
+          <svg id="ch21-mask-svg" width="100%" viewBox="0 0 800 200">
+            <!-- 4 frames x 4x4 patches -->
+            <text x="115" y="18" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#5C5B56">Frame 1</text>
+            <text x="305" y="18" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#5C5B56">Frame 2</text>
+            <text x="495" y="18" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#5C5B56">Frame 3</text>
+            <text x="685" y="18" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#5C5B56">Frame 4</text>
+          </svg>
+
+          <p style="font-family:system-ui,-apple-system,sans-serif; font-size:13px; color:#9C9A94; font-style:italic; padding:0.5rem 0 0.5rem;" id="ch21-mask-obs">
+            Tube masking masks the same spatial positions across all frames. At 90%, only 10% of patches are visible — and they must reconstruct the rest from spatial context alone, preventing temporal shortcuts.
+          </p>
+        </div>
+
+        <script>
+          var ch20MaskState = {};
+          function ch20InitGrid() {
+            var svg = document.getElementById('ch21-mask-svg');
+            var frames = [{x:30, label:'f1'}, {x:220, label:'f2'}, {x:410, label:'f3'}, {x:600, label:'f4'}];
+            frames.forEach(function(fr) {
+              for (var r = 0; r < 4; r++) {
+                for (var c = 0; c < 4; c++) {
+                  var rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+                  rect.setAttribute('class', 'patch');
+                  rect.setAttribute('id', 'ch21-p-'+fr.label+'-'+r+'-'+c);
+                  rect.setAttribute('x', fr.x + c * 42);
+                  rect.setAttribute('y', 28 + r * 42);
+                  rect.setAttribute('width', 38);
+                  rect.setAttribute('height', 38);
+                  rect.setAttribute('rx', '4');
+                  rect.setAttribute('fill', '#E1F5EE');
+                  rect.setAttribute('stroke', '#5DCAA5');
+                  rect.setAttribute('stroke-width', '1');
+                  svg.appendChild(rect);
+                }
+              }
+            });
+          }
+          ch20InitGrid();
+
+          function ch20UpdateMask(type, ratio) {
+            ratio = ratio || 90;
+            var totalPerFrame = 16;
+            var maskCount = Math.round(totalPerFrame * ratio / 100);
+            var frames = ['f1','f2','f3','f4'];
+
+            // Generate mask positions
+            var allPositions = [];
+            for (var i = 0; i < 16; i++) allPositions.push(i);
+
+            // Seeded shuffle for consistency
+            function seededShuffle(arr, seed) {
+              var a = arr.slice();
+              for (var i = a.length - 1; i > 0; i--) {
+                seed = (seed * 9301 + 49297) % 233280;
+                var j = Math.floor((seed / 233280) * (i + 1));
+                var tmp = a[i]; a[i] = a[j]; a[j] = tmp;
+              }
+              return a;
+            }
+
+            if (type === 'tube') {
+              var shuffled = seededShuffle(allPositions, 42);
+              var masked = new Set(shuffled.slice(0, maskCount));
+              frames.forEach(function(fr) {
+                for (var i = 0; i < 16; i++) {
+                  var r = Math.floor(i / 4), c = i % 4;
+                  var el = document.getElementById('ch21-p-'+fr+'-'+r+'-'+c);
+                  if (masked.has(i)) {
+                    el.setAttribute('fill', '#F1EFE8');
+                    el.setAttribute('stroke', '#E5E3DC');
+                    el.setAttribute('opacity', '0.4');
+                  } else {
+                    el.setAttribute('fill', '#E1F5EE');
+                    el.setAttribute('stroke', '#5DCAA5');
+                    el.setAttribute('opacity', '1');
+                  }
+                }
+              });
+              document.getElementById('ch21-mask-obs').textContent = 'Tube masking masks the same spatial positions across all frames. At ' + ratio + '%, only ' + (100 - ratio) + '% of patches are visible — they must reconstruct from spatial context alone, preventing temporal shortcuts.';
+            } else {
+              var seeds = [42, 137, 256, 389];
+              frames.forEach(function(fr, fi) {
+                var shuffled = seededShuffle(allPositions, seeds[fi] + ratio);
+                var masked = new Set(shuffled.slice(0, maskCount));
+                for (var i = 0; i < 16; i++) {
+                  var r = Math.floor(i / 4), c = i % 4;
+                  var el = document.getElementById('ch21-p-'+fr+'-'+r+'-'+c);
+                  if (masked.has(i)) {
+                    el.setAttribute('fill', '#F1EFE8');
+                    el.setAttribute('stroke', '#E5E3DC');
+                    el.setAttribute('opacity', '0.4');
+                  } else {
+                    el.setAttribute('fill', '#E1F5EE');
+                    el.setAttribute('stroke', '#5DCAA5');
+                    el.setAttribute('opacity', '1');
+                  }
+                }
+              });
+              document.getElementById('ch21-mask-obs').textContent = 'Random masking applies independent masks per frame. At ' + ratio + '%, some positions are visible in one frame and masked in another — the model can "cheat" by copying from temporal neighbors instead of learning semantics.';
+            }
+          }
+          ch20UpdateMask('tube', 90);
+        </script>
+
+        <figcaption>Figure 21.5 — Interactive: VideoMAE masking strategies. Toggle between tube masking (same positions masked across all frames) and random masking (independent per frame). Adjust the masking ratio to see how aggressive masking forces the model to learn from spatial context rather than temporal copying.</figcaption>
+      </figure>
+
+      <h3>V-JEPA: Predicting in Feature Space</h3>
+
+      <p><strong>V-JEPA</strong> (Video Joint Embedding Predictive Architecture) asked a different question: instead of predicting pixels, why not predict in feature space? A predictor network takes the encoder's features from visible patches and predicts the encoder's features for masked patches. The target encoder is an exponential moving average (EMA) of the student encoder, with a stop-gradient to prevent collapse:</p>
+
+      $$\mathcal{L}_{\text{V-JEPA}} = \frac{1}{|\mathcal{M}|} \sum_{i \in \mathcal{M}} \left\| f_\theta(\hat{z}_i) - \text{sg}\!\left(f_{\bar\theta}(z_i)\right) \right\|_2^2$$
+
+      <p>where $\hat{z}_i$ is the predictor's output for masked position $i$, $f_{\bar\theta}(z_i)$ is the EMA target encoder's representation, and $\text{sg}$ denotes stop-gradient (the $\|\cdot\|_2^2$ is the squared L2 norm, a scalar measuring feature-space prediction error). Pixel reconstruction forces the model to allocate capacity to low-level texture details — the exact shade of a pixel, the noise pattern in a frame. Feature-space prediction lets the model focus on abstract semantic and motion structure, ignoring irrelevant surface details.</p>
+
+      <h3>V-JEPA 2: Toward a World Model</h3>
+
+      <p><strong>V-JEPA 2</strong>, released in 2025, scaled this principle dramatically. Pre-trained on over 1 million hours of internet video, V-JEPA 2 uses a two-stage training approach. Stage 1 is <strong>actionless pretraining</strong>: the model learns to predict how video features evolve purely from observation, without any action labels. Stage 2 adds <strong>action-conditioned training</strong>: the model learns to predict how features change given specific actions.</p>
+
+      <p>The results demonstrate that video understanding at sufficient scale approaches genuine world modeling. V-JEPA 2 achieves 77.3% on Something-Something V2 (requiring fine-grained motion understanding), 39.7 recall@5 on Epic-Kitchens-100 action anticipation (predicting what will happen next — state-of-the-art among all models), and when aligned with a large language model, 84.0 on PerceptionTest and 76.9 on TempCompass for video question answering. Most remarkably, V-JEPA 2 enables <strong>zero-shot robot planning</strong>: given visual subgoals, the model guides a robot to pick and place novel objects in unseen environments with 65-80% success — without any robot-specific training.</p>
+
+      <div class="callout callout-insight">
+        <div class="callout-title">Key Insight</div>
+        <p>The progression from VideoMAE to V-JEPA 2 traces a fundamental shift in what "understanding video" means. Pixel reconstruction teaches a model what the world looks like. Feature prediction teaches it how the world works — which changes matter, which are noise. V-JEPA 2's success at robot planning suggests that video pretraining at sufficient scale is converging toward a genuine world model: a system that predicts future states well enough to act.</p>
+      </div>
+
+      <p>The following code demonstrates a V-JEPA-style feature prediction loss.</p>
+
+<pre><code class="language-python">
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+class VJEPAPredictionLoss(nn.Module):
+    """Feature-space prediction loss for video self-supervised learning."""
+    def __init__(self, encoder_dim=768, predictor_dim=384):
+        super().__init__()
+        self.predictor = nn.Sequential(
+            nn.Linear(encoder_dim, predictor_dim),  # project down
+            nn.GELU(),
+            nn.Linear(predictor_dim, encoder_dim),  # project back up
+        )
+
+    def forward(self, encoder_features, target_features, mask):
+        # encoder_features: (batch, T*H*W, dim) — student encoder output for visible patches
+        # target_features:  (batch, T*H*W, dim) — EMA target encoder output (all patches)
+        # mask: (batch, T*H*W) — True for masked positions to predict
+        predictions = self.predictor(encoder_features)  # (batch, T*H*W, dim)
+        targets = target_features.detach()               # stop gradient on EMA target
+        # Compute loss only at masked positions
+        pred_masked = predictions[mask]                   # (n_masked, dim)
+        tgt_masked = targets[mask]                        # (n_masked, dim)
+        loss = F.mse_loss(pred_masked, tgt_masked)        # L2 in feature space
+        return loss
+</code></pre>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 380" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="ch21-arr3" viewBox="0 0 10 10" refX="9" refY="5"
+              markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+              <path d="M1 1L9 5L1 9" fill="none" stroke="context-stroke"
+                stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </marker>
+          </defs>
+
+          <text x="400" y="22" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="600" fill="#1A1A18">Three Paradigms for Self-Supervised Video Pretraining</text>
+
+          <!-- Row 1: VideoMAE -->
+          <rect x="30" y="40" width="740" height="80" rx="8" fill="#FAECE7" stroke="#F0997B" stroke-width="1"/>
+          <text x="55" y="62" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#993C1D">VideoMAE</text>
+          <rect x="55" y="72" width="80" height="32" rx="4" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="95" y="93" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#0F6E56">Video</text>
+          <line x1="135" y1="88" x2="165" y2="88" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch21-arr3)"/>
+          <rect x="170" y="72" width="80" height="32" rx="4" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="1"/>
+          <text x="210" y="93" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#5C5B56">Mask 90%</text>
+          <line x1="250" y1="88" x2="280" y2="88" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch21-arr3)"/>
+          <rect x="285" y="72" width="100" height="32" rx="4" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <text x="335" y="93" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#534AB7">Encoder</text>
+          <line x1="385" y1="88" x2="415" y2="88" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch21-arr3)"/>
+          <rect x="420" y="72" width="90" height="32" rx="4" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1"/>
+          <text x="465" y="93" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#534AB7">Decoder</text>
+          <line x1="510" y1="88" x2="540" y2="88" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch21-arr3)"/>
+          <rect x="545" y="72" width="100" height="32" rx="4" fill="#FAECE7" stroke="#F0997B" stroke-width="1.5"/>
+          <text x="595" y="88" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#993C1D">Reconstruct</text>
+          <text x="595" y="100" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#993C1D">pixels</text>
+          <text x="710" y="93" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">Target:</text>
+          <text x="710" y="106" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#993C1D">pixels</text>
+
+          <!-- Row 2: V-JEPA -->
+          <rect x="30" y="135" width="740" height="80" rx="8" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1"/>
+          <text x="55" y="157" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#534AB7">V-JEPA</text>
+          <rect x="55" y="167" width="80" height="32" rx="4" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="95" y="188" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#0F6E56">Video</text>
+          <line x1="135" y1="183" x2="165" y2="183" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch21-arr3)"/>
+          <rect x="170" y="167" width="80" height="32" rx="4" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="1"/>
+          <text x="210" y="188" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#5C5B56">Mask</text>
+          <line x1="250" y1="183" x2="280" y2="183" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch21-arr3)"/>
+          <rect x="285" y="167" width="100" height="32" rx="4" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <text x="335" y="188" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#534AB7">Encoder</text>
+          <line x1="385" y1="183" x2="415" y2="183" stroke="#534AB7" stroke-width="1.5" marker-end="url(#ch21-arr3)"/>
+          <rect x="420" y="167" width="90" height="32" rx="4" fill="#534AB7"/>
+          <text x="465" y="188" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#FFFFFF">Predictor</text>
+          <line x1="510" y1="183" x2="540" y2="183" stroke="#534AB7" stroke-width="1.5" marker-end="url(#ch21-arr3)"/>
+          <rect x="545" y="167" width="100" height="32" rx="4" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <text x="595" y="183" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#534AB7">Predict</text>
+          <text x="595" y="195" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#534AB7">features</text>
+          <text x="710" y="188" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">Target:</text>
+          <text x="710" y="201" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#534AB7">EMA features</text>
+
+          <!-- Row 3: V-JEPA 2 -->
+          <rect x="30" y="230" width="740" height="98" rx="8" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="55" y="252" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#0F6E56">V-JEPA 2</text>
+          <!-- Stage 1 -->
+          <rect x="55" y="262" width="140" height="28" rx="4" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1.5"/>
+          <text x="125" y="281" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#0F6E56">Stage 1: Passive video</text>
+          <line x1="195" y1="276" x2="215" y2="276" stroke="#0F6E56" stroke-width="1.5" marker-end="url(#ch21-arr3)"/>
+          <!-- Stage 2 -->
+          <rect x="220" y="262" width="170" height="28" rx="4" fill="#0F6E56"/>
+          <text x="305" y="281" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#FFFFFF">Stage 2: Action-conditioned</text>
+          <line x1="390" y1="276" x2="410" y2="276" stroke="#0F6E56" stroke-width="1.5" marker-end="url(#ch21-arr3)"/>
+          <!-- Outputs -->
+          <rect x="415" y="258" width="100" height="16" rx="3" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="465" y="270" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#0F6E56">Video QA (84.0)</text>
+          <rect x="415" y="278" width="100" height="16" rx="3" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="465" y="290" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#0F6E56">SSv2 (77.3%)</text>
+          <rect x="520" y="258" width="120" height="16" rx="3" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="580" y="270" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#0F6E56">Anticipation (39.7)</text>
+          <rect x="520" y="278" width="120" height="16" rx="3" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="580" y="290" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#0F6E56">Robot planning (65-80%)</text>
+          <text x="710" y="276" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">Target:</text>
+          <text x="710" y="289" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#0F6E56">world model</text>
+
+          <!-- Right-side progression arrow -->
+          <line x1="770" y1="80" x2="770" y2="310" stroke="#C8C6BE" stroke-width="1.5" marker-end="url(#ch21-arr3)"/>
+          <text x="775" y="140" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94" transform="rotate(90, 775, 140)">pixels → features → world</text>
+        </svg>
+        <figcaption>Figure 21.6 — Three paradigms for self-supervised video pretraining. VideoMAE (top) reconstructs masked pixels — cheap but wastes capacity on texture. V-JEPA (middle) predicts features from an EMA target encoder — focuses on semantic structure. V-JEPA 2 (bottom) adds action-conditioned training to build a world model that can drive video QA, action anticipation, and even robot planning.</figcaption>
+      </figure>
+
+    </section>
+
+    <!-- ============================================================
+         SECTION 6: Video Foundation Models
+         ============================================================ -->
+    <section class="chapter-section" id="video-foundation-models">
+      <h2>Video Foundation Models</h2>
+
+      <p>The self-supervised methods above produce powerful encoders, but each targets a single objective. The latest wave of video foundation models unifies multiple training paradigms and downstream tasks into a single system.</p>
+
+      <h3>InternVideo2</h3>
+
+      <p><strong>InternVideo2</strong> uses a <strong>progressive three-stage training</strong> approach. Stage 1 applies masked video modeling (VideoMAE-style) to learn spatiotemporal features from raw video. Stage 2 adds video-text contrastive learning (CLIP-style) to align visual features with language. Stage 3 introduces next-token prediction, conditioning a language model on video features. Each stage builds on the representations from the previous one: masked modeling gives structural understanding, contrastive learning adds semantic alignment, and language modeling adds reasoning. The resulting 6B-parameter video encoder achieves state-of-the-art results across more than 60 video and audio tasks, including video QA, retrieval, captioning, and temporal grounding.</p>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 260" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="ch21-arr4" viewBox="0 0 10 10" refX="9" refY="5"
+              markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+              <path d="M1 1L9 5L1 9" fill="none" stroke="context-stroke"
+                stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </marker>
+          </defs>
+
+          <text x="400" y="22" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="600" fill="#1A1A18">InternVideo2: Progressive Three-Stage Training</text>
+
+          <!-- Stage 1 -->
+          <rect x="30" y="42" width="220" height="110" rx="8" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <text x="140" y="64" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#534AB7">Stage 1</text>
+          <text x="140" y="80" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#534AB7">Masked Video Modeling</text>
+          <text x="140" y="100" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#5C5B56">Input: raw video</text>
+          <text x="140" y="116" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#5C5B56">Learns: spatiotemporal structure</text>
+          <text x="140" y="140" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">Recognition, tracking</text>
+
+          <line x1="250" y1="97" x2="280" y2="97" stroke="#534AB7" stroke-width="2" marker-end="url(#ch21-arr4)"/>
+
+          <!-- Stage 2 -->
+          <rect x="285" y="42" width="220" height="110" rx="8" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1.5"/>
+          <text x="395" y="64" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#0F6E56">Stage 2</text>
+          <text x="395" y="80" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#0F6E56">Video-Text Contrastive</text>
+          <text x="395" y="100" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#5C5B56">Input: video + text pairs</text>
+          <text x="395" y="116" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#5C5B56">Learns: semantic alignment</text>
+          <text x="395" y="140" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">Retrieval, grounding</text>
+
+          <line x1="505" y1="97" x2="535" y2="97" stroke="#0F6E56" stroke-width="2" marker-end="url(#ch21-arr4)"/>
+
+          <!-- Stage 3 -->
+          <rect x="540" y="42" width="230" height="110" rx="8" fill="#FAEEDA" stroke="#EF9F27" stroke-width="1.5"/>
+          <text x="655" y="64" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#854F0B">Stage 3</text>
+          <text x="655" y="80" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#854F0B">Next-Token Prediction</text>
+          <text x="655" y="100" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#5C5B56">Input: video features + text</text>
+          <text x="655" y="116" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#5C5B56">Learns: reasoning, generation</text>
+          <text x="655" y="140" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">QA, captioning, dialogue</text>
+
+          <!-- Bottom: combined result -->
+          <line x1="400" y1="152" x2="400" y2="178" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch21-arr4)"/>
+          <rect x="220" y="178" width="360" height="44" rx="8" fill="#FFFFFF" stroke="#C8C6BE" stroke-width="1.5"/>
+          <text x="400" y="200" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="600" fill="#1A1A18">6B Video Encoder — SOTA on 60+ tasks</text>
+          <text x="400" y="216" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">Video QA, retrieval, captioning, temporal grounding, dialogue</text>
+
+          <!-- Arrow annotations -->
+          <text x="265" y="84" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#9C9A94">features</text>
+          <text x="265" y="94" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#9C9A94">transfer</text>
+          <text x="520" y="84" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#9C9A94">aligned</text>
+          <text x="520" y="94" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#9C9A94">features</text>
+        </svg>
+        <figcaption>Figure 21.7 — InternVideo2 progressive training. Stage 1 (masked video modeling) learns spatiotemporal structure. Stage 2 (video-text contrastive) aligns features with language. Stage 3 (next-token prediction) adds reasoning and generation. Each stage's representations bootstrap the next, producing a 6B encoder that excels across 60+ video and audio tasks.</figcaption>
+      </figure>
+
+      <h3>InternVideo-Next: Video Understanding Without Language Supervision</h3>
+
+      <p><strong>InternVideo-Next</strong>, released in December 2025, introduced the <strong>Encoder-Predictor-Decoder (EPD)</strong> framework. The encoder produces video features, the predictor acts as a latent world model that transforms these features, and a conditional diffusion decoder generates reconstructions. The predictor sits at the center — it must model the dynamics of the visual world well enough for the decoder to produce coherent outputs.</p>
+
+      <p>The breakthrough result: InternVideo-Next is the <em>first</em> video model trained without any video-text supervision that surpasses models trained with video-text pairs on both Kinetics-400 and Something-Something V2. The latent world model learned from pure video observation is sufficient — language is not required as a scaffold for visual understanding. InternVideo-Next also achieves state-of-the-art on depth estimation, tracking, and zero-shot retrieval, demonstrating that a single pretraining recipe can serve diverse downstream tasks.</p>
+
+      <h3>Video-LLMs</h3>
+
+      <p>An orthogonal line of work connects video encoders to large language models for conversational video understanding. <strong>VideoLLaMA 2</strong> introduces a <strong>spatial-temporal convolution (STC) connector</strong> between the video encoder and the LLM. The STC connector uses 3D convolutions to aggregate spatiotemporal information from the encoder's output into a compact token sequence that the LLM can consume efficiently.</p>
+
+      <p><strong>LongVILA</strong>, from NVIDIA, pushes the context boundary to 2,048 frames — over 1 million visual tokens. It uses multi-modal sequence parallelism (MM-SP) to distribute long video processing across GPUs, and hierarchical temporal pooling to compress hour-long videos into manageable token counts. The result: 99.8% accuracy on a 6,000-frame video needle-in-a-haystack benchmark, demonstrating that the LLM can effectively reason over very long video when given the right compression and parallelism.</p>
+
+      <p>The architectural pattern across all Video-LLMs is consistent: a frozen (or lightly fine-tuned) video encoder produces dense features, a learnable connector compresses them into a compact sequence, and a frozen (or fine-tuned) LLM performs reasoning. The connector is the critical design variable — it determines how much spatiotemporal information survives compression.</p>
+
+      <p>The trajectory from InternVideo2 through InternVideo-Next to Video-LLMs traces a clear convergence: video understanding is moving from task-specific models (one architecture per benchmark) toward unified systems that handle recognition, retrieval, grounding, QA, and dialogue with a single pretrained backbone. The remaining bottleneck is not architecture or pretraining — it is the sheer volume of tokens that video produces.</p>
+
+    </section>
+
+    <!-- ============================================================
+         SECTION 7: Token Efficiency
+         ============================================================ -->
+    <section class="chapter-section" id="token-efficiency">
+      <h2>Token Efficiency for Video</h2>
+
+      <p>Section 1 established that video produces vastly more tokens than images. A 2-minute video at 8 fps with 16&times;16 patches produces roughly 280,000 tokens. Even with tubelet embedding (halving via $t=2$), that is 140,000 tokens. No attention mechanism — factorized or otherwise — scales gracefully to this regime without compression. The bottleneck has shifted: architectures are powerful enough; the limit is how many tokens they can process.</p>
+
+      <h3>PruneVid: Temporal Token Pruning</h3>
+
+      <p><strong>PruneVid</strong> identifies static video regions with minimal temporal variation and prunes them. The criterion is simple: if a patch embedding at position $(h, w)$ changes less than a threshold $\tau$ between consecutive frames, keep only one instance. The keep decision for token $i$ is:</p>
+
+      $$\text{keep}_i = \mathbf{1}\!\left[\max_{j \in \mathcal{N}(i)} \left\| z_i - z_j \right\|_2 > \tau\right]$$
+
+      <p>where $\mathcal{N}(i)$ denotes the temporal neighbors of token $i$ (the same spatial position in adjacent frames), $\|z_i - z_j\|_2$ is the L2 distance between feature vectors (a scalar measuring how much the patch changed), and $\mathbf{1}[\cdot]$ is the indicator function. PruneVid achieves over 80% token reduction while maintaining competitive performance — though aggressive pruning hurts fine-grained temporal reasoning tasks (Something-Something) more than appearance-based tasks (Kinetics).</p>
+
+      <h3>Run-Length Tokenization</h3>
+
+      <p><strong>Run-length tokenization</strong> exploits temporal redundancy at the tokenization level. If a patch embedding is nearly identical across $k$ consecutive frames, it is encoded once with a repeat count — analogous to run-length encoding in data compression. This reduces the effective token count by collapsing temporal redundancy before any attention is computed. The approach enables 40% faster training with minimal accuracy loss, because the majority of patches in a typical video (static background, slowly moving objects) are highly redundant across frames.</p>
+
+      <h3>Spatiotemporal Token Compression</h3>
+
+      <p>The most recent work, presented at CVPR 2026, jointly compresses along spatial and temporal dimensions. A small auxiliary network learns which tokens to merge and which to keep, conditioned on the content itself. Tokens with similar features — whether spatially adjacent or temporally repeated — are merged into composite tokens that represent larger spatiotemporal regions. This content-adaptive compression outperforms uniform downsampling because it preserves detail in dynamic regions (where the action happens) while aggressively compressing static regions (background). The result: video transformers can process minute-long videos (1,000+ frames) on current hardware.</p>
+
+      <div class="callout callout-insight">
+        <div class="callout-title">Key Insight</div>
+        <p>Video transformers face an ironic inversion of the original transformer advantage. Transformers replaced RNNs because they could process entire sequences in parallel rather than sequentially. But video sequences are so long that even parallel processing is computationally infeasible without compression. Token pruning, run-length encoding, and spatiotemporal merging are not optimizations — they are prerequisites for making video transformers practical.</p>
+      </div>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 280" xmlns="http://www.w3.org/2000/svg">
+          <!-- Column headers -->
+          <text x="110" y="22" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#5C5B56">No Compression</text>
+          <text x="310" y="22" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#0F6E56">PruneVid</text>
+          <text x="510" y="22" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#534AB7">Run-Length</text>
+          <text x="700" y="22" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#854F0B">ST Compression</text>
+
+          <!-- Column 1: All tokens (4 frames x 4 patches shown) -->
+          <g transform="translate(50, 36)">
+            <rect x="0" y="0" width="24" height="24" rx="3" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="0.5"/>
+            <rect x="28" y="0" width="24" height="24" rx="3" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="0.5"/>
+            <rect x="56" y="0" width="24" height="24" rx="3" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="0.5"/>
+            <rect x="84" y="0" width="24" height="24" rx="3" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="0.5"/>
+            <rect x="0" y="30" width="24" height="24" rx="3" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="0.5"/>
+            <rect x="28" y="30" width="24" height="24" rx="3" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="0.5"/>
+            <rect x="56" y="30" width="24" height="24" rx="3" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="0.5"/>
+            <rect x="84" y="30" width="24" height="24" rx="3" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="0.5"/>
+            <rect x="0" y="60" width="24" height="24" rx="3" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="0.5"/>
+            <rect x="28" y="60" width="24" height="24" rx="3" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="0.5"/>
+            <rect x="56" y="60" width="24" height="24" rx="3" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="0.5"/>
+            <rect x="84" y="60" width="24" height="24" rx="3" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="0.5"/>
+            <rect x="0" y="90" width="24" height="24" rx="3" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="0.5"/>
+            <rect x="28" y="90" width="24" height="24" rx="3" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="0.5"/>
+            <rect x="56" y="90" width="24" height="24" rx="3" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="0.5"/>
+            <rect x="84" y="90" width="24" height="24" rx="3" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="0.5"/>
+            <text x="0" y="-6" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#9C9A94">f1</text>
+            <text x="0" y="24" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#9C9A94">f2</text>
+            <text x="0" y="54" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#9C9A94">f3</text>
+            <text x="0" y="84" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#9C9A94">f4</text>
+          </g>
+
+          <!-- Column 2: PruneVid - some tokens grayed out -->
+          <g transform="translate(250, 36)">
+            <rect x="0" y="0" width="24" height="24" rx="3" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="0.5"/>
+            <rect x="28" y="0" width="24" height="24" rx="3" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="0.5" opacity="0.3"/>
+            <rect x="56" y="0" width="24" height="24" rx="3" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="0.5" opacity="0.3"/>
+            <rect x="84" y="0" width="24" height="24" rx="3" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="0.5"/>
+            <rect x="0" y="30" width="24" height="24" rx="3" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="0.5" opacity="0.3"/>
+            <rect x="28" y="30" width="24" height="24" rx="3" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="0.5" opacity="0.3"/>
+            <rect x="56" y="30" width="24" height="24" rx="3" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="0.5" opacity="0.3"/>
+            <rect x="84" y="30" width="24" height="24" rx="3" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="0.5"/>
+            <rect x="0" y="60" width="24" height="24" rx="3" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="0.5"/>
+            <rect x="28" y="60" width="24" height="24" rx="3" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="0.5" opacity="0.3"/>
+            <rect x="56" y="60" width="24" height="24" rx="3" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="0.5" opacity="0.3"/>
+            <rect x="84" y="60" width="24" height="24" rx="3" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="0.5" opacity="0.3"/>
+            <rect x="0" y="90" width="24" height="24" rx="3" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="0.5"/>
+            <rect x="28" y="90" width="24" height="24" rx="3" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="0.5" opacity="0.3"/>
+            <rect x="56" y="90" width="24" height="24" rx="3" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="0.5" opacity="0.3"/>
+            <rect x="84" y="90" width="24" height="24" rx="3" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="0.5"/>
+          </g>
+
+          <!-- Column 3: Run-length - collapsed tokens with count -->
+          <g transform="translate(450, 36)">
+            <rect x="0" y="0" width="24" height="24" rx="3" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1"/>
+            <rect x="28" y="0" width="24" height="54" rx="3" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1"/>
+            <text x="40" y="32" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="500" fill="#534AB7">×3</text>
+            <rect x="56" y="0" width="24" height="54" rx="3" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1"/>
+            <text x="68" y="32" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="500" fill="#534AB7">×4</text>
+            <rect x="84" y="0" width="24" height="24" rx="3" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1"/>
+            <rect x="0" y="30" width="24" height="24" rx="3" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1"/>
+            <rect x="84" y="30" width="24" height="24" rx="3" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1"/>
+            <rect x="0" y="60" width="24" height="24" rx="3" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1"/>
+            <rect x="84" y="60" width="24" height="24" rx="3" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1"/>
+            <rect x="0" y="90" width="24" height="24" rx="3" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1"/>
+            <rect x="84" y="90" width="24" height="24" rx="3" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1"/>
+          </g>
+
+          <!-- Column 4: ST compression - merged blocks -->
+          <g transform="translate(640, 36)">
+            <rect x="0" y="0" width="24" height="24" rx="3" fill="#FAEEDA" stroke="#EF9F27" stroke-width="1"/>
+            <rect x="28" y="0" width="52" height="54" rx="4" fill="#FAEEDA" stroke="#EF9F27" stroke-width="1.5"/>
+            <text x="54" y="32" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="500" fill="#854F0B">merged</text>
+            <rect x="84" y="0" width="24" height="24" rx="3" fill="#FAEEDA" stroke="#EF9F27" stroke-width="1"/>
+            <rect x="0" y="30" width="24" height="84" rx="4" fill="#FAEEDA" stroke="#EF9F27" stroke-width="1.5"/>
+            <text x="12" y="76" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="8" font-weight="500" fill="#854F0B">↕</text>
+            <rect x="84" y="30" width="24" height="24" rx="3" fill="#FAEEDA" stroke="#EF9F27" stroke-width="1"/>
+            <rect x="28" y="60" width="52" height="54" rx="4" fill="#FAEEDA" stroke="#EF9F27" stroke-width="1.5"/>
+            <text x="54" y="92" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="500" fill="#854F0B">merged</text>
+            <rect x="84" y="60" width="24" height="24" rx="3" fill="#FAEEDA" stroke="#EF9F27" stroke-width="1"/>
+            <rect x="84" y="90" width="24" height="24" rx="3" fill="#FAEEDA" stroke="#EF9F27" stroke-width="1"/>
+          </g>
+
+          <!-- Bottom stats -->
+          <text x="110" y="175" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#5C5B56">16 tokens</text>
+          <text x="110" y="192" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">1.0× compute</text>
+
+          <text x="310" y="175" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#0F6E56">5 tokens (−69%)</text>
+          <text x="310" y="192" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">0.10× compute</text>
+
+          <text x="510" y="175" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#534AB7">10 tokens (−38%)</text>
+          <text x="510" y="192" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">0.39× compute</text>
+
+          <text x="700" y="175" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#854F0B">8 tokens (−50%)</text>
+          <text x="700" y="192" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">0.25× compute</text>
+
+          <!-- Compression type labels -->
+          <text x="310" y="215" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#9C9A94">Temporal pruning</text>
+          <text x="510" y="215" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#9C9A94">Temporal merging</text>
+          <text x="700" y="215" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#9C9A94">Space + time merging</text>
+        </svg>
+        <figcaption>Figure 21.8 — Token efficiency techniques compared on a 4-frame × 4-patch video. No compression retains all 16 tokens. PruneVid drops static tokens (faded), keeping only those that change across time. Run-length tokenization collapses temporally identical tokens into single tokens with repeat counts. Spatiotemporal compression merges both spatially and temporally adjacent similar tokens into larger composite tokens.</figcaption>
+      </figure>
+
+    </section>
+
+    <!-- ============================================================
+         CLOSING
+         ============================================================ -->
+    <p>This chapter traced the arc from the $O((THW)^2)$ computational wall through factorized attention, hierarchical 3D backbones, self-supervised world models, and token-efficient deployment. The models in this chapter learned to <em>understand</em> video — to classify actions, anticipate futures, answer questions, and even guide robots. In the next chapter, we ask the harder question: can a transformer <em>generate</em> video that looks, moves, and obeys physics like the real world?</p>
+
+  </article>
+
+  <footer class="chapter-footer">
+    <div class="footer-nav">
+      <a href="ch20.html">← Previous: Image Generation with Transformers</a>
+      <a href="ch22.html">Next: Video Generation with Transformers →</a>
+    </div>
+  </footer>
+
+</body>
+</html>

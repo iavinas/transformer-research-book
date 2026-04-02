@@ -803,29 +803,40 @@ through dense prediction, video understanding, and video generation.*
 
 ### Chapter 19: Transformers for Detection and Segmentation
 
-**DETR (Carion et al., 2020)**
-- The detection as set prediction insight: no anchors, no NMS post-processing
-- Object queries: N learned query vectors, each predicts one object
-- Bipartite matching loss: Hungarian algorithm to assign predictions to ground truth
-- DETR limitations: slow convergence (500 epochs), poor small object detection
+**DETR: detection as set prediction (Carion et al., 2020)**
+- The insight: no anchors, no NMS, no hand-designed components
+- Object queries: N learned query vectors, each predicts one object or "no object"
+- Bipartite matching loss: Hungarian algorithm assigns predictions to ground truth
+- DETR limitations: slow convergence (500 epochs), poor small-object detection
 
-**Deformable DETR**
-- Deformable attention: each query samples a small set of reference points
-- Multi-scale deformable attention: attend to feature pyramid with O(HWK) not O(HWN)
-- Convergence: 10x faster than DETR, 50 epochs to match DETR at 500 epochs
+**Deformable DETR: fixing attention cost**
+- Deformable attention: each query attends to K learned reference points, not all pixels
+- Multi-scale deformable attention: attend across FPN levels with O(HWK) cost
+- Convergence: 10x faster than DETR, 50 epochs matches DETR at 500
 
-**Modern detection transformers**
-- DN-DETR: denoising training for faster convergence
-- DINO (detection, not self-supervised): contrastive denoising, state-of-the-art detection
-- RT-DETR: real-time detection transformer, encoder only, CNN-free deployment
-- Grounding DINO: open-vocabulary detection conditioned on text
+**The DETR improvement arc**
+- DN-DETR: denoising training — add noise to GT boxes, train decoder to reconstruct
+- Co-DETR: collaborative hybrid assignment — one-to-one + one-to-many auxiliary heads
+- DINO (detection): contrastive denoising + mixed query selection, state-of-the-art
+- RT-DETR: real-time detection transformer, efficient hybrid encoder, no NMS
+- RF-DETR (ICLR 2026): DINOv2 backbone + NAS, >60 mAP on COCO at ≤40ms latency
+
+**Open-vocabulary and unified detection**
+- Grounding DINO: open-vocabulary detection conditioned on text prompts
+- DINO-X: unified detection + segmentation + grounding + counting + pose + captioning
+- Florence-2: sequence-to-sequence formulation for all vision tasks in 0.2B-0.7B params
 
 **Segmentation transformers**
 - SegFormer: hierarchical transformer encoder + lightweight MLP decoder
-- Mask2Former: universal segmentation architecture (semantic, instance, panoptic)
+- Mask2Former: universal architecture (semantic, instance, panoptic) via masked attention
 - SegGPT: in-context segmentation, coloring as a proxy task
-- SAM (Segment Anything Model): promptable segmentation at any granularity
-- SAM 2: video segmentation, streaming memory, real-time interactive segmentation
+
+**Segment Anything: promptable segmentation**
+- SAM: promptable segmentation at any granularity (points, boxes, masks, text)
+- SAM 2: video segmentation with streaming memory, real-time at 44 FPS
+- Efficient-SAM2 (ICLR 2026): sparse window routing + sparse memory retrieval, 1.68x speedup
+- SAM 3 (ICLR 2026): concept-prompted segmentation, dual encoder-decoder, SA-Co benchmark
+- Grounded SAM 2: detection (Grounding DINO / DINO-X) + SAM 2 for open-set tracking
 
 **DINO and DINOv2 for dense prediction**
 - Emergent segmentation from DINO attention maps
@@ -834,7 +845,44 @@ through dense prediction, video understanding, and video generation.*
 
 ---
 
-### Chapter 20: Video Transformers
+### Chapter 20: Image Generation with Transformers
+
+**The image generation revolution**
+- From GANs to diffusion: why diffusion models won
+- Latent diffusion: compress to latent space, denoise there, decode back
+- The role of the autoencoder: VQ-VAE, KL-VAE, and the trade-off between compression and fidelity
+
+**Autoregressive image generation**
+- DALL-E (2021): dVAE tokenization + GPT-style autoregressive transformer
+- Parti (Google, 2022): scaling autoregressive image generation to 20B parameters
+- The limitation: autoregressive models struggle with global coherence and spatial relationships
+
+**Diffusion Transformers (DiT)**
+- DiT (Peebles and Xie, 2022): replacing UNet with a vision transformer in latent diffusion
+- AdaLN-Zero: conditioning transformer layers on timestep and text via layer norm modulation
+- Scaling laws for DiT: doubling parameters consistently improves FID
+
+**MMDiT and rectified flow**
+- MMDiT (SD3/FLUX): dual-stream multimodal diffusion transformer with joint self-attention
+- Rectified flow: straight-line paths from noise to data, fewer sampling steps
+- Text encoding: T5-XXL, CLIP, and dual text encoder strategies
+
+**The frontier of image generation (2025-2026)**
+- FLUX 2 (Black Forest Labs): 32B rectified flow transformer, 4K photorealism, readable text
+- Stable Diffusion 3.5: MMDiT-X architecture, 8B params, 1MP resolution
+- GPT Image 1.5 (OpenAI): native multimodal, replaces DALL-E 3
+- SANA (NVIDIA, ICLR 2025): 0.6B linear DiT, 20× smaller than FLUX, 100× faster, DC-AE with 32× compression
+- Midjourney V8 (Mar 2026): rewritten engine, native 2K, 5× faster
+
+**Controllability and editing**
+- ControlNet: injecting spatial conditioning (depth, edge, pose) via zero-initialized parallel branch
+- IP-Adapter: image prompt conditioning through decoupled cross-attention
+- InstructPix2Pix: instruction-based image editing
+- Inpainting and outpainting with diffusion transformers
+
+---
+
+### Chapter 21: Video Transformers
 
 **The video understanding challenge**
 - Temporal dimension: motion, action, causal structure
@@ -852,19 +900,35 @@ through dense prediction, video understanding, and video generation.*
 - Tubelet embedding: 3D patch tokenization across time and space
 - Pre-training on large image datasets, fine-tuning on video
 
-**Video Swin Transformer**
+**Video Swin Transformer and hierarchical video backbones**
 - 3D shifted windows: temporal + spatial locality combined
 - Local 3D windows: t*h*w window size, cycle-shifted along all three dimensions
 - Strong performance on Kinetics, SomethingSomething at manageable cost
+- Hiera for video: mask unit attention pooling across space and time, 87.3% on K400
+- The simplicity thesis revisited: pretraining beats architectural complexity for video
 
 **Self-supervised video pre-training**
 - VideoMAE: masked autoencoder for video, 90% masking ratio, tube masking
+- VideoMAE V2: dual masking for billion-scale pretraining (encoder subset + decoder subset)
 - V-JEPA (Meta, 2024): joint embedding predictive architecture, predict in feature space not pixel space
-- InternVideo: multimodal video understanding, combining masked autoencoder and contrastive learning
+- V-JEPA 2 (Meta, 2025): world model on 1M+ hours, two-stage training, 77.3% SSv2, zero-shot robot planning
+- From pixel prediction to latent prediction: why feature-space targets outperform pixel reconstruction
+
+**Video foundation models**
+- InternVideo2 (ECCV 2024): progressive training unifying masked modeling + contrastive + next-token prediction, 6B, SOTA on 60+ tasks
+- InternVideo-Next (Dec 2025): Encoder-Predictor-Decoder framework, latent world model, first to beat video-text pretrained models without video-text supervision
+- Video-LLMs: VideoLLaMA 2 (spatial-temporal convolution connector), LongVILA (2048 frames, 1M+ tokens)
+- The convergence: from task-specific video models to unified video understanding
+
+**Token efficiency for video**
+- The token explosion problem: why video transformers need aggressive compression
+- PruneVid: pruning 80%+ tokens while maintaining performance
+- Run-length tokenization: 40% faster training via temporal redundancy
+- Spatiotemporal token compression (CVPR 2026): scaling to longer durations
 
 ---
 
-### Chapter 21: Video Generation with Transformers
+### Chapter 22: Video Generation with Transformers
 
 **The video generation problem**
 - Challenges: temporal consistency, physical plausibility, high resolution, long duration
@@ -878,6 +942,7 @@ through dense prediction, video understanding, and video generation.*
 
 **Diffusion transformers for video**
 - DiT (Peebles and Xie, 2022): replace UNet with transformer in latent diffusion
+- MMDiT: dual-stream multimodal diffusion transformer (FLUX/SD3 foundation)
 - Video DiT: extend DiT with temporal attention, spatiotemporal patches
 - CogVideoX (2024): 3D full attention on video tokens, expert transformer
 
@@ -885,65 +950,92 @@ through dense prediction, video understanding, and video generation.*
 - Sora (OpenAI, 2024): video as spacetime patches, scaling DiT to minutes of high-res video
 - Spacetime patch tokenization: flexible resolution and duration
 - World model framing: Sora as simulation of physical world dynamics
-- Consistency: long-range temporal coherence via full attention over all patches
+- Sora 2 (Sep 2025): multimodal MM-DiT, synchronized audio, 10-25s generation
 
-**Open-source video generation models**
-- Open-Sora, Open-Sora-Plan: community reproductions of Sora-like architectures
-- HunyuanVideo (Tencent, 2024): 13B parameters, state-of-the-art open video generation
-- Wan (Alibaba, 2025): 14B video generation model, strong physical consistency
-- CogVideoX-5B: VQVAE + 3D full attention expert transformer
+**The open-source video generation ecosystem**
+- Open-Sora 2.0 (Mar 2025): MMDiT dual-stream architecture, matches Sora for $200K
+- HunyuanVideo 1.5 (Tencent, Nov 2025): 8.3B, 3D causal VAE (16× spatial, 4× temporal)
+- Wan 2.2 (Alibaba, Jul 2025): first MoE video gen, two-expert noise-level routing, 27B/14B active
+- Mochi 1 (Genmo): 10B AsymmDiT, 128× compression VAE, 3D RoPE
+- LTX-Video / LTX-2 (Lightricks): real-time DiT, 5s video in 2s, simultaneous audio+video
 
-**Architectural components specific to video generation**
-- 3D VAE: jointly compresses spatial and temporal dimensions
-- Full spatiotemporal attention vs factorized: quality vs efficiency trade-off for video
-- Temporal RoPE: extending RoPE to time dimension
+**Architectural components for video generation**
+- 3D causal VAE: joint spatial-temporal compression, group causal convolution (CVPR 2025)
+- Full spatiotemporal attention vs factorized: quality vs efficiency trade-off
+- 3D RoPE: extending rotary embeddings to time dimension
+- Asymmetric architectures: AsymmDiT (4× visual vs text params), AsymmVAE
+- MoE routing by noise level: high-noise expert (layout) + low-noise expert (detail)
 - Classifier-free guidance in video: motion guidance, camera control
-- Video ControlNet: controllable generation with depth, pose, edge conditioning
 
-**Image-to-video and video editing**
-- Stable Video Diffusion: fine-tuned image generation model with temporal layers
-- I2VGen-XL: high-resolution image-to-video with hierarchical refinement
-- InstructPix2Pix applied to video: instruction-based video editing
+**Controllable generation and video editing**
+- Video ControlNet: depth, pose, edge conditioning across frames
+- EPiC: camera control with <1% extra params via anchor-ControlNet
+- Motion prompting (CVPR 2025): controlling generation with motion trajectories
+- Stable Video Diffusion: image-to-video with temporal layers
+- VideoPainter: dual-stream any-length video inpainting and editing
 - Tokenflow: propagating edits temporally through feature-space attention
 
 ---
 
-### Chapter 22: Training Vision Transformers
+### Chapter 23: Training Vision Transformers
 
-**Data requirements and augmentation**
-- Supervised pre-training: ImageNet-1K, ImageNet-21K, JFT-300M/3B data regimes
-- The data augmentation suite: RandAugment, AutoAugment, TrivialAugment
+**The ViT training landscape**
+- Why ViT training is harder than CNN training: no inductive biases, data hunger, optimization fragility
+- Three eras: supervised pre-training (2020), self-supervised revolution (2021-2023), modern recipes (2024-2026)
+
+**The modern supervised training recipe**
+- ViT-5 (Feb 2026): QKNorm, RoPE+APE dual encoding, registers, SwiGLU, RMSNorm — 84.2% ImageNet
+- DeiT III recipe: only 3 augmentations, LayerScale, stochastic depth, RegNetY teacher distillation
+- Data regime comparison: ImageNet-1K vs 21K vs JFT-300M/3B — when each matters
+
+**Data augmentation for vision transformers**
+- The augmentation suite: RandAugment, AutoAugment, TrivialAugment
 - MixUp and CutMix: interpolation and patch-swapping augmentation
-- Stochastic depth (DropPath): randomly drop transformer layers during training
-- Patch dropout (MAE): keep only a random subset of patches during fine-tuning
+- Regularization as augmentation: stochastic depth (DropPath), patch dropout, LayerScale
+- Synthetic data augmentation: diffusion-generated training data (CVPR 2026), 20% gains from realistic synthetic data
 
 **Self-supervised pre-training strategies**
-- DINO/DINOv2 training: teacher-student, centering, sharpening, EMA update
-- MAE training: 75% masking, reconstruction in pixel space, decoder discarded post-training
-- iBOT / BEiT training: discrete tokenizer, masked prediction in token space
-- Contrastive objectives (MoCo, SimCLR) applied to patches: positives as augmented views
+- DINO/DINOv2 training: teacher-student, centering, sharpening, EMA update, curated LVD-142M
+- DINOv2 at scale: PyTorch 2 FSDP, xFormers, training ViT-g/14 (1.1B params)
+- MAE training: 75% masking, asymmetric encoder-decoder, DailyMAE 5.8× speedup
+- FastDINOv2: spectral-domain curriculum, 62% training time with matched accuracy
+- iBOT / BEiT: discrete tokenizer, masked prediction in token space
+- Contrastive objectives: MoCo v3, SigLIP 2 unified recipe
 
-**Fine-tuning ViTs**
-- Layer-wise learning rate decay (LLRD): lower LR for earlier layers
-- Avoiding catastrophic forgetting: small LR, short fine-tuning, adapter-based PEFT for vision
-- Resolution adaptation: interpolate 2D positional embeddings when changing resolution
-- Window size adaptation in Swin for higher resolution inference
+**Fine-tuning vision transformers**
+- Layer-wise learning rate decay (LLRD): exponential LR decay per layer group
+- Resolution adaptation: interpolate 2D positional embeddings, Swin window size adaptation
+- PEFT for vision (2025-2026): Image-LoRA, head-selection via influence scores, visual prompt tuning
+- Make LoRA Great Again: adaptive singular values + MoE alignment
+- Avoiding catastrophic forgetting: small LR, short schedules, elastic weight consolidation
 
-**Distributed training for vision models**
-- Model size vs batch size for ViTs: ViT-G (1.8B) requires multi-GPU even for inference
-- Tensor parallelism for large ViTs: splitting attention heads across GPUs
-- Data parallelism and gradient accumulation for large batch training
-- Mixed precision: BF16 preferred for ViT stability vs FP16
+**Detection and segmentation training recipes**
+- DETR training: bipartite matching loss, DN-DETR denoising, Co-DETR hybrid assignment
+- SAM training at scale: SA-1B data engine, promptable training loop
+- DINOv2 + linear probes: zero-shot dense prediction without fine-tuning
 
-**Video generation training specifics**
-- 3D VAE training: temporal consistency objectives, frame interpolation losses
-- Mixed image-video training: prevent video models from forgetting image generation quality
-- Flow matching vs DDPM for video: V-prediction, consistency distillation for speed
-- Progressive training: start at low resolution/short duration, scale up
+**Numerical precision and training efficiency**
+- Mixed precision: BF16 preferred for ViT stability, FP16 loss scaling strategies
+- FP8 training (TWEO, 2025): full FP8 pre-training with 36% throughput gain, no architecture changes
+- Distributed training: tensor parallelism for ViT-G, FSDP for DINOv2, activation checkpointing
+
+**Diffusion and video generation training**
+- DiT/MMDiT training: AdaLN-Zero, rectified flow, classifier-free guidance dropout
+- Consistency distillation: SANA-Sprint (ICCV 2025), SenseFlow (ICLR 2026), DMD2, ADD
+- 3D VAE training: 2D initialization, group causal convolution (CVPR 2025), temporal consistency
+- Mixed image-video training: domain-specific normalization, progressive resolution-duration curriculum
+- Pyramidal flow matching (ICLR 2025): temporal pyramids reduce tokens 119K → 15K
+
+**Complete training recipes**
+- Recipe 1: ViT-Base ImageNet classification (DeiT III)
+- Recipe 2: DINOv2-style self-supervised pre-training
+- Recipe 3: Fine-tuning for COCO detection with LLRD
+- Recipe 4: DiT-L/2 ImageNet generation
+- Hyperparameter reference tables for each recipe
 
 ---
 
-### Chapter 23: Evaluating Vision Transformers
+### Chapter 24: Evaluating Vision Transformers
 
 **Image classification benchmarks**
 - ImageNet-1K: top-1 and top-5 accuracy, 1000 classes
