@@ -200,7 +200,175 @@
         <li><strong>Feed-forward sublayer:</strong> Each token's representation is independently passed through a two-layer MLP with a ReLU activation. This applies the same transformation at every position but with different inputs, allowing the network to apply nonlinear feature extraction to the attention-refined representations.</li>
       </ol>
 
-      <p>Both sublayers use the same inner dimension: the attention sublayer projects to $h$ heads of dimension $d_k = d_\text{model} / h = 64$ each, and the FFN sublayer expands to $d_\text{ff} = 2048$ (a 4× expansion) before projecting back to $d_\text{model}$.</p>
+      <!-- Figure: Single Encoder Layer Internals with dimension details -->
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 720" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="arr-enc" viewBox="0 0 10 10" refX="9" refY="5"
+              markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+              <path d="M1 1L9 5L1 9" fill="none" stroke="context-stroke"
+                stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </marker>
+          </defs>
+
+          <!-- Title -->
+          <text x="400" y="24" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="600" fill="#1A1A18">Single Encoder Layer — Dimension Flow</text>
+
+          <!-- Dashed container for the layer -->
+          <rect x="100" y="38" width="600" height="645" rx="12" fill="none" stroke="#B4B2A9" stroke-width="1" stroke-dasharray="6 4"/>
+
+          <!-- ===== INPUT ===== -->
+          <rect x="290" y="56" width="220" height="38" rx="6" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="1"/>
+          <text x="400" y="80" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="500" fill="#5C5B56">Input x</text>
+          <text x="528" y="80" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">(n × 512)</text>
+
+          <!-- Arrow: input → projections -->
+          <line x1="400" y1="94" x2="400" y2="118" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#arr-enc)"/>
+
+          <!-- ===== SUBLAYER 1: MULTI-HEAD SELF-ATTENTION (expanded) ===== -->
+          <!-- Outer attention container -->
+          <rect x="130" y="118" width="540" height="226" rx="8" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <text x="400" y="138" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="600" fill="#534AB7">Multi-Head Self-Attention (h = 8 heads)</text>
+
+          <!-- Q, K, V projection boxes -->
+          <rect x="155" y="152" width="140" height="36" rx="5" fill="#FFFFFF" stroke="#AFA9EC" stroke-width="1"/>
+          <text x="225" y="174" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#534AB7">W_Q projection</text>
+
+          <rect x="330" y="152" width="140" height="36" rx="5" fill="#FFFFFF" stroke="#AFA9EC" stroke-width="1"/>
+          <text x="400" y="174" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#534AB7">W_K projection</text>
+
+          <rect x="505" y="152" width="140" height="36" rx="5" fill="#FFFFFF" stroke="#AFA9EC" stroke-width="1"/>
+          <text x="575" y="174" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#534AB7">W_V projection</text>
+
+          <!-- Dimension labels under projections -->
+          <text x="225" y="202" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">512 → 512</text>
+          <text x="400" y="202" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">512 → 512</text>
+          <text x="575" y="202" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">512 → 512</text>
+
+          <!-- Arrows from projections down to heads -->
+          <line x1="225" y1="188" x2="225" y2="214" stroke="#AFA9EC" stroke-width="1" marker-end="url(#arr-enc)"/>
+          <line x1="400" y1="188" x2="400" y2="214" stroke="#AFA9EC" stroke-width="1" marker-end="url(#arr-enc)"/>
+          <line x1="575" y1="188" x2="575" y2="214" stroke="#AFA9EC" stroke-width="1" marker-end="url(#arr-enc)"/>
+
+          <!-- 8 head boxes showing the split -->
+          <text x="400" y="226" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#534AB7">Split into 8 heads (each d_k = 64)</text>
+
+          <!-- Head boxes row -->
+          <rect x="148" y="236" width="56" height="30" rx="4" fill="#534AB7" stroke="#534AB7" rx="4"/>
+          <text x="176" y="255" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="500" fill="#FFFFFF">Head 1</text>
+
+          <rect x="212" y="236" width="56" height="30" rx="4" fill="#534AB7" stroke="#534AB7"/>
+          <text x="240" y="255" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="500" fill="#FFFFFF">Head 2</text>
+
+          <rect x="276" y="236" width="56" height="30" rx="4" fill="#534AB7" stroke="#534AB7"/>
+          <text x="304" y="255" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="500" fill="#FFFFFF">Head 3</text>
+
+          <rect x="340" y="236" width="56" height="30" rx="4" fill="#534AB7" stroke="#534AB7"/>
+          <text x="368" y="255" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="500" fill="#FFFFFF">Head 4</text>
+
+          <rect x="404" y="236" width="56" height="30" rx="4" fill="#534AB7" stroke="#534AB7"/>
+          <text x="432" y="255" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="500" fill="#FFFFFF">Head 5</text>
+
+          <rect x="468" y="236" width="56" height="30" rx="4" fill="#534AB7" stroke="#534AB7"/>
+          <text x="496" y="255" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="500" fill="#FFFFFF">Head 6</text>
+
+          <rect x="532" y="236" width="56" height="30" rx="4" fill="#534AB7" stroke="#534AB7"/>
+          <text x="560" y="255" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="500" fill="#FFFFFF">Head 7</text>
+
+          <rect x="596" y="236" width="56" height="30" rx="4" fill="#534AB7" stroke="#534AB7"/>
+          <text x="624" y="255" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="500" fill="#FFFFFF">Head 8</text>
+
+          <!-- Per-head dimension annotation -->
+          <text x="400" y="282" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">Each head: Attention(Q_i, K_i, V_i) on 64-dim subspace</text>
+
+          <!-- Concat + W_O row -->
+          <rect x="200" y="294" width="400" height="34" rx="5" fill="#FFFFFF" stroke="#AFA9EC" stroke-width="1"/>
+          <text x="400" y="316" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#534AB7">Concat(head_1 … head_8) → W_O</text>
+
+          <!-- Dimension annotation for concat -->
+          <text x="620" y="316" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">(8×64)=512 → 512</text>
+
+          <!-- Residual path 1 -->
+          <line x1="118" y1="75" x2="118" y2="362" stroke="#534AB7" stroke-width="1.2" stroke-dasharray="5 3"/>
+          <text x="113" y="225" text-anchor="end" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#534AB7" transform="rotate(-90, 113, 225)">residual</text>
+
+          <!-- Arrow: attention → add&norm1 -->
+          <line x1="400" y1="344" x2="400" y2="354" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#arr-enc)"/>
+
+          <!-- Add & Norm 1 -->
+          <rect x="230" y="354" width="340" height="38" rx="6" fill="#FFFFFF" stroke="#AFA9EC" stroke-width="1"/>
+          <text x="400" y="378" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#534AB7">Add &amp; LayerNorm</text>
+          <!-- Residual arrow into Add -->
+          <line x1="118" y1="362" x2="118" y2="373" stroke="#534AB7" stroke-width="1.2" stroke-dasharray="5 3"/>
+          <line x1="118" y1="373" x2="228" y2="373" stroke="#534AB7" stroke-width="1.2" marker-end="url(#arr-enc)"/>
+
+          <!-- Annotation -->
+          <text x="590" y="376" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">LayerNorm(x + Attn(x))</text>
+
+          <!-- Arrow: add&norm1 → FFN -->
+          <line x1="400" y1="392" x2="400" y2="420" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#arr-enc)"/>
+
+          <!-- ===== SUBLAYER 2: FFN (expanded) ===== -->
+          <rect x="170" y="420" width="460" height="168" rx="8" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1.5"/>
+          <text x="400" y="440" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="600" fill="#0F6E56">Position-wise Feed-Forward Network</text>
+
+          <!-- Linear 1: expand -->
+          <rect x="200" y="452" width="200" height="34" rx="5" fill="#FFFFFF" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="300" y="474" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#0F6E56">Linear₁ + ReLU</text>
+          <text x="420" y="474" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">512 → 2048</text>
+
+          <!-- Arrow -->
+          <line x1="300" y1="486" x2="300" y2="502" stroke="#5DCAA5" stroke-width="1" marker-end="url(#arr-enc)"/>
+
+          <!-- Wide bar showing expanded 2048 dimension -->
+          <rect x="160" y="502" width="480" height="24" rx="4" fill="#0F6E56" stroke="#0F6E56"/>
+          <text x="400" y="518" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#FFFFFF">d_ff = 2048 (4× expansion)</text>
+
+          <!-- Arrow -->
+          <line x1="400" y1="526" x2="400" y2="542" stroke="#5DCAA5" stroke-width="1" marker-end="url(#arr-enc)"/>
+
+          <!-- Linear 2: compress -->
+          <rect x="200" y="542" width="200" height="34" rx="5" fill="#FFFFFF" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="300" y="564" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#0F6E56">Linear₂</text>
+          <text x="420" y="564" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">2048 → 512</text>
+
+          <!-- Residual path 2 -->
+          <line x1="118" y1="392" x2="118" y2="610" stroke="#0F6E56" stroke-width="1.2" stroke-dasharray="5 3"/>
+          <text x="113" y="510" text-anchor="end" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#0F6E56" transform="rotate(-90, 113, 510)">residual</text>
+
+          <!-- Arrow: FFN → add&norm2 -->
+          <line x1="400" y1="588" x2="400" y2="602" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#arr-enc)"/>
+
+          <!-- Add & Norm 2 -->
+          <rect x="230" y="602" width="340" height="38" rx="6" fill="#FFFFFF" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="400" y="626" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#0F6E56">Add &amp; LayerNorm</text>
+          <!-- Residual arrow into Add -->
+          <line x1="118" y1="610" x2="118" y2="621" stroke="#0F6E56" stroke-width="1.2" stroke-dasharray="5 3"/>
+          <line x1="118" y1="621" x2="228" y2="621" stroke="#0F6E56" stroke-width="1.2" marker-end="url(#arr-enc)"/>
+
+          <!-- Annotation -->
+          <text x="590" y="624" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">LayerNorm(x' + FFN(x'))</text>
+
+          <!-- Arrow: add&norm2 → output -->
+          <line x1="400" y1="640" x2="400" y2="656" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#arr-enc)"/>
+
+          <!-- ===== OUTPUT ===== -->
+          <rect x="290" y="656" width="220" height="38" rx="6" fill="#FAECE7" stroke="#F0997B" stroke-width="1.5"/>
+          <text x="400" y="680" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="500" fill="#993C1D">Output</text>
+          <text x="528" y="680" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">(n × 512)</text>
+
+          <!-- Legend -->
+          <line x1="530" y1="696" x2="555" y2="696" stroke="#534AB7" stroke-width="1.2" stroke-dasharray="5 3"/>
+          <text x="560" y="700" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">= residual skip</text>
+        </svg>
+        <figcaption>Figure 3.1b &mdash; Anatomy of a single encoder layer with full dimension flow. The attention sublayer (purple) projects input into Q, K, V matrices (each 512 → 512), splits them across 8 heads operating on 64-dimensional subspaces, then concatenates the results (8 × 64 = 512) through a final $W^O$ projection. The FFN sublayer (teal) expands each token from 512 to 2048 dimensions via a ReLU-activated linear layer, then compresses back to 512. Both sublayers are wrapped in residual connections (dashed lines) and layer normalization. Input and output shapes are preserved at $(n \times 512)$ throughout.</figcaption>
+      </figure>
+
+      <p>The two sublayers use different internal dimensions, but both produce outputs of size $d_\text{model} = 512$.</p>
+
+      <p>In the <strong>attention sublayer</strong>, the input is projected into $h = 8$ parallel heads. Each head operates on a smaller subspace of dimension $d_k = d_\text{model} / h = 512 / 8 = 64$. So instead of one large 512-dimensional attention computation, the model runs 8 independent 64-dimensional attention computations. The outputs of all 8 heads are concatenated back to 512 dimensions and passed through a final linear projection.</p>
+
+      <p>In the <strong>FFN sublayer</strong>, each token is independently passed through a two-layer MLP that first expands the representation to $d_\text{ff} = 2048$ (a 4× expansion from 512), applies a ReLU activation, and then projects back down to $d_\text{model} = 512$. This expand-then-compress pattern gives the network a wider space in which to learn nonlinear features before squeezing the result back to the model dimension.</p>
 
       <h3>Residual Connections and Layer Normalization</h3>
 
