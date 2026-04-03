@@ -1,0 +1,761 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Chapter 23c: Training Video Generation Transformers — Transformer Research Book</title>
+  <link rel="stylesheet" href="../assets/style.css">
+  <link rel="stylesheet" href="../assets/math.css">
+  <link rel="stylesheet" href="../assets/prism.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"
+    onload="renderMathInElement(document.body, {
+      delimiters: [{left: '$$', right: '$$', display: true},{left: '$', right: '$', display: false}]
+    })"></script>
+  <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/prism.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-python.min.js"></script>
+</head>
+<body>
+  <nav class="chapter-nav">
+    <a href="../index.html" class="nav-home">← Table of Contents</a>
+    <span class="nav-chapter">Chapter 23c</span>
+    <div style="display:flex; align-items:center; gap:1rem;">
+      <button class="theme-toggle" onclick="toggleTheme()" aria-label="Toggle dark mode">
+        <span class="icon-moon">&#9789;</span><span class="icon-sun">&#9788;</span>
+      </button>
+      <a href="ch24.html" class="nav-next">Next Chapter →</a>
+    </div>
+  </nav>
+  <script>
+    function toggleTheme(){document.documentElement.classList.toggle('dark');localStorage.setItem('theme',document.documentElement.classList.contains('dark')?'dark':'light');}
+    if(localStorage.getItem('theme')==='dark')document.documentElement.classList.add('dark');
+  </script>
+
+  <article class="chapter">
+
+    <header class="chapter-header">
+      <div class="chapter-number">Chapter 23c</div>
+      <h1 class="chapter-title">Training Video Generation Transformers</h1>
+      <p class="chapter-lead">Generating a single 512×512 image requires denoising 16,384 latent tokens. Generating a 10-second, 24-fps video at the same resolution means denoising 3.9 million tokens — a 240× increase that makes naive approaches computationally impossible. Every technique in video generation training exists to tame this cost: 3D VAEs compress the temporal dimension alongside the spatial, pyramidal flow matching processes distant frames at lower resolution, progressive pipelines break the problem into manageable stages, and mixed image-video training prevents the model from forgetting how to produce sharp individual frames. This chapter walks through each technique with complete PyTorch code, from training a 3D VAE that compresses video 512× to running the full Open-Sora 2.0 progressive pipeline that produces commercial-quality video for $200K in total training cost.</p>
+    </header>
+
+    <!-- ============================================================
+         SECTION 1: 3D VAE Training
+         ============================================================ -->
+    <section class="chapter-section" id="3d-vae-training">
+      <h2>3D VAE Training for Video Compression</h2>
+
+      <p>Image diffusion uses a 2D VAE that compresses spatial dimensions by 8×. Video diffusion needs temporal compression too — processing every frame independently would be prohibitively expensive and would miss temporal redundancy (adjacent frames are nearly identical). A <strong>3D VAE</strong> compresses along all three dimensions: spatial height and width by 8×, and the temporal axis by 4-8×. A 10-second, 24-fps video at 256×256 (240 frames × 256 × 256 × 3 ≈ 47M values) becomes a latent of shape 30 × 32 × 32 × 4 (≈ 123K values) — a 380× compression.</p>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 280" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="ch23c-arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+              <path d="M1 1L9 5L1 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </marker>
+          </defs>
+          <text x="400" y="22" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="600" fill="#1A1A18">3D VAE: Spatiotemporal Video Compression</text>
+
+          <!-- Input video -->
+          <g transform="translate(30, 55)">
+            <rect x="12" y="12" width="90" height="70" rx="4" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="0.8" opacity="0.5"/>
+            <rect x="8" y="8" width="90" height="70" rx="4" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="0.8" opacity="0.7"/>
+            <rect x="4" y="4" width="90" height="70" rx="4" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="0.8" opacity="0.85"/>
+            <rect x="0" y="0" width="90" height="70" rx="4" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1.5"/>
+            <text x="45" y="30" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#0F6E56">Video</text>
+            <text x="45" y="45" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#9C9A94">T×H×W×3</text>
+            <text x="45" y="58" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#9C9A94">240×256×256</text>
+          </g>
+          <text x="80" y="155" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#0F6E56">47M values</text>
+
+          <line x1="145" y1="100" x2="190" y2="100" stroke="#534AB7" stroke-width="2" marker-end="url(#ch23c-arr)"/>
+
+          <!-- 3D Encoder -->
+          <rect x="195" y="55" width="140" height="100" rx="8" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <text x="265" y="82" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#534AB7">3D Encoder</text>
+          <text x="265" y="100" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#5C5B56">Spatial: 3D conv ↓8×</text>
+          <text x="265" y="114" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#5C5B56">Temporal: causal ↓8×</text>
+          <text x="265" y="128" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#5C5B56">+ EfficientViT blocks</text>
+          <text x="265" y="145" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#9C9A94">(Open-Sora 2.0 DC-AE)</text>
+
+          <line x1="335" y1="100" x2="380" y2="100" stroke="#534AB7" stroke-width="2" marker-end="url(#ch23c-arr)"/>
+
+          <!-- Latent -->
+          <rect x="385" y="72" width="80" height="56" rx="6" fill="#534AB7" stroke="#534AB7"/>
+          <text x="425" y="94" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#FFFFFF">Latent</text>
+          <text x="425" y="110" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#AFA9EC">30×32×32×4</text>
+          <text x="425" y="155" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="600" fill="#534AB7">123K values</text>
+          <text x="425" y="170" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#534AB7">380× compression</text>
+
+          <line x1="465" y1="100" x2="510" y2="100" stroke="#534AB7" stroke-width="2" marker-end="url(#ch23c-arr)"/>
+
+          <!-- 3D Decoder -->
+          <rect x="515" y="55" width="140" height="100" rx="8" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <text x="585" y="82" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#534AB7">3D Decoder</text>
+          <text x="585" y="100" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#5C5B56">Spatial: 3D deconv ↑8×</text>
+          <text x="585" y="114" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#5C5B56">Temporal: causal ↑8×</text>
+          <text x="585" y="128" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#5C5B56">+ pixel-shuffle upsampling</text>
+
+          <line x1="655" y1="100" x2="700" y2="100" stroke="#534AB7" stroke-width="2" marker-end="url(#ch23c-arr)"/>
+
+          <!-- Output video -->
+          <g transform="translate(705, 55)">
+            <rect x="8" y="8" width="60" height="50" rx="4" fill="#FAECE7" stroke="#F0997B" stroke-width="0.8" opacity="0.6"/>
+            <rect x="4" y="4" width="60" height="50" rx="4" fill="#FAECE7" stroke="#F0997B" stroke-width="0.8" opacity="0.8"/>
+            <rect x="0" y="0" width="60" height="50" rx="4" fill="#FAECE7" stroke="#F0997B" stroke-width="1.5"/>
+            <text x="30" y="22" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="500" fill="#993C1D">Recon</text>
+            <text x="30" y="36" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="8" font-weight="400" fill="#9C9A94">video</text>
+          </g>
+
+          <!-- Training losses -->
+          <rect x="250" y="195" width="300" height="60" rx="8" fill="none" stroke="#E5E3DC" stroke-width="1" stroke-dasharray="5 4"/>
+          <text x="400" y="215" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#1A1A18">Training Losses</text>
+          <text x="400" y="232" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#5C5B56">L_recon (MSE) + L_perceptual (VGG) + L_adv (discriminator) + L_KL</text>
+          <text x="400" y="248" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#9C9A94">+ temporal consistency loss between adjacent frames</text>
+        </svg>
+        <figcaption>Figure 23c.1 — 3D VAE spatiotemporal compression. A 10-second video (240×256×256×3 = 47M values) is compressed to a latent of 30×32×32×4 = 123K values — a 380× reduction. The encoder uses 3D convolutions for spatial downsampling and causal temporal convolutions for temporal compression. Training combines reconstruction, perceptual, adversarial, KL, and temporal consistency losses.</figcaption>
+      </figure>
+
+      <h3>From 2D VAE to 3D: Temporal Compression</h3>
+
+      <p>The standard approach initializes a 3D VAE from a pretrained 2D image VAE: the spatial convolution weights are copied directly, and new temporal convolution weights are initialized to identity (pass-through). This means at initialization, the 3D VAE behaves identically to a 2D VAE applied frame-by-frame — temporal compression is learned from scratch while spatial compression starts from a strong prior.</p>
+
+      <p>The temporal compression is introduced in the last two downsampling blocks of the encoder (and first two upsampling blocks of the decoder), using <strong>causal 3D convolutions</strong> — convolutions that only look at the current and past frames, never future frames. This causality is critical for autoregressive video generation where frames are produced sequentially.</p>
+
+      <h3>Group Causal Convolution (CVPR 2025)</h3>
+
+      <p>Standard causal convolution pads the temporal dimension asymmetrically (all padding on the past side), which causes the first frame to see a different receptive field than later frames. This creates visible quality inconsistency: the first frame is sharp, subsequent frames are slightly blurry. <strong>Group causal convolution</strong> fixes this by dividing the temporal axis into groups, applying standard (non-causal) convolution within each group, and causal padding only between groups. The result: consistent quality across all frames, with the causal property preserved at the group boundary level.</p>
+
+      <h3>Hands-On: 3D VAE Encoder-Decoder</h3>
+
+      <p>The following code implements a simplified 3D VAE with temporal compression, demonstrating the key architectural patterns.</p>
+
+<pre><code class="language-python">
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+class CausalConv3d(nn.Module):
+    """3D convolution that is causal in the temporal dimension."""
+    def __init__(self, in_ch, out_ch, kernel_size=3, stride=(1,1,1)):
+        super().__init__()
+        # Causal: pad only the past in temporal dim, symmetric in spatial
+        t_k = kernel_size if isinstance(kernel_size, int) else kernel_size[0]
+        self.t_pad = t_k - 1                                  # full causal padding
+        self.conv = nn.Conv3d(in_ch, out_ch, kernel_size,
+                              stride=stride, padding=(0, 1, 1))  # spatial pad only
+
+    def forward(self, x):
+        # x: (B, C, T, H, W)
+        x = F.pad(x, (0, 0, 0, 0, self.t_pad, 0))            # pad past frames
+        return self.conv(x)
+
+class VideoEncoder3D(nn.Module):
+    """3D VAE encoder: spatial ↓8×, temporal ↓4×."""
+    def __init__(self, in_ch=3, latent_ch=4, base_ch=64):
+        super().__init__()
+        self.spatial_down = nn.Sequential(
+            # Spatial-only downsampling (stride in H,W only)
+            nn.Conv3d(in_ch, base_ch, 3, stride=(1,2,2), padding=1),   # H/2, W/2
+            nn.SiLU(),
+            nn.Conv3d(base_ch, base_ch*2, 3, stride=(1,2,2), padding=1), # H/4, W/4
+            nn.SiLU(),
+            nn.Conv3d(base_ch*2, base_ch*4, 3, stride=(1,2,2), padding=1), # H/8, W/8
+            nn.SiLU(),
+        )
+        self.temporal_down = nn.Sequential(
+            # Temporal downsampling with causal convolutions
+            CausalConv3d(base_ch*4, base_ch*4, kernel_size=3, stride=(2,1,1)), # T/2
+            nn.SiLU(),
+            CausalConv3d(base_ch*4, base_ch*4, kernel_size=3, stride=(2,1,1)), # T/4
+            nn.SiLU(),
+        )
+        self.to_latent = nn.Conv3d(base_ch*4, latent_ch * 2, 1)  # mu + logvar
+
+    def forward(self, video):
+        """video: (B, 3, T, H, W) → latent: (B, 4, T/4, H/8, W/8)."""
+        h = self.spatial_down(video)                           # (B, 256, T, H/8, W/8)
+        h = self.temporal_down(h)                              # (B, 256, T/4, H/8, W/8)
+        mu, logvar = self.to_latent(h).chunk(2, dim=1)        # each (B, 4, T/4, H/8, W/8)
+        z = mu + (0.5 * logvar).exp() * torch.randn_like(mu)  # reparameterize: μ + σ ⊙ ε
+        return z, mu, logvar
+
+class VideoDecoder3D(nn.Module):
+    """3D VAE decoder: spatial ↑8×, temporal ↑4×."""
+    def __init__(self, latent_ch=4, out_ch=3, base_ch=64):
+        super().__init__()
+        self.from_latent = nn.Conv3d(latent_ch, base_ch*4, 1)
+        self.temporal_up = nn.Sequential(
+            nn.ConvTranspose3d(base_ch*4, base_ch*4, (4,1,1), stride=(2,1,1),
+                               padding=(1,0,0)),              # T×2
+            nn.SiLU(),
+            nn.ConvTranspose3d(base_ch*4, base_ch*4, (4,1,1), stride=(2,1,1),
+                               padding=(1,0,0)),              # T×4
+            nn.SiLU(),
+        )
+        self.spatial_up = nn.Sequential(
+            nn.ConvTranspose3d(base_ch*4, base_ch*2, (1,4,4), stride=(1,2,2),
+                               padding=(0,1,1)),              # H×2, W×2
+            nn.SiLU(),
+            nn.ConvTranspose3d(base_ch*2, base_ch, (1,4,4), stride=(1,2,2),
+                               padding=(0,1,1)),              # H×4, W×4
+            nn.SiLU(),
+            nn.ConvTranspose3d(base_ch, out_ch, (1,4,4), stride=(1,2,2),
+                               padding=(0,1,1)),              # H×8, W×8
+            nn.Tanh(),
+        )
+
+    def forward(self, z):
+        """z: (B, 4, T/4, H/8, W/8) → video: (B, 3, T, H, W)."""
+        h = self.from_latent(z)
+        h = self.temporal_up(h)
+        return self.spatial_up(h)
+
+# --- Demo: encode and decode a video clip ---
+encoder = VideoEncoder3D().cuda()
+decoder = VideoDecoder3D().cuda()
+
+video = torch.randn(1, 3, 16, 256, 256).cuda()                # 16-frame clip
+z, mu, logvar = encoder(video)                                 # (1, 4, 4, 32, 32)
+print(f"Video: {video.shape} → Latent: {z.shape}")            # 3M → 16K values
+recon = decoder(z)                                             # (1, 3, 16, 256, 256)
+recon_loss = F.mse_loss(recon, video)
+</code></pre>
+    </section>
+
+    <!-- ============================================================
+         SECTION 2: Video Diffusion Transformer Training
+         ============================================================ -->
+    <section class="chapter-section" id="video-diffusion-training">
+      <h2>Video Diffusion Transformer Training</h2>
+
+      <p>Once the 3D VAE compresses video into a manageable latent, the diffusion transformer learns to denoise it. The core training loop is identical to image DiT (Chapter 23b) — sample $z_0$, add noise to get $z_t$, predict velocity — but the transformer architecture must handle the temporal dimension. Two major approaches have emerged: factorized spatial-temporal attention (cheaper, used by Open-Sora) and full 3D attention (better quality, used by CogVideoX).</p>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 300" xmlns="http://www.w3.org/2000/svg">
+          <text x="400" y="22" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="600" fill="#1A1A18">Factorized vs Full 3D Attention for Video</text>
+
+          <!-- Left: Factorized -->
+          <rect x="30" y="50" width="340" height="30" rx="5" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1"/>
+          <text x="200" y="70" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#534AB7">Factorized Spatial-Temporal</text>
+
+          <rect x="50" y="95" width="140" height="50" rx="6" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1"/>
+          <text x="120" y="116" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#534AB7">Spatial Attn</text>
+          <text x="120" y="132" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#9C9A94">H×W tokens per frame</text>
+
+          <line x1="190" y1="120" x2="210" y2="120" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch23c-arr)"/>
+
+          <rect x="215" y="95" width="140" height="50" rx="6" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="285" y="116" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#0F6E56">Temporal Attn</text>
+          <text x="285" y="132" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#9C9A94">T tokens per position</text>
+
+          <text x="200" y="170" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#5C5B56">Cost: O(H²W² + T²) per layer</text>
+          <text x="200" y="186" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#0F6E56">✓ Scalable to long videos</text>
+          <text x="200" y="202" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#993C1D">✗ No cross-frame spatial reasoning</text>
+
+          <!-- Divider -->
+          <line x1="400" y1="45" x2="400" y2="270" stroke="#E5E3DC" stroke-width="1" stroke-dasharray="5 4"/>
+
+          <!-- Right: Full 3D -->
+          <rect x="430" y="50" width="340" height="30" rx="5" fill="#FAEEDA" stroke="#EF9F27" stroke-width="1"/>
+          <text x="600" y="70" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#854F0B">Full 3D Attention (CogVideoX)</text>
+
+          <rect x="470" y="95" width="280" height="50" rx="6" fill="#FAEEDA" stroke="#EF9F27" stroke-width="1"/>
+          <text x="610" y="112" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#854F0B">Joint Spatiotemporal Attention</text>
+          <text x="610" y="132" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#9C9A94">All T×H×W tokens attend to each other</text>
+
+          <text x="600" y="170" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#5C5B56">Cost: O((T·H·W)²) per layer</text>
+          <text x="600" y="186" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#0F6E56">✓ Best temporal consistency</text>
+          <text x="600" y="202" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#993C1D">✗ Quadratic in total token count</text>
+
+          <!-- Bottom comparison -->
+          <text x="200" y="240" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">Open-Sora, Latte, AnimateDiff</text>
+          <text x="600" y="240" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">CogVideoX, Pyramidal Flow</text>
+
+          <text x="400" y="275" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#1A1A18">Trade-off: factorized is 5-10× cheaper but produces less coherent motion</text>
+        </svg>
+        <figcaption>Figure 23c.2 — Factorized vs full 3D attention for video generation. Factorized attention applies spatial and temporal attention sequentially (cost scales with H²W² + T²). Full 3D attention lets all spatiotemporal tokens attend to each other (cost scales with (T·H·W)²) but produces more temporally consistent videos. CogVideoX uses full 3D; Open-Sora uses factorized for efficiency.</figcaption>
+      </figure>
+
+      <h3>CogVideoX: Expert Transformer with 3D Full Attention</h3>
+
+      <p><strong>CogVideoX</strong> processes text and video tokens through full 3D attention — every token at every position in every frame attends to every other. To handle the distributional difference between text and video tokens (text features live in a different numerical range), CogVideoX uses <strong>Expert Adaptive LayerNorm</strong>: separate LayerNorm modules for text and video tokens, each parameterized by the diffusion timestep $t$. The text-stream normalization parameters $(\gamma_t^{\text{text}}, \beta_t^{\text{text}})$ and video-stream parameters $(\gamma_t^{\text{vid}}, \beta_t^{\text{vid}})$ are predicted from separate MLPs conditioned on $t$.</p>
+
+      <p><strong>3D RoPE</strong> extends rotary position embeddings to three dimensions. Each token's position $(t, h, w)$ is encoded by rotating its embedding vector in frequency bands assigned to each axis. Temporal frequencies use lower bands (capturing slow motion), spatial frequencies use higher bands (capturing fine texture). This allows the model to generalize to video lengths and resolutions unseen during training.</p>
+
+      <h3>Hands-On: Video Diffusion Training Step</h3>
+
+      <p>The following code implements a complete video diffusion training step with factorized spatial-temporal attention.</p>
+
+<pre><code class="language-python">
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import math
+
+class SpatialTemporalBlock(nn.Module):
+    """Factorized spatial-temporal transformer block for video."""
+    def __init__(self, dim=768, heads=12):
+        super().__init__()
+        self.norm1 = nn.LayerNorm(dim)
+        self.spatial_attn = nn.MultiheadAttention(dim, heads, batch_first=True)
+        self.norm2 = nn.LayerNorm(dim)
+        self.temporal_attn = nn.MultiheadAttention(dim, heads, batch_first=True)
+        self.norm3 = nn.LayerNorm(dim)
+        self.mlp = nn.Sequential(
+            nn.Linear(dim, dim * 4), nn.GELU(), nn.Linear(dim * 4, dim))
+        # AdaLN for timestep conditioning
+        self.adaLN = nn.Sequential(nn.SiLU(), nn.Linear(dim, 6 * dim))
+
+    def forward(self, x, cond, T, H, W):
+        """
+        x: (B, T*H*W, D) flattened video tokens
+        cond: (B, D) timestep + text conditioning
+        T, H, W: temporal and spatial dimensions
+        """
+        B, N, D = x.shape
+        shift1, scale1, gate1, shift2, scale2, gate2 = \
+            self.adaLN(cond).chunk(6, dim=-1)
+
+        # --- Spatial attention: attend within each frame ---
+        h = self.norm1(x) * (1 + scale1.unsqueeze(1)) + shift1.unsqueeze(1)
+        h = h.reshape(B * T, H * W, D)                        # merge batch and time
+        h, _ = self.spatial_attn(h, h, h)                      # (B*T, H*W, D)
+        h = h.reshape(B, T * H * W, D)
+        x = x + gate1.unsqueeze(1) * h
+
+        # --- Temporal attention: attend across frames at same position ---
+        h = self.norm2(x)
+        h = h.reshape(B, T, H * W, D).permute(0, 2, 1, 3)    # (B, H*W, T, D)
+        h = h.reshape(B * H * W, T, D)                        # merge batch and spatial
+        h, _ = self.temporal_attn(h, h, h)                     # (B*H*W, T, D)
+        h = h.reshape(B, H * W, T, D).permute(0, 2, 1, 3)    # (B, T, H*W, D)
+        h = h.reshape(B, T * H * W, D)
+        x = x + h
+
+        # --- FFN ---
+        h = self.norm3(x) * (1 + scale2.unsqueeze(1)) + shift2.unsqueeze(1)
+        x = x + gate2.unsqueeze(1) * self.mlp(h)
+        return x
+
+class VideoDiT(nn.Module):
+    """Video Diffusion Transformer with factorized attention."""
+    def __init__(self, latent_ch=4, patch_size=2, dim=768, depth=12, heads=12):
+        super().__init__()
+        self.patch_size = patch_size
+        # 3D patchify: (B, C, T, H, W) → (B, T*(H/p)*(W/p), D)
+        self.proj = nn.Conv3d(latent_ch, dim, (1, patch_size, patch_size),
+                              stride=(1, patch_size, patch_size))
+        self.time_embed = nn.Sequential(
+            nn.Linear(256, dim), nn.SiLU(), nn.Linear(dim, dim))
+        self.blocks = nn.ModuleList([
+            SpatialTemporalBlock(dim, heads) for _ in range(depth)])
+        self.final_norm = nn.LayerNorm(dim)
+        self.head = nn.Linear(dim, patch_size**2 * latent_ch)
+
+    def timestep_embedding(self, t, dim=256):
+        half = dim // 2
+        freqs = torch.exp(-math.log(10000) * torch.arange(half, device=t.device) / half)
+        args = t[:, None] * freqs[None]
+        return torch.cat([args.cos(), args.sin()], dim=-1)
+
+    def forward(self, z_t, t, text_cond):
+        """z_t: (B, 4, T, H, W), t: (B,), text_cond: (B, D)."""
+        B, C, T, H, W = z_t.shape
+        ps = self.patch_size
+        pH, pW = H // ps, W // ps                             # patched spatial dims
+
+        x = self.proj(z_t)                                     # (B, D, T, pH, pW)
+        x = x.flatten(2).transpose(1, 2)                      # (B, T*pH*pW, D)
+
+        cond = self.time_embed(self.timestep_embedding(t)) + text_cond
+
+        for blk in self.blocks:
+            x = blk(x, cond, T, pH, pW)
+
+        x = self.head(self.final_norm(x))                     # (B, T*pH*pW, ps²*C)
+        # Unpatchify back to (B, C, T, H, W)
+        x = x.reshape(B, T, pH, pW, ps, ps, C)
+        x = x.permute(0, 6, 1, 2, 4, 3, 5).reshape(B, C, T, H, W)
+        return x                                               # predicted velocity
+
+# --- Training step ---
+def video_dit_training_step(model, vae_encoder, video, text_cond, optimizer):
+    """Single training step for video DiT with rectified flow."""
+    B = video.size(0)
+
+    # Encode video to latent
+    with torch.no_grad():
+        z_0, _, _ = vae_encoder(video)                         # (B, 4, T/4, H/8, W/8)
+
+    # Sample timestep and noise
+    t = torch.rand(B, device=z_0.device)
+    eps = torch.randn_like(z_0)
+    t_exp = t.view(B, 1, 1, 1, 1)                             # broadcast to 5D
+    z_t = (1 - t_exp) * z_0 + t_exp * eps                     # rectified flow
+
+    # Predict velocity
+    v_pred = model(z_t, t, text_cond)                          # (B, 4, T', H', W')
+    v_target = eps - z_0                                       # velocity target
+
+    loss = F.mse_loss(v_pred, v_target)
+    optimizer.zero_grad()
+    loss.backward()
+    torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+    optimizer.step()
+    return loss.item()
+</code></pre>
+    </section>
+
+    <!-- ============================================================
+         SECTION 3: Mixed Image-Video Training
+         ============================================================ -->
+    <section class="chapter-section" id="mixed-image-video-training">
+      <h2>Mixed Image-Video Training</h2>
+
+      <p>A model trained exclusively on video data forgets how to generate high-quality still images. The frames become temporally coherent but individually blurry — the model optimizes for consistency at the expense of sharpness. <strong>Mixed image-video training</strong> solves this by including both image and video data in each training batch.</p>
+
+      <h3>Domain-Specific Normalization</h3>
+
+      <p>Images and videos have different activation statistics — a video batch has temporal correlations that make its feature distributions narrower than an image batch. Using shared batch normalization produces suboptimal statistics for both. The solution: maintain <strong>separate normalization layers</strong> for images and videos while sharing all other parameters. Open-Sora 2.0 implements this as separate LayerNorm affine parameters $(\gamma_{\text{img}}, \beta_{\text{img}})$ and $(\gamma_{\text{vid}}, \beta_{\text{vid}})$ that are selected based on the input type. CogVideoX uses Expert Adaptive LayerNorm for the same purpose.</p>
+
+      <h3>Handling Format Differences</h3>
+
+      <p>Images are treated as single-frame videos: an image $x \in \mathbb{R}^{3 \times H \times W}$ is zero-padded to match the video temporal dimension $\hat{x} \in \mathbb{R}^{3 \times T \times H \times W}$ where frames $2, 3, \ldots, T$ are zeros. The 3D VAE encodes this as if it were a video with a static first frame. During mixed training, Open-Sora 2.0 randomizes video lengths (up to 34 frames) with zero-padding, improving robustness to varying durations at inference time.</p>
+
+      <p>The following code demonstrates how to set up a mixed image-video data pipeline.</p>
+
+<pre><code class="language-python">
+import torch
+from datasets import load_dataset
+from torchvision import transforms
+
+# --- Mixed image-video collate function ---
+def mixed_collate(image_batch, video_batch, max_frames=17):
+    """Combine image and video samples into a unified batch.
+
+    Images are zero-padded to max_frames. Returns batch with
+    a domain flag for normalization routing.
+    """
+    batch_videos = []
+    domain_flags = []                                          # 0=image, 1=video
+
+    # Process images: treat as single-frame "videos"
+    img_transform = transforms.Compose([
+        transforms.Resize(256), transforms.CenterCrop(256),
+        transforms.ToTensor(), transforms.Normalize([0.5]*3, [0.5]*3),
+    ])
+    for item in image_batch:
+        img = img_transform(item["image"].convert("RGB"))      # (3, 256, 256)
+        # Zero-pad to (3, max_frames, 256, 256)
+        padded = torch.zeros(3, max_frames, 256, 256)
+        padded[:, 0] = img                                     # first frame = image
+        batch_videos.append(padded)
+        domain_flags.append(0)                                 # image domain
+
+    # Process videos: already temporal
+    for frames in video_batch:
+        T = min(len(frames), max_frames)
+        video = torch.zeros(3, max_frames, 256, 256)
+        for i in range(T):
+            video[:, i] = img_transform(frames[i])
+        batch_videos.append(video)
+        domain_flags.append(1)                                 # video domain
+
+    return (torch.stack(batch_videos),                         # (B, 3, T, 256, 256)
+            torch.tensor(domain_flags))                        # (B,)
+
+class DomainNorm(nn.Module):
+    """Domain-specific normalization: separate stats for images vs videos."""
+    def __init__(self, dim):
+        super().__init__()
+        self.img_norm = nn.LayerNorm(dim)
+        self.vid_norm = nn.LayerNorm(dim)
+
+    def forward(self, x, domain_flag):
+        """x: (B, N, D), domain_flag: (B,) with 0=image, 1=video."""
+        out = torch.zeros_like(x)
+        img_mask = domain_flag == 0
+        vid_mask = domain_flag == 1
+        if img_mask.any():
+            out[img_mask] = self.img_norm(x[img_mask])
+        if vid_mask.any():
+            out[vid_mask] = self.vid_norm(x[vid_mask])
+        return out
+</code></pre>
+    </section>
+
+    <!-- ============================================================
+         SECTION 4: Progressive Training Pipeline
+         ============================================================ -->
+    <section class="chapter-section" id="progressive-training">
+      <h2>Progressive Training Pipeline</h2>
+
+      <p>Training a video model end-to-end at full resolution and duration is prohibitively expensive. The solution is <strong>progressive training</strong>: start simple, scale up gradually, and transfer checkpoints between stages. Open-Sora 2.0 demonstrated that this approach produces commercial-quality video generation for a total training cost of $200K — 5-10× cheaper than comparable models.</p>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 280" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="ch23c-arr2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+              <path d="M1 1L9 5L1 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </marker>
+          </defs>
+          <text x="400" y="22" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="600" fill="#1A1A18">Open-Sora 2.0: Three-Stage Progressive Training</text>
+
+          <!-- Stage 1 -->
+          <rect x="40" y="55" width="200" height="95" rx="8" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <text x="140" y="78" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="600" fill="#534AB7">Stage 1</text>
+          <text x="140" y="96" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#5C5B56">Text-to-Image</text>
+          <text x="140" y="112" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">256×256</text>
+          <text x="140" y="128" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">Image data only</text>
+          <text x="140" y="142" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#9C9A94">Learn spatial generation</text>
+
+          <line x1="240" y1="103" x2="280" y2="103" stroke="#534AB7" stroke-width="2" marker-end="url(#ch23c-arr2)"/>
+          <text x="260" y="95" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="8" font-weight="500" fill="#534AB7">ckpt</text>
+
+          <!-- Stage 2 -->
+          <rect x="285" y="45" width="210" height="115" rx="8" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1.5"/>
+          <text x="390" y="68" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="600" fill="#0F6E56">Stage 2</text>
+          <text x="390" y="86" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#5C5B56">Image-to-Video</text>
+          <text x="390" y="102" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">256×256, 17 frames</text>
+          <text x="390" y="118" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">Mixed image + video</text>
+          <text x="390" y="134" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#9C9A94">+ domain-specific norm</text>
+          <text x="390" y="150" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#9C9A94">Learn temporal dynamics</text>
+
+          <line x1="495" y1="103" x2="535" y2="103" stroke="#0F6E56" stroke-width="2" marker-end="url(#ch23c-arr2)"/>
+          <text x="515" y="95" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="8" font-weight="500" fill="#0F6E56">ckpt</text>
+
+          <!-- Stage 3 -->
+          <rect x="540" y="35" width="220" height="135" rx="8" fill="#FAEEDA" stroke="#EF9F27" stroke-width="1.5"/>
+          <text x="650" y="58" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="600" fill="#854F0B">Stage 3</text>
+          <text x="650" y="76" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#5C5B56">High-Resolution Video</text>
+          <text x="650" y="92" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">512×512+, 34+ frames</text>
+          <text x="650" y="108" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">Mixed durations</text>
+          <text x="650" y="124" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#9C9A94">+ pyramidal flow matching</text>
+          <text x="650" y="140" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#9C9A94">119K → 15K tokens</text>
+          <text x="650" y="156" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#9C9A94">Polish quality + extend</text>
+
+          <!-- Cost bar -->
+          <rect x="140" y="200" width="520" height="24" rx="4" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="1"/>
+          <rect x="140" y="200" width="120" height="24" rx="4" fill="#EEEDFE"/>
+          <rect x="260" y="200" width="200" height="24" rx="4" fill="#E1F5EE"/>
+          <rect x="460" y="200" width="200" height="24" rx="4" fill="#FAEEDA"/>
+          <text x="200" y="217" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#534AB7">~$30K</text>
+          <text x="360" y="217" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#0F6E56">~$70K</text>
+          <text x="560" y="217" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#854F0B">~$100K</text>
+          <text x="400" y="250" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#1A1A18">Total: ~$200K for commercial-quality video generation</text>
+          <text x="400" y="268" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">Outperforms Runway Gen-3 Alpha and Luma Ray2 in 2/3 evaluation aspects</text>
+        </svg>
+        <figcaption>Figure 23c.3 — Open-Sora 2.0 progressive training pipeline. Stage 1 trains text-to-image at 256×256 ($30K). Stage 2 adds video generation with mixed image-video data and domain-specific normalization ($70K). Stage 3 scales to high resolution, long duration, and pyramidal flow matching ($100K). Total cost: $200K — outperforming models 5-10× more expensive.</figcaption>
+      </figure>
+
+      <h3>Stage Transitions: What to Keep, What to Reinitialize</h3>
+
+      <p>When transitioning from Stage 1 (image) to Stage 2 (video), all spatial layers transfer directly — the model already knows how to generate spatial content. The temporal attention layers (new in Stage 2) are initialized to identity: the temporal attention output projection's weights are set to zero, so the model initially behaves as a per-frame image generator. The domain-specific normalization parameters for video are initialized from the image normalization parameters. Learning rate is typically reduced by 2-5× for transferred layers and kept at the original rate for new layers.</p>
+
+      <p>From Stage 2 to Stage 3, all parameters transfer. The main changes are in the data pipeline: higher resolution images/videos and longer clips. Positional embeddings are interpolated (bicubic for spatial, linear for temporal) to handle the resolution increase. Pyramidal flow matching (next section) is introduced in Stage 3 to handle the dramatically increased token count.</p>
+    </section>
+
+    <!-- ============================================================
+         SECTION 5: Pyramidal Flow Matching
+         ============================================================ -->
+    <section class="chapter-section" id="pyramidal-flow-matching">
+      <h2>Pyramidal Flow Matching for Efficient Training</h2>
+
+      <p>A 10-second, 241-frame video at 768p resolution contains approximately 119,000 tokens in latent space. Full attention over this sequence costs $O(119000^2) \approx 14$ billion operations per layer — impractical even on modern hardware. <strong>Pyramidal flow matching</strong> (ICLR 2025) reduces this by processing the video at multiple resolutions simultaneously: recent frames at full resolution, and progressively older frames at lower resolution.</p>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 260" xmlns="http://www.w3.org/2000/svg">
+          <text x="400" y="22" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="600" fill="#1A1A18">Pyramidal Flow Matching: Multi-Resolution Temporal Pyramid</text>
+
+          <!-- Full resolution (recent frames) -->
+          <rect x="500" y="55" width="260" height="80" rx="6" fill="#534AB7" stroke="#534AB7"/>
+          <text x="630" y="80" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#FFFFFF">Full Resolution</text>
+          <text x="630" y="98" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#AFA9EC">Recent 60 frames (2.5s)</text>
+          <text x="630" y="114" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#AFA9EC">768p, ~6K tokens</text>
+          <text x="630" y="128" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#AFA9EC">Fine spatial detail</text>
+
+          <!-- Half resolution (middle frames) -->
+          <rect x="280" y="70" width="200" height="70" rx="6" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <text x="380" y="93" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#534AB7">Half Resolution</text>
+          <text x="380" y="111" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#5C5B56">Middle 120 frames, 384p</text>
+          <text x="380" y="126" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#9C9A94">~5K tokens</text>
+
+          <!-- Quarter resolution (oldest frames) -->
+          <rect x="80" y="85" width="180" height="60" rx="6" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="1.5"/>
+          <text x="170" y="108" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#5C5B56">Quarter Resolution</text>
+          <text x="170" y="124" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#9C9A94">Oldest 61 frames, 192p, ~4K tokens</text>
+
+          <!-- Timeline arrow -->
+          <line x1="80" y1="180" x2="760" y2="180" stroke="#C8C6BE" stroke-width="1.5" marker-end="url(#ch23c-arr2)"/>
+          <text x="80" y="200" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">t = 0 (oldest)</text>
+          <text x="730" y="200" text-anchor="end" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">t = 10s (newest)</text>
+
+          <!-- Token count comparison -->
+          <text x="400" y="230" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#534AB7">Total: ~15K tokens (vs 119K at full resolution)</text>
+          <text x="400" y="250" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#0F6E56">8× reduction in compute with minimal quality loss</text>
+        </svg>
+        <figcaption>Figure 23c.4 — Pyramidal flow matching processes a 10-second video using a temporal resolution pyramid. Recent frames (2.5s) are at full 768p resolution. Middle frames are at half resolution. Oldest frames are at quarter resolution. Total token count drops from 119K to 15K — an 8× compute reduction — because distant frames need less spatial detail to maintain temporal coherence.</figcaption>
+      </figure>
+
+      <h3>Training the Pyramid</h3>
+
+      <p>During training, the model processes all pyramid levels in a single forward pass. The denoising loss is computed at each level, but with different noise schedules: lower-resolution levels use noisier inputs (higher $t$ values), reflecting that coarse structure should be resolved first. The training objective is a weighted sum across levels:</p>
+
+      $$\mathcal{L}_{\text{pyramid}} = \sum_{l=1}^{L} w_l \, \mathbb{E}_{t_l}\!\left[\|v_\theta^{(l)}(z_{t_l}^{(l)}) - v^{(l)}\|^2\right]$$
+
+      <p>where $l$ indexes the pyramid level, $w_l$ is the level weight (typically higher for the full-resolution level), $t_l$ is the noise level for level $l$ (lower resolution = noisier), and $v_\theta^{(l)}$ is the velocity prediction at level $l$. The element-wise norm $\|\cdot\|^2$ is computed independently at each spatial resolution (element-wise squared difference summed over all values in the level's tensor).</p>
+
+      <h3>Hands-On: Pyramidal Flow Matching Training Step</h3>
+
+      <p>The following code implements a simplified pyramidal flow matching training step for video generation.</p>
+
+<pre><code class="language-python">
+import torch
+import torch.nn.functional as F
+
+def build_pyramid(z_0, levels=3):
+    """Build a temporal-spatial pyramid from a full-resolution latent.
+    Args:
+        z_0: (B, C, T, H, W) clean video latent at full resolution
+        levels: number of pyramid levels (3 = full, half, quarter)
+    Returns:
+        list of (z_level, (T_l, H_l, W_l)) from coarsest to finest
+    """
+    pyramid = []
+    z = z_0
+    for l in range(levels):
+        if l > 0:
+            # Downsample spatial dims by 2× using trilinear interpolation
+            z = F.interpolate(z, scale_factor=(1, 0.5, 0.5),
+                              mode='trilinear', align_corners=False)
+        pyramid.append(z)
+    return list(reversed(pyramid))                             # coarsest first
+
+def pyramid_training_step(model, z_0, text_cond, optimizer, levels=3):
+    """One training step with pyramidal flow matching.
+
+    Each pyramid level uses a different noise schedule:
+    coarse levels see more noise, fine levels see less.
+    """
+    B = z_0.size(0)
+    pyramid = build_pyramid(z_0, levels)                       # [coarse, ..., fine]
+
+    total_loss = 0
+    level_weights = [0.2, 0.3, 0.5]                           # higher weight for fine
+
+    for l, (z_l, w_l) in enumerate(zip(pyramid, level_weights)):
+        # Noise schedule: coarser levels are noisier
+        t_min = 0.3 * (levels - 1 - l) / (levels - 1)        # coarse: t_min=0.3, fine: 0
+        t_max = 0.7 + 0.3 * (levels - 1 - l) / (levels - 1)  # coarse: t_max=1.0, fine: 0.7
+        t = torch.rand(B, device=z_l.device) * (t_max - t_min) + t_min
+
+        eps = torch.randn_like(z_l)
+        t_exp = t.view(B, 1, 1, 1, 1)
+        z_t = (1 - t_exp) * z_l + t_exp * eps                 # noisy latent at level l
+
+        v_pred = model(z_t, t, text_cond, level=l)            # model receives level info
+        v_target = eps - z_l
+        total_loss += w_l * F.mse_loss(v_pred, v_target)
+
+    optimizer.zero_grad()
+    total_loss.backward()
+    torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+    optimizer.step()
+    return total_loss.item()
+</code></pre>
+    </section>
+
+    <!-- ============================================================
+         SECTION 6: Data Curation
+         ============================================================ -->
+    <section class="chapter-section" id="data-curation">
+      <h2>Data Curation and Filtering for Video Training</h2>
+
+      <p>Video training data quality matters more than quantity. Open-Sora 2.0 trained on a curated dataset that is orders of magnitude smaller than the raw web video corpus it was drawn from — but dramatically cleaner. The data pipeline has four stages.</p>
+
+      <h3>Filtering Pipeline</h3>
+
+      <p><strong>Aesthetic filtering</strong> removes visually unappealing clips: low resolution, heavy compression artifacts, text overlays, watermarks. A pretrained aesthetic scoring model (typically a CLIP-based classifier fine-tuned on human preference data) assigns each clip a quality score, and clips below a threshold are removed. <strong>Motion filtering</strong> removes static clips (slideshows, still images with music) by computing optical flow magnitude across frames — clips with average flow below a threshold are discarded. At the other extreme, clips with erratic camera motion (shaky handheld footage) are also filtered.</p>
+
+      <p><strong>Caption generation</strong> uses a VLM (such as LLaVA or CogVLM) to generate dense textual descriptions for each video clip. Frame-level captions are generated at regular intervals and then consolidated into a single video-level caption that describes the scene, actions, camera movement, and temporal progression. High-quality captions are critical for text-video alignment — the model can only learn the mapping from text to video if the text accurately describes the visual content.</p>
+
+      <p><strong>Deduplication</strong> removes near-duplicate clips (common in web video) using embedding-based similarity: each clip is embedded with a video encoder, and clips with cosine similarity above 0.95 are deduplicated. This prevents the model from memorizing specific clips and improves diversity.</p>
+
+      <div class="callout callout-insight">
+        <div class="callout-title">Key Insight</div>
+        <p>The data pipeline for video generation training typically reduces the raw dataset by 90-95%. Out of millions of web video clips, only the top 5-10% survive aesthetic, motion, caption quality, and deduplication filtering. This aggressive curation is why Open-Sora 2.0 achieves commercial quality at $200K — the model trains on fewer but much higher quality examples. The saying "garbage in, garbage out" is especially true for video: a single batch of low-quality clips can destabilize training for thousands of subsequent steps.</p>
+      </div>
+    </section>
+
+    <!-- ============================================================
+         SECTION 7: Complete Training Recipes
+         ============================================================ -->
+    <section class="chapter-section" id="video-gen-recipes">
+      <h2>Complete Video Generation Training Recipes</h2>
+
+      <h3>Recipe 1: CogVideoX-Style Text-to-Video at 480p</h3>
+      <table>
+        <tr><th>Component</th><th>Setting</th></tr>
+        <tr><td>Architecture</td><td>Expert Transformer (5B params), 3D full attention</td></tr>
+        <tr><td>3D VAE</td><td>8×8×8 compression (spatial 8×, temporal 8×)</td></tr>
+        <tr><td>Text encoder</td><td>T5-XXL (frozen)</td></tr>
+        <tr><td>Attention</td><td>Full 3D spatiotemporal (all T×H×W tokens)</td></tr>
+        <tr><td>Positional encoding</td><td>3D RoPE</td></tr>
+        <tr><td>Optimizer</td><td>AdamW, lr=1e-4</td></tr>
+        <tr><td>Batch size</td><td>256 (effective)</td></tr>
+        <tr><td>Training data</td><td>35M video clips + 2B images, curated</td></tr>
+        <tr><td>Resolution</td><td>480p (768×1360), 49 frames, 8 fps</td></tr>
+        <tr><td>Precision</td><td>BF16, FSDP + tensor parallelism</td></tr>
+        <tr><td>Hardware</td><td>256× A100/H100 GPUs</td></tr>
+      </table>
+
+      <h3>Recipe 2: Open-Sora 2.0 Progressive Pipeline</h3>
+      <table>
+        <tr><th>Stage</th><th>Data</th><th>Resolution</th><th>Duration</th><th>Cost</th></tr>
+        <tr><td>Stage 1: T2I</td><td>Images only</td><td>256×256</td><td>N/A</td><td>~$30K</td></tr>
+        <tr><td>Stage 2: I2V</td><td>Mixed img+vid</td><td>256×256</td><td>17 frames</td><td>~$70K</td></tr>
+        <tr><td>Stage 3: Hi-Res</td><td>Mixed, long</td><td>512×512+</td><td>34+ frames</td><td>~$100K</td></tr>
+      </table>
+      <table>
+        <tr><th>Component</th><th>Setting</th></tr>
+        <tr><td>Architecture</td><td>Video DC-AE + DiT with factorized attention</td></tr>
+        <tr><td>3D VAE</td><td>DC-AE with EfficientViT blocks, 8×8×8</td></tr>
+        <tr><td>Normalization</td><td>Domain-specific (separate image/video)</td></tr>
+        <tr><td>Optimizer</td><td>AdamW, lr=1e-4</td></tr>
+        <tr><td>Flow matching</td><td>Rectified flow + pyramidal (Stage 3)</td></tr>
+        <tr><td>Total training cost</td><td>~$200K</td></tr>
+      </table>
+
+      <h3>Recipe 3: Pyramidal Flow Matching for Long Video</h3>
+      <table>
+        <tr><th>Component</th><th>Setting</th></tr>
+        <tr><td>Architecture</td><td>DiT with 3D full attention</td></tr>
+        <tr><td>3D VAE</td><td>8×8×8 (MAGVIT-v2 style)</td></tr>
+        <tr><td>Pyramid levels</td><td>3 (full, half, quarter resolution)</td></tr>
+        <tr><td>Token count</td><td>~15K (vs 119K without pyramid)</td></tr>
+        <tr><td>Video length</td><td>Up to 10s at 24fps (241 frames)</td></tr>
+        <tr><td>Resolution</td><td>768p</td></tr>
+        <tr><td>Training data</td><td>WebVid-10M + curated internal</td></tr>
+        <tr><td>Training cost</td><td>20.7K A100 GPU hours</td></tr>
+        <tr><td>Quality</td><td>Preferred over Open-Sora 1.2 and CogVideoX-2B in user studies</td></tr>
+      </table>
+
+      <div class="callout callout-warning">
+        <div class="callout-title">Video Generation Training Pitfalls</div>
+        <p>The three most common failures in video generation training: (1) <strong>Temporal flicker</strong> — if the 3D VAE's temporal compression is too aggressive or undertrained, decoded videos flicker between frames. Always verify VAE temporal reconstruction quality before training the DiT. (2) <strong>Mode collapse to static video</strong> — without motion filtering in the data pipeline and without mixed-duration training, the model learns to generate the easiest output: a single repeated frame. Monitor motion magnitude in generated videos during training. (3) <strong>Text-video misalignment</strong> — poor-quality captions cause the model to ignore the text prompt. Invest in caption quality: VLM-generated captions are better than metadata-derived ones, and caption filtering (removing low-confidence captions) is critical.</p>
+      </div>
+    </section>
+
+  </article>
+
+  <footer class="chapter-footer">
+    <div class="footer-nav">
+      <a href="ch23b.html">← Previous: Training Image Generation Transformers</a>
+      <a href="ch24.html">Next: Evaluating Vision Transformers →</a>
+    </div>
+  </footer>
+
+</body>
+</html>

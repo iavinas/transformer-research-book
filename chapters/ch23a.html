@@ -1,0 +1,907 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Chapter 23a: Training Vision Transformers — Classification and Transfer Learning — Transformer Research Book</title>
+  <link rel="stylesheet" href="../assets/style.css">
+  <link rel="stylesheet" href="../assets/math.css">
+  <link rel="stylesheet" href="../assets/prism.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"
+    onload="renderMathInElement(document.body, {
+      delimiters: [{left: '$$', right: '$$', display: true},{left: '$', right: '$', display: false}]
+    })"></script>
+  <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/prism.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-python.min.js"></script>
+</head>
+<body>
+  <nav class="chapter-nav">
+    <a href="../index.html" class="nav-home">← Table of Contents</a>
+    <span class="nav-chapter">Chapter 23a</span>
+    <div style="display:flex; align-items:center; gap:1rem;">
+      <button class="theme-toggle" onclick="toggleTheme()" aria-label="Toggle dark mode">
+        <span class="icon-moon">&#9789;</span><span class="icon-sun">&#9788;</span>
+      </button>
+      <a href="ch23b.html" class="nav-next">Next Chapter →</a>
+    </div>
+  </nav>
+  <script>
+    function toggleTheme(){document.documentElement.classList.toggle('dark');localStorage.setItem('theme',document.documentElement.classList.contains('dark')?'dark':'light');}
+    if(localStorage.getItem('theme')==='dark')document.documentElement.classList.add('dark');
+  </script>
+
+  <article class="chapter">
+
+    <header class="chapter-header">
+      <div class="chapter-number">Chapter 23a</div>
+      <h1 class="chapter-title">Training Vision Transformers — Classification and Transfer Learning</h1>
+      <p class="chapter-lead">The original ViT paper required 300 million images from JFT to match a ResNet trained on 1.2 million ImageNet images. Five years later, a 0.6-billion-parameter model trained with the right augmentation and self-supervised recipe on ImageNet alone achieves 84.2% top-1 accuracy — without any external data. The gap was never about architecture; it was about training. This chapter is a hands-on cookbook: every technique is presented with complete PyTorch training loops that you can run, modify, and learn from. We cover supervised training, data augmentation, self-supervised pre-training (DINO, MAE), fine-tuning with LLRD, detection training recipes, and numerical precision — each with concrete hyperparameters, real data loading from HuggingFace datasets, and the intuitions that explain why each design choice matters.</p>
+    </header>
+
+    <!-- ============================================================
+         SECTION 1: The ViT Training Landscape
+         ============================================================ -->
+    <section class="chapter-section" id="vit-training-landscape">
+      <h2>The ViT Training Landscape</h2>
+
+      <p>Vision transformers lack the inductive biases that make CNNs data-efficient. A convolutional layer encodes translation equivariance and local connectivity by construction — a ViT must learn these properties from data. This means ViTs need more data, stronger augmentation, and more careful optimization than CNNs to reach the same performance. But when given sufficient training signal — whether from large datasets, strong augmentation, or self-supervised objectives — ViTs scale more predictably and ultimately achieve higher performance.</p>
+
+      <p>The field evolved through three eras. The <strong>supervised pre-training era</strong> (2020-2021) relied on massive labeled datasets: the original ViT needed JFT-300M, DeiT showed that ImageNet-1K could suffice with heavy augmentation and distillation. The <strong>self-supervised revolution</strong> (2021-2023) removed the label dependency entirely: DINO, MAE, and BEiT learned powerful representations from unlabeled images alone. The <strong>modern recipe era</strong> (2024-2026) consolidated insights from both: ViT-5 modernized the architecture for training stability, DINOv2 scaled self-supervised training to billion-parameter models, and efficiency techniques like FP8 training and spectral curricula cut training costs dramatically.</p>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 240" xmlns="http://www.w3.org/2000/svg">
+          <text x="400" y="22" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="600" fill="#1A1A18">Three Eras of ViT Training</text>
+          <line x1="60" y1="120" x2="760" y2="120" stroke="#C8C6BE" stroke-width="1.5"/>
+          <text x="130" y="145" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">2020</text>
+          <text x="260" y="145" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">2021</text>
+          <text x="400" y="145" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">2023</text>
+          <text x="540" y="145" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">2024</text>
+          <text x="700" y="145" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">2026</text>
+          <rect x="80" y="55" width="200" height="50" rx="8" fill="#FAECE7" stroke="#F0997B" stroke-width="1.5"/>
+          <text x="180" y="77" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#993C1D">Supervised Era</text>
+          <text x="180" y="93" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#5C5B56">ViT, DeiT, DeiT III</text>
+          <rect x="230" y="155" width="220" height="50" rx="8" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <text x="340" y="177" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#534AB7">Self-Supervised Revolution</text>
+          <text x="340" y="193" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#5C5B56">DINO, MAE, BEiT, iBOT</text>
+          <rect x="480" y="55" width="260" height="50" rx="8" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1.5"/>
+          <text x="610" y="77" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#0F6E56">Modern Recipes</text>
+          <text x="610" y="93" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#5C5B56">DINOv2, ViT-5, FP8, FastDINOv2</text>
+          <circle cx="130" cy="120" r="5" fill="#993C1D"/>
+          <text x="130" y="112" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="500" fill="#993C1D">ViT</text>
+          <circle cx="230" cy="120" r="5" fill="#993C1D"/>
+          <text x="230" y="112" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="500" fill="#993C1D">DeiT</text>
+          <circle cx="300" cy="120" r="5" fill="#534AB7"/>
+          <text x="300" y="112" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="500" fill="#534AB7">DINO</text>
+          <circle cx="340" cy="120" r="5" fill="#534AB7"/>
+          <text x="340" y="112" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="500" fill="#534AB7">MAE</text>
+          <circle cx="500" cy="120" r="5" fill="#0F6E56"/>
+          <text x="500" y="112" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="500" fill="#0F6E56">DINOv2</text>
+          <circle cx="700" cy="120" r="5" fill="#0F6E56"/>
+          <text x="700" y="112" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="500" fill="#0F6E56">ViT-5</text>
+        </svg>
+        <figcaption>Figure 23a.1 — Three eras of ViT training. The supervised era (2020-2021) relied on large labeled datasets and heavy augmentation. The self-supervised revolution (2021-2023) removed label dependency through DINO, MAE, and BEiT. The modern recipe era (2024-2026) consolidates both with architectural modernizations and efficiency breakthroughs.</figcaption>
+      </figure>
+    </section>
+
+    <!-- ============================================================
+         SECTION 2: Modern Supervised Training Recipe
+         ============================================================ -->
+    <section class="chapter-section" id="modern-supervised-recipe">
+      <h2>The Modern Supervised Training Recipe</h2>
+
+      <h3>ViT-5: Modernizing the Architecture for Training Stability</h3>
+
+      <p><strong>ViT-5</strong> (February 2026) systematically incorporated five years of architectural improvements into the vanilla ViT. The changes are small individually but compound into significantly better training stability and accuracy. <strong>QKNorm</strong> normalizes query and key vectors before the dot product, preventing attention logit explosion at scale. <strong>RMSNorm</strong> replaces LayerNorm, removing the mean-centering step for a slight speedup. <strong>SwiGLU</strong> replaces the standard GELU FFN, providing a gated nonlinearity that improves expressiveness. <strong>Dual positional encoding</strong> combines absolute positional embeddings (APE) with rotary position embeddings (RoPE), and four <strong>register tokens</strong> absorb the artifact patterns that vanilla ViTs develop in unused attention positions.</p>
+
+      <p>On ImageNet-1K, ViT-5-Base reaches 84.2% top-1 accuracy, exceeding DeiT-III-Base at 83.8% under comparable compute. As a diffusion backbone, ViT-5 achieves 1.84 FID versus 2.06 with a vanilla ViT — showing that training stability improvements transfer directly to generative tasks.</p>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 340" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="ch23a-arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+              <path d="M1 1L9 5L1 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </marker>
+          </defs>
+          <rect x="20" y="10" width="350" height="28" rx="5" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="1"/>
+          <text x="195" y="29" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#5C5B56">Vanilla ViT Block</text>
+          <rect x="430" y="10" width="350" height="28" rx="5" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="605" y="29" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#0F6E56">ViT-5 Block (2026)</text>
+          <line x1="400" y1="6" x2="400" y2="330" stroke="#E5E3DC" stroke-width="1" stroke-dasharray="5 4"/>
+          <rect x="80" y="55" width="240" height="32" rx="6" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="1"/>
+          <text x="200" y="76" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#5C5B56">LayerNorm</text>
+          <line x1="200" y1="87" x2="200" y2="103" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch23a-arr)"/>
+          <rect x="80" y="103" width="240" height="32" rx="6" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="1"/>
+          <text x="200" y="124" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#5C5B56">Multi-Head Attention</text>
+          <line x1="200" y1="135" x2="200" y2="151" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch23a-arr)"/>
+          <rect x="100" y="151" width="200" height="24" rx="4" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="1"/>
+          <text x="200" y="168" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#5C5B56">Residual + LayerNorm</text>
+          <line x1="200" y1="175" x2="200" y2="191" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch23a-arr)"/>
+          <rect x="80" y="191" width="240" height="32" rx="6" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="1"/>
+          <text x="200" y="212" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#5C5B56">FFN (GELU)</text>
+          <line x1="200" y1="223" x2="200" y2="239" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch23a-arr)"/>
+          <rect x="100" y="239" width="200" height="24" rx="4" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="1"/>
+          <text x="200" y="256" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#5C5B56">Residual</text>
+          <text x="200" y="290" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">Absolute PE only</text>
+          <text x="200" y="308" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#5C5B56">DeiT-III: 83.8%</text>
+          <rect x="490" y="55" width="240" height="32" rx="6" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1.5"/>
+          <text x="610" y="76" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#0F6E56">RMSNorm</text>
+          <line x1="610" y1="87" x2="610" y2="103" stroke="#0F6E56" stroke-width="1.5" marker-end="url(#ch23a-arr)"/>
+          <rect x="490" y="103" width="240" height="32" rx="6" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1.5"/>
+          <text x="610" y="124" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#0F6E56">QKNorm Attention + RoPE</text>
+          <line x1="610" y1="135" x2="610" y2="151" stroke="#0F6E56" stroke-width="1.5" marker-end="url(#ch23a-arr)"/>
+          <rect x="510" y="151" width="200" height="24" rx="4" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="610" y="168" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#0F6E56">Residual + LayerScale + RMSNorm</text>
+          <line x1="610" y1="175" x2="610" y2="191" stroke="#0F6E56" stroke-width="1.5" marker-end="url(#ch23a-arr)"/>
+          <rect x="490" y="191" width="240" height="32" rx="6" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1.5"/>
+          <text x="610" y="212" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#0F6E56">SwiGLU FFN</text>
+          <line x1="610" y1="223" x2="610" y2="239" stroke="#0F6E56" stroke-width="1.5" marker-end="url(#ch23a-arr)"/>
+          <rect x="510" y="239" width="200" height="24" rx="4" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="610" y="256" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#0F6E56">Residual + LayerScale</text>
+          <text x="610" y="290" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">APE + RoPE + 4 registers</text>
+          <text x="610" y="308" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#0F6E56">ViT-5: 84.2%</text>
+        </svg>
+        <figcaption>Figure 23a.2 — Vanilla ViT block (left) versus ViT-5 block (right). ViT-5 replaces LayerNorm with RMSNorm, standard attention with QKNorm attention + RoPE, GELU FFN with SwiGLU, and adds LayerScale at each residual. These changes improve training stability and boost ImageNet accuracy from 83.8% to 84.2%.</figcaption>
+      </figure>
+
+      <h3>DeiT III: The Simplification Thesis</h3>
+
+      <p><strong>DeiT III</strong> demonstrated a counter-intuitive finding: <em>fewer</em> augmentations produce better results. While DeiT I used 14 augmentation operations, DeiT III uses only three — random resized crop, horizontal flip, and color jitter — combined with <strong>LayerScale</strong> (a learned per-channel scaling at each residual connection, initialized to $10^{-4}$) and <strong>stochastic depth</strong>. The LayerScale residual update is:</p>
+
+      $$x_{\ell+1} = x_\ell + \text{diag}(\lambda_\ell) \, \text{SA}(\text{LN}(x_\ell))$$
+
+      <p>where $\text{diag}(\lambda_\ell)$ is a diagonal matrix of learnable per-channel scaling factors (matrix multiply, $\text{diag}(\lambda_\ell) \in \mathbb{R}^{d \times d}$, applied to the self-attention output $\text{SA}(\text{LN}(x_\ell)) \in \mathbb{R}^{n \times d}$), initialized near zero so the residual connection dominates early in training.</p>
+
+      <h3>Data Regime Comparison</h3>
+
+      <p>The choice of pre-training data matters more than most hyperparameters. <strong>ImageNet-1K</strong> (1.28M images, 1K classes) is the standard benchmark. <strong>ImageNet-21K</strong> (14M images, 21K classes) benefits larger models (ViT-L and above). <strong>JFT-300M/3B</strong> were necessary for the original ViT but have been made redundant by self-supervised pre-training on public data.</p>
+
+      <table>
+        <tr><th>Setting</th><th>Optimizer</th><th>LR</th><th>Weight Decay</th><th>Batch Size</th><th>Epochs</th></tr>
+        <tr><td>ViT-B/16 on IN-1K</td><td>AdamW</td><td>1e-3</td><td>0.05</td><td>2048</td><td>800</td></tr>
+        <tr><td>ViT-L/16 on IN-1K</td><td>AdamW</td><td>1e-3</td><td>0.05</td><td>2048</td><td>800</td></tr>
+        <tr><td>ViT-L/16 on IN-21K</td><td>AdamW</td><td>1e-3</td><td>0.05</td><td>4096</td><td>90</td></tr>
+        <tr><td>ViT-H/14 on IN-21K</td><td>AdamW</td><td>5e-4</td><td>0.05</td><td>4096</td><td>90</td></tr>
+      </table>
+
+      <h3>Hands-On: Complete ViT-B Supervised Training Loop</h3>
+
+      <p>The following code demonstrates a complete supervised training pipeline for ViT-Base on ImageNet, loading data from HuggingFace datasets and using pure PyTorch for the model and training loop.</p>
+
+<pre><code class="language-python">
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from torch.utils.data import DataLoader
+from torchvision import transforms
+from datasets import load_dataset
+
+# --- Data Loading from HuggingFace ---
+transform_train = transforms.Compose([
+    transforms.RandomResizedCrop(224, scale=(0.08, 1.0)),
+    transforms.RandomHorizontalFlip(),
+    transforms.ColorJitter(0.3, 0.3, 0.3),                  # DeiT III: 3 augmentations
+    transforms.ToTensor(),
+    transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                         std=[0.229, 0.224, 0.225]),
+])
+
+def collate_fn(batch):
+    images = [transform_train(item["image"].convert("RGB")) for item in batch]
+    labels = torch.tensor([item["label"] for item in batch])
+    return torch.stack(images), labels                        # (B, 3, 224, 224), (B,)
+
+dataset = load_dataset("imagenet-1k", split="train", streaming=True)
+loader = DataLoader(dataset, batch_size=256, collate_fn=collate_fn,
+                    num_workers=8, pin_memory=True)
+
+# --- ViT-B/16 from scratch (86M params) ---
+class PatchEmbed(nn.Module):
+    def __init__(self, img_size=224, patch_size=16, in_ch=3, embed_dim=768):
+        super().__init__()
+        self.proj = nn.Conv2d(in_ch, embed_dim, patch_size, stride=patch_size)
+        self.num_patches = (img_size // patch_size) ** 2      # 196
+
+    def forward(self, x):
+        return self.proj(x).flatten(2).transpose(1, 2)        # (B, 196, 768)
+
+class TransformerBlock(nn.Module):
+    def __init__(self, dim=768, heads=12, mlp_ratio=4.0, drop_path=0.0):
+        super().__init__()
+        self.norm1 = nn.LayerNorm(dim)
+        self.attn = nn.MultiheadAttention(dim, heads, batch_first=True)
+        self.norm2 = nn.LayerNorm(dim)
+        self.mlp = nn.Sequential(
+            nn.Linear(dim, int(dim * mlp_ratio)),
+            nn.GELU(),
+            nn.Linear(int(dim * mlp_ratio), dim),
+        )
+        self.drop_path = drop_path
+        self.ls1 = nn.Parameter(torch.ones(dim) * 1e-4)      # LayerScale
+        self.ls2 = nn.Parameter(torch.ones(dim) * 1e-4)
+
+    def forward(self, x):
+        # Self-attention with LayerScale
+        y = self.norm1(x)
+        y, _ = self.attn(y, y, y)                             # Q=K=V=y, self-attention
+        x = x + self.ls1 * y                                  # element-wise scale: ls1 ⊙ y
+        # FFN with LayerScale
+        y = self.norm2(x)
+        y = self.mlp(y)
+        x = x + self.ls2 * y                                  # element-wise scale: ls2 ⊙ y
+        return x
+
+class ViTBase(nn.Module):
+    def __init__(self, num_classes=1000, dim=768, depth=12, heads=12):
+        super().__init__()
+        self.patch_embed = PatchEmbed(embed_dim=dim)
+        self.cls_token = nn.Parameter(torch.zeros(1, 1, dim))
+        self.pos_embed = nn.Parameter(torch.zeros(1, 197, dim))  # 196 patches + 1 cls
+        self.blocks = nn.ModuleList([
+            TransformerBlock(dim, heads, drop_path=0.1 * i / depth)
+            for i in range(depth)
+        ])
+        self.norm = nn.LayerNorm(dim)
+        self.head = nn.Linear(dim, num_classes)
+        nn.init.trunc_normal_(self.pos_embed, std=0.02)
+
+    def forward(self, x):
+        B = x.shape[0]
+        x = self.patch_embed(x)                                # (B, 196, 768)
+        cls = self.cls_token.expand(B, -1, -1)                # (B, 1, 768)
+        x = torch.cat([cls, x], dim=1)                        # (B, 197, 768)
+        x = x + self.pos_embed                                # add positional encoding
+        for blk in self.blocks:
+            x = blk(x)
+        x = self.norm(x[:, 0])                                # CLS token output (B, 768)
+        return self.head(x)                                    # (B, 1000)
+
+# --- Training Loop ---
+model = ViTBase().cuda()
+optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=0.05,
+                               betas=(0.9, 0.999))
+scaler = torch.amp.GradScaler()                               # BF16 mixed precision
+
+for epoch in range(800):
+    for images, labels in loader:
+        images, labels = images.cuda(), labels.cuda()
+
+        with torch.amp.autocast(device_type="cuda", dtype=torch.bfloat16):
+            logits = model(images)                             # (B, 1000)
+            loss = F.cross_entropy(logits, labels)
+
+        optimizer.zero_grad()
+        scaler.scale(loss).backward()
+        scaler.unscale_(optimizer)
+        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)  # gradient clipping
+        scaler.step(optimizer)
+        scaler.update()
+</code></pre>
+
+      <p>Several details are critical. The <strong>LayerScale</strong> parameters (`ls1`, `ls2`) are initialized to $10^{-4}$, which means the residual connection dominates early in training — the model starts as nearly an identity function and gradually learns to use the attention and FFN outputs. The <strong>stochastic depth</strong> rate increases linearly from 0 at the first block to 0.1 at the last, dropping deeper blocks more aggressively. <strong>Gradient clipping</strong> at max norm 1.0 prevents the catastrophic gradient spikes that ViTs are prone to during early training.</p>
+    </section>
+
+    <!-- ============================================================
+         SECTION 3: Data Augmentation
+         ============================================================ -->
+    <section class="chapter-section" id="data-augmentation">
+      <h2>Data Augmentation for Vision Transformers</h2>
+
+      <p>ViTs are more data-hungry than CNNs because they lack convolutional inductive biases. Augmentation compensates by artificially expanding the effective dataset size and forcing the model to learn invariances.</p>
+
+      <h3>The Augmentation Suite</h3>
+
+      <p><strong>RandAugment</strong> randomly selects $N$ augmentation operations (from a pool of ~14: rotation, shear, translate, contrast, brightness, etc.) and applies them at a fixed magnitude $M$. <strong>TrivialAugment</strong> simplifies further: apply exactly one random operation at a random magnitude — no search at all. Despite its simplicity, TrivialAugment matches or beats RandAugment on most benchmarks.</p>
+
+      <h3>MixUp and CutMix</h3>
+
+      <p><strong>MixUp</strong> creates virtual training examples by convex combination of image pairs and their labels:</p>
+
+      $$\tilde{x} = \lambda x_i + (1-\lambda) x_j, \quad \tilde{y} = \lambda y_i + (1-\lambda) y_j, \quad \lambda \sim \text{Beta}(\alpha, \alpha)$$
+
+      <p>where $\lambda$ is a scalar mixing coefficient (element-wise scalar-image multiplication, $\lambda \in [0,1]$ scaling each pixel), and $\alpha$ controls the distribution shape (typically $\alpha = 0.8$ for ViTs). <strong>CutMix</strong> is spatially structured: a rectangular region is cut from one image and pasted onto another, with labels mixed proportionally to the area.</p>
+
+      <p>The following code implements both MixUp and CutMix as reusable augmentation functions.</p>
+
+<pre><code class="language-python">
+import torch
+import numpy as np
+
+def mixup(images, labels, alpha=0.8):
+    """MixUp augmentation: blend two images and their labels.
+    Args:
+        images: (B, C, H, W) batch of images
+        labels: (B,) integer class labels
+    Returns:
+        mixed_images: (B, C, H, W), targets_a, targets_b, lam
+    """
+    lam = np.random.beta(alpha, alpha)                        # scalar mixing coefficient
+    B = images.size(0)
+    perm = torch.randperm(B, device=images.device)
+    mixed = lam * images + (1 - lam) * images[perm]           # element-wise blend
+    return mixed, labels, labels[perm], lam
+
+def cutmix(images, labels, alpha=1.0):
+    """CutMix augmentation: paste a rectangular patch from one image to another.
+    Args:
+        images: (B, C, H, W) batch of images
+        labels: (B,) integer class labels
+    Returns:
+        mixed_images, targets_a, targets_b, lam
+    """
+    lam = np.random.beta(alpha, alpha)
+    B, C, H, W = images.shape
+    perm = torch.randperm(B, device=images.device)
+
+    # Sample cut region: center (cx, cy) and half-widths
+    cut_ratio = np.sqrt(1.0 - lam)
+    cut_h, cut_w = int(H * cut_ratio), int(W * cut_ratio)
+    cy = np.random.randint(H)
+    cx = np.random.randint(W)
+    y1 = np.clip(cy - cut_h // 2, 0, H)
+    y2 = np.clip(cy + cut_h // 2, 0, H)
+    x1 = np.clip(cx - cut_w // 2, 0, W)
+    x2 = np.clip(cx + cut_w // 2, 0, W)
+
+    mixed = images.clone()
+    mixed[:, :, y1:y2, x1:x2] = images[perm, :, y1:y2, x1:x2]  # paste patch
+    lam = 1 - (y2 - y1) * (x2 - x1) / (H * W)               # adjust lambda by actual area
+    return mixed, labels, labels[perm], lam
+
+# Usage in training loop:
+# mixed_images, targets_a, targets_b, lam = mixup(images, labels)
+# loss = lam * F.cross_entropy(logits, targets_a) + (1-lam) * F.cross_entropy(logits, targets_b)
+</code></pre>
+
+      <h3>Regularization as Augmentation</h3>
+
+      <p><strong>Stochastic depth</strong> (DropPath) randomly drops entire transformer layers during training, with a survival probability that decreases linearly from 1.0 at the first layer to $p_L$ at the final layer:</p>
+
+      $$p_l = 1 - \frac{l}{L}(1 - p_L)$$
+
+      <p>where $l$ is the layer index and $p_L$ is the drop rate at the last layer (scalar multiplication of the position ratio by the maximum drop probability). Typical values: $p_L = 0.1$ for ViT-B, $0.4$ for ViT-L, $0.5$ for ViT-H. <strong>Patch dropout</strong> randomly removes patches from the input, reducing the token count during training.</p>
+
+      <h3>Synthetic Data Augmentation</h3>
+
+      <p>A growing trend since 2025 is using diffusion models to generate synthetic training data. The pipeline: generate images with text-to-image models, filter for quality using CLIP-score thresholding, and add filtered synthetic images to the training set. A CVPR 2026 workshop on Synthetic Data established best practices: synthetic data works best when it fills distribution gaps (rare categories, uncommon viewpoints) rather than when it duplicates well-covered regions.</p>
+    </section>
+
+    <!-- ============================================================
+         SECTION 4: Self-Supervised Pre-Training
+         ============================================================ -->
+    <section class="chapter-section" id="self-supervised-pretraining">
+      <h2>Self-Supervised Pre-Training Strategies</h2>
+
+      <p>Self-supervised pre-training eliminates the need for labeled data by defining proxy objectives that force the model to learn useful visual representations. Two paradigms dominate: joint-embedding methods (DINO/DINOv2) that learn by comparing augmented views, and masked prediction methods (MAE/BEiT) that learn by reconstructing missing content.</p>
+
+      <h3>DINO and DINOv2 Training</h3>
+
+      <p>DINO uses a <strong>teacher-student self-distillation</strong> framework. An input image is augmented into two global crops (50-100% of the image) and several local crops (5-50%). The student processes all crops; the teacher processes only global crops. The training objective minimizes the cross-entropy between output distributions:</p>
+
+      $$\mathcal{L}_{\text{DINO}} = -\sum_{x \in \{x_1^g, x_2^g\}} \sum_{\substack{x' \in \mathcal{V} \\ x' \neq x}} p_t(x) \log p_s(x')$$
+
+      <p>where $p_t$ and $p_s$ are the teacher and student output probability vectors. The teacher's weights are an exponential moving average of the student: $\theta_t \leftarrow m \theta_t + (1-m) \theta_s$ (element-wise scalar-vector operations with momentum $m$, typically 0.996-0.999).</p>
+
+      <p><strong>DINOv2</strong> scaled this to 1.1 billion parameters (ViT-g/14) by combining DINO self-distillation with iBOT's masked patch prediction. <strong>FastDINOv2</strong> (2025) introduced a <strong>spectral-domain curriculum</strong>: train on low-frequency features first, then gradually introduce high-frequency features, reducing total training time to 62% of the baseline.</p>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 320" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="ch23a-arr2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+              <path d="M1 1L9 5L1 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </marker>
+          </defs>
+          <text x="400" y="22" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="600" fill="#1A1A18">DINO/DINOv2 Training Pipeline</text>
+          <rect x="30" y="50" width="90" height="70" rx="6" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1.5"/>
+          <text x="75" y="80" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#0F6E56">Input</text>
+          <text x="75" y="96" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">Image</text>
+          <line x1="120" y1="70" x2="155" y2="55" stroke="#9C9A94" stroke-width="1" marker-end="url(#ch23a-arr2)"/>
+          <line x1="120" y1="100" x2="155" y2="115" stroke="#9C9A94" stroke-width="1" marker-end="url(#ch23a-arr2)"/>
+          <rect x="160" y="40" width="80" height="28" rx="4" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1"/>
+          <text x="200" y="59" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#534AB7">2 global</text>
+          <rect x="160" y="100" width="80" height="28" rx="4" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1"/>
+          <text x="200" y="119" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#534AB7">N local</text>
+          <line x1="240" y1="54" x2="290" y2="85" stroke="#534AB7" stroke-width="1.5" marker-end="url(#ch23a-arr2)"/>
+          <line x1="240" y1="114" x2="290" y2="95" stroke="#534AB7" stroke-width="1.5" marker-end="url(#ch23a-arr2)"/>
+          <rect x="295" y="68" width="120" height="44" rx="6" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <text x="355" y="88" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#534AB7">Student ViT</text>
+          <text x="355" y="104" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#9C9A94">all crops</text>
+          <line x1="240" y1="54" x2="290" y2="175" stroke="#0F6E56" stroke-width="1.5" marker-end="url(#ch23a-arr2)"/>
+          <rect x="295" y="158" width="120" height="44" rx="6" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1.5"/>
+          <text x="355" y="178" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#0F6E56">Teacher ViT</text>
+          <text x="355" y="194" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#9C9A94">global crops only</text>
+          <path d="M 355 112 C 355 140, 355 140, 355 158" fill="none" stroke="#854F0B" stroke-width="1.5" stroke-dasharray="4 3" marker-end="url(#ch23a-arr2)"/>
+          <text x="375" y="140" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="500" fill="#854F0B">EMA</text>
+          <line x1="415" y1="90" x2="470" y2="90" stroke="#534AB7" stroke-width="1.5" marker-end="url(#ch23a-arr2)"/>
+          <line x1="415" y1="180" x2="470" y2="180" stroke="#0F6E56" stroke-width="1.5" marker-end="url(#ch23a-arr2)"/>
+          <rect x="475" y="74" width="70" height="32" rx="4" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1"/>
+          <text x="510" y="95" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#534AB7">p_s</text>
+          <rect x="475" y="164" width="130" height="32" rx="4" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="540" y="185" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#0F6E56">center + sharpen → p_t</text>
+          <line x1="510" y1="106" x2="620" y2="130" stroke="#993C1D" stroke-width="1.5" marker-end="url(#ch23a-arr2)"/>
+          <line x1="540" y1="164" x2="620" y2="140" stroke="#993C1D" stroke-width="1.5" marker-end="url(#ch23a-arr2)"/>
+          <rect x="625" y="118" width="140" height="36" rx="6" fill="#FAECE7" stroke="#F0997B" stroke-width="1.5"/>
+          <text x="695" y="141" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#993C1D">Cross-Entropy Loss</text>
+          <rect x="295" y="230" width="320" height="60" rx="8" fill="none" stroke="#AFA9EC" stroke-width="1" stroke-dasharray="5 4"/>
+          <text x="455" y="250" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="600" fill="#534AB7">DINOv2 additions</text>
+          <text x="455" y="266" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#5C5B56">+ iBOT masked prediction | curated LVD-142M | FSDP + xFormers</text>
+          <text x="455" y="280" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">ViT-g/14 (1.1B params) trained on 40+ A100 GPUs</text>
+        </svg>
+        <figcaption>Figure 23a.3 — DINO/DINOv2 training pipeline. An input image is augmented into global and local crops. The student processes all crops; the teacher processes only global crops. The teacher's output is centered and sharpened before computing cross-entropy loss. The teacher's weights are an EMA of the student. DINOv2 adds iBOT masked prediction and scales to 1.1B parameters.</figcaption>
+      </figure>
+
+      <h3>Hands-On: Complete DINO Training Loop</h3>
+
+      <p>The following code implements a complete DINO training loop with multi-crop augmentation, using ImageNet images loaded from HuggingFace datasets.</p>
+
+<pre><code class="language-python">
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from torchvision import transforms
+from datasets import load_dataset
+
+# --- Multi-Crop Augmentation ---
+global_crop = transforms.Compose([
+    transforms.RandomResizedCrop(224, scale=(0.4, 1.0)),
+    transforms.RandomHorizontalFlip(),
+    transforms.ToTensor(),
+    transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
+])
+local_crop = transforms.Compose([
+    transforms.RandomResizedCrop(96, scale=(0.05, 0.4)),
+    transforms.RandomHorizontalFlip(),
+    transforms.ToTensor(),
+    transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
+])
+
+def dino_collate(batch, n_local=8):
+    """Create 2 global + n_local crops per image."""
+    globals_list, locals_list = [], []
+    for item in batch:
+        img = item["image"].convert("RGB")
+        globals_list.append(torch.stack([global_crop(img), global_crop(img)]))
+        locals_list.append(torch.stack([local_crop(img) for _ in range(n_local)]))
+    return torch.stack(globals_list), torch.stack(locals_list)  # (B,2,3,224,224), (B,N,3,96,96)
+
+dataset = load_dataset("imagenet-1k", split="train", streaming=True)
+
+# --- DINO Training Step ---
+class DINOHead(nn.Module):
+    def __init__(self, in_dim=768, out_dim=65536, hidden_dim=2048):
+        super().__init__()
+        self.mlp = nn.Sequential(
+            nn.Linear(in_dim, hidden_dim), nn.GELU(),
+            nn.Linear(hidden_dim, hidden_dim), nn.GELU(),
+            nn.Linear(hidden_dim, out_dim),
+        )
+    def forward(self, x):
+        return self.mlp(x)                                     # (B, 65536)
+
+def dino_loss(student_out, teacher_out, center, tau_s=0.1, tau_t=0.04):
+    """DINO cross-entropy loss between student and centered/sharpened teacher."""
+    t_probs = F.softmax((teacher_out - center) / tau_t, dim=-1)  # (B, K)
+    s_log = F.log_softmax(student_out / tau_s, dim=-1)           # (B, K)
+    return -(t_probs * s_log).sum(dim=-1).mean()                 # scalar
+
+def train_dino(student, teacher, s_head, t_head, loader, epochs=300):
+    optimizer = torch.optim.AdamW(
+        list(student.parameters()) + list(s_head.parameters()),
+        lr=2e-4, weight_decay=0.04
+    )
+    center = torch.zeros(1, 65536).cuda()                       # running teacher center
+
+    for epoch in range(epochs):
+        ema_m = 0.996 + 0.004 * min(epoch / 100, 1.0)          # momentum schedule
+        for global_crops, local_crops in loader:
+            B = global_crops.size(0)
+            all_crops = list(global_crops.unbind(1)) + list(local_crops.unbind(1))
+
+            # Student: forward all crops
+            s_out = [s_head(student(c.cuda())) for c in all_crops]
+
+            # Teacher: forward global crops only (no gradient)
+            with torch.no_grad():
+                t_out = [t_head(teacher(c.cuda())) for c in global_crops.unbind(1)]
+
+            # Compute loss: each teacher view vs all student views
+            loss = 0
+            n_loss_terms = 0
+            for t in t_out:
+                for i, s in enumerate(s_out):
+                    if i < 2 and s is t:
+                        continue                               # skip same global view
+                    loss += dino_loss(s, t, center)
+                    n_loss_terms += 1
+            loss /= n_loss_terms
+
+            optimizer.zero_grad()
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(student.parameters(), 3.0)
+            optimizer.step()
+
+            # EMA update teacher
+            with torch.no_grad():
+                for ps, pt in zip(student.parameters(), teacher.parameters()):
+                    pt.data = ema_m * pt.data + (1 - ema_m) * ps.data
+                for ps, pt in zip(s_head.parameters(), t_head.parameters()):
+                    pt.data = ema_m * pt.data + (1 - ema_m) * ps.data
+                # Update center
+                batch_center = torch.cat(t_out).mean(0, keepdim=True)
+                center = 0.9 * center + 0.1 * batch_center
+</code></pre>
+
+      <h3>MAE Training and Acceleration</h3>
+
+      <p><strong>MAE</strong> masks 75% of image patches and trains the encoder to produce representations from which a lightweight decoder can reconstruct the original pixels. The asymmetric design is critical: the encoder processes only the visible 25% of patches (cheap), while the decoder handles the full set including mask tokens. This 4x reduction in encoder tokens translates directly to a 4x reduction in training compute.</p>
+
+      <p><strong>DailyMAE</strong> (2024) pushed MAE training to 18 hours on 8 A100 GPUs — a 5.8x speedup — using GPU-native random masking, LARS optimizer, and progressive resolution resizing.</p>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 220" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="ch23a-arr3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+              <path d="M1 1L9 5L1 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </marker>
+          </defs>
+          <text x="400" y="22" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="600" fill="#1A1A18">MAE Training: Mask, Encode, Decode, Reconstruct</text>
+          <g transform="translate(30, 40)">
+            <rect x="0" y="0" width="28" height="28" rx="3" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+            <rect x="32" y="0" width="28" height="28" rx="3" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+            <rect x="64" y="0" width="28" height="28" rx="3" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="0.5" opacity="0.3"/>
+            <rect x="96" y="0" width="28" height="28" rx="3" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="0.5" opacity="0.3"/>
+            <rect x="0" y="32" width="28" height="28" rx="3" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="0.5" opacity="0.3"/>
+            <rect x="32" y="32" width="28" height="28" rx="3" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+            <rect x="64" y="32" width="28" height="28" rx="3" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="0.5" opacity="0.3"/>
+            <rect x="96" y="32" width="28" height="28" rx="3" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+            <rect x="0" y="64" width="28" height="28" rx="3" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="0.5" opacity="0.3"/>
+            <rect x="32" y="64" width="28" height="28" rx="3" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="0.5" opacity="0.3"/>
+            <rect x="64" y="64" width="28" height="28" rx="3" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+            <rect x="96" y="64" width="28" height="28" rx="3" fill="#F1EFE8" stroke="#E5E3DC" stroke-width="0.5" opacity="0.3"/>
+          </g>
+          <text x="92" y="150" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">75% masked</text>
+          <text x="92" y="164" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#0F6E56">25% visible</text>
+          <line x1="165" y1="90" x2="200" y2="90" stroke="#534AB7" stroke-width="2" marker-end="url(#ch23a-arr3)"/>
+          <rect x="205" y="55" width="120" height="70" rx="8" fill="#534AB7"/>
+          <text x="265" y="85" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#FFFFFF">Encoder</text>
+          <text x="265" y="102" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#AFA9EC">visible patches only</text>
+          <text x="265" y="115" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="500" fill="#AFA9EC">KEPT post-training</text>
+          <line x1="325" y1="90" x2="360" y2="90" stroke="#534AB7" stroke-width="2" marker-end="url(#ch23a-arr3)"/>
+          <rect x="365" y="65" width="90" height="50" rx="6" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1"/>
+          <text x="410" y="86" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#534AB7">+ mask</text>
+          <text x="410" y="100" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#534AB7">tokens</text>
+          <line x1="455" y1="90" x2="490" y2="90" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch23a-arr3)"/>
+          <rect x="495" y="60" width="100" height="60" rx="8" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="1.5"/>
+          <text x="545" y="85" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#5C5B56">Decoder</text>
+          <text x="545" y="100" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#9C9A94">lightweight</text>
+          <text x="545" y="113" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="500" fill="#993C1D">DISCARDED</text>
+          <line x1="595" y1="90" x2="630" y2="90" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch23a-arr3)"/>
+          <rect x="635" y="55" width="130" height="70" rx="8" fill="#FAECE7" stroke="#F0997B" stroke-width="1.5"/>
+          <text x="700" y="82" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#993C1D">Reconstruct</text>
+          <text x="700" y="98" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#993C1D">pixels</text>
+          <text x="700" y="114" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">MSE loss</text>
+          <text x="265" y="190" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#534AB7">4× fewer tokens = 4× cheaper training</text>
+          <text x="545" y="190" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#854F0B">DailyMAE: 18h on 8 A100s (5.8× speedup)</text>
+        </svg>
+        <figcaption>Figure 23a.4 — MAE training pipeline. 75% of patches are masked. Only visible patches pass through the heavyweight encoder — giving a 4× training speedup. Mask tokens are added before the lightweight decoder, which reconstructs original pixels. The encoder is kept; the decoder is discarded after pre-training.</figcaption>
+      </figure>
+
+      <h3>Hands-On: Complete MAE Pre-Training</h3>
+
+      <p>The following code implements a complete MAE training loop with random masking, asymmetric encoder-decoder, and pixel reconstruction loss.</p>
+
+<pre><code class="language-python">
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+class MAEEncoder(nn.Module):
+    """MAE encoder: processes only visible (unmasked) patches."""
+    def __init__(self, img_size=224, patch_size=16, dim=768, depth=12, heads=12):
+        super().__init__()
+        self.patch_embed = nn.Conv2d(3, dim, patch_size, stride=patch_size)
+        self.num_patches = (img_size // patch_size) ** 2       # 196
+        self.pos_embed = nn.Parameter(torch.zeros(1, self.num_patches, dim))
+        self.blocks = nn.ModuleList([
+            TransformerBlock(dim, heads) for _ in range(depth)  # reuse from above
+        ])
+        self.norm = nn.LayerNorm(dim)
+
+    def forward(self, x, mask):
+        """x: (B, 3, 224, 224), mask: (B, N) boolean, True=keep."""
+        x = self.patch_embed(x).flatten(2).transpose(1, 2)    # (B, 196, 768)
+        x = x + self.pos_embed                                # add position info
+        x = x[mask].reshape(x.size(0), -1, x.size(2))         # keep visible only (B, N_vis, 768)
+        for blk in self.blocks:
+            x = blk(x)
+        return self.norm(x)                                    # (B, N_vis, 768)
+
+class MAEDecoder(nn.Module):
+    """Lightweight decoder: reconstructs all patches from visible + mask tokens."""
+    def __init__(self, num_patches=196, enc_dim=768, dec_dim=512, depth=4, heads=8, patch_size=16):
+        super().__init__()
+        self.proj = nn.Linear(enc_dim, dec_dim)
+        self.mask_token = nn.Parameter(torch.zeros(1, 1, dec_dim))
+        self.pos_embed = nn.Parameter(torch.zeros(1, num_patches, dec_dim))
+        self.blocks = nn.ModuleList([
+            TransformerBlock(dec_dim, heads) for _ in range(depth)
+        ])
+        self.norm = nn.LayerNorm(dec_dim)
+        self.head = nn.Linear(dec_dim, patch_size**2 * 3)      # predict pixel values
+
+    def forward(self, vis_tokens, mask):
+        """vis_tokens: (B, N_vis, 768), mask: (B, N) boolean."""
+        B, N = mask.shape
+        x = self.proj(vis_tokens)                              # (B, N_vis, 512)
+        # Insert mask tokens at masked positions
+        full = self.mask_token.expand(B, N, -1).clone()        # (B, 196, 512)
+        full[mask] = x.reshape(-1, x.size(2))                  # fill visible positions
+        full = full + self.pos_embed
+        for blk in self.blocks:
+            full = blk(full)
+        return self.head(self.norm(full))                      # (B, 196, patch_size²×3)
+
+def mae_training_step(encoder, decoder, images, mask_ratio=0.75):
+    """Single MAE training step with random masking."""
+    B = images.size(0)
+    N = encoder.num_patches                                    # 196
+
+    # Random masking: keep (1 - mask_ratio) patches
+    noise = torch.rand(B, N, device=images.device)
+    ids_shuffle = noise.argsort(dim=1)
+    n_keep = int(N * (1 - mask_ratio))                         # ~49 patches kept
+    mask = torch.zeros(B, N, dtype=torch.bool, device=images.device)
+    mask.scatter_(1, ids_shuffle[:, :n_keep], True)            # True = visible
+
+    # Encode visible patches
+    vis_tokens = encoder(images, mask)                         # (B, n_keep, 768)
+
+    # Decode all patches
+    pred = decoder(vis_tokens, mask)                           # (B, 196, patch_pixels)
+
+    # Reconstruct target: patchify original image
+    ps = 16
+    target = images.unfold(2, ps, ps).unfold(3, ps, ps)       # (B, 3, 14, 14, 16, 16)
+    target = target.permute(0, 2, 3, 1, 4, 5).reshape(B, N, -1)  # (B, 196, 768)
+
+    # Loss only on masked patches
+    loss = F.mse_loss(pred[~mask], target[~mask])
+    return loss
+</code></pre>
+
+      <h3>iBOT, BEiT, and Contrastive Objectives</h3>
+
+      <p>While MAE reconstructs raw pixels, <strong>BEiT</strong> and <strong>iBOT</strong> reconstruct discrete visual tokens from a pretrained codebook — analogous to masked language modeling in BERT. DINOv2 combines DINO self-distillation with iBOT's masked patch prediction, getting both paradigms in a single training run. <strong>MoCo v3</strong> applied momentum contrastive learning to ViTs — requiring large batch sizes (4096+) and freezing the patch embedding layer for the first few epochs. <strong>SigLIP 2</strong> unified multiple objectives: contrastive image-text alignment, captioning, self-distillation, and masked prediction — all trained jointly.</p>
+    </section>
+
+    <!-- ============================================================
+         SECTION 5: Fine-Tuning
+         ============================================================ -->
+    <section class="chapter-section" id="fine-tuning">
+      <h2>Fine-Tuning Vision Transformers</h2>
+
+      <h3>Layer-Wise Learning Rate Decay (LLRD)</h3>
+
+      <p>When fine-tuning a pretrained ViT, earlier layers encode general features that should change little, while later layers encode task-specific features that should adapt more. <strong>LLRD</strong> implements this with exponentially decaying learning rates:</p>
+
+      $$\eta_l = \eta_{\text{base}} \cdot \gamma^{L - l}$$
+
+      <p>where $\eta_{\text{base}}$ is the base learning rate for the final layer, $\gamma \in [0.65, 0.75]$ is the decay factor (scalar exponentiation yielding a per-layer scalar), $L$ is the total number of layers, and $l$ is the current layer index.</p>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 200" xmlns="http://www.w3.org/2000/svg">
+          <text x="400" y="22" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="600" fill="#1A1A18">Layer-Wise Learning Rate Decay (LLRD) for ViT-B/12</text>
+          <text x="60" y="180" text-anchor="end" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">LR</text>
+          <line x1="70" y1="40" x2="70" y2="170" stroke="#C8C6BE" stroke-width="1"/>
+          <line x1="70" y1="170" x2="760" y2="170" stroke="#C8C6BE" stroke-width="1"/>
+          <!-- Bars for each layer: layer 1 (lowest LR) to layer 12 (highest) + head -->
+          <!-- γ=0.75, base=1e-4. Layer 12: 1e-4, Layer 6: 1.78e-5, Layer 1: 4.7e-6 -->
+          <!-- Scale: 1e-4 = 130px height, so each layer's height = (LR/1e-4)*130 -->
+          <rect x="90" y="164" width="40" height="6" rx="2" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="0.5"/>
+          <text x="110" y="162" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="8" font-weight="400" fill="#9C9A94">4.7e-6</text>
+          <rect x="140" y="162" width="40" height="8" rx="2" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="0.5"/>
+          <rect x="190" y="160" width="40" height="10" rx="2" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="0.5"/>
+          <rect x="240" y="157" width="40" height="13" rx="2" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="0.5"/>
+          <rect x="290" y="152" width="40" height="18" rx="2" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="0.5"/>
+          <rect x="340" y="146" width="40" height="24" rx="2" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="0.5"/>
+          <text x="360" y="140" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="8" font-weight="400" fill="#9C9A94">1.78e-5</text>
+          <rect x="390" y="138" width="40" height="32" rx="2" fill="#AFA9EC" stroke="#534AB7" stroke-width="0.5"/>
+          <rect x="440" y="127" width="40" height="43" rx="2" fill="#AFA9EC" stroke="#534AB7" stroke-width="0.5"/>
+          <rect x="490" y="113" width="40" height="57" rx="2" fill="#AFA9EC" stroke="#534AB7" stroke-width="0.5"/>
+          <rect x="540" y="94" width="40" height="76" rx="2" fill="#AFA9EC" stroke="#534AB7" stroke-width="0.5"/>
+          <rect x="590" y="70" width="40" height="100" rx="2" fill="#534AB7" stroke="#534AB7" stroke-width="0.5"/>
+          <text x="610" y="62" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="8" font-weight="500" fill="#534AB7">1e-4</text>
+          <rect x="660" y="40" width="40" height="130" rx="2" fill="#0F6E56" stroke="#0F6E56" stroke-width="0.5"/>
+          <text x="680" y="36" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="8" font-weight="500" fill="#0F6E56">head</text>
+          <!-- Layer labels -->
+          <text x="110" y="188" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="8" font-weight="400" fill="#9C9A94">L1</text>
+          <text x="360" y="188" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="8" font-weight="400" fill="#9C9A94">L6</text>
+          <text x="610" y="188" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="8" font-weight="400" fill="#9C9A94">L12</text>
+          <text x="680" y="188" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="8" font-weight="400" fill="#9C9A94">Head</text>
+        </svg>
+        <figcaption>Figure 23a.5 — Layer-wise learning rate decay for ViT-B with 12 layers, γ=0.75, base LR=1e-4. Earlier layers (general features) get much smaller learning rates to preserve pre-trained representations. The classification head gets the highest LR for fast task adaptation.</figcaption>
+      </figure>
+
+      <p>The following code constructs LLRD parameter groups and runs a complete fine-tuning loop on COCO detection.</p>
+
+<pre><code class="language-python">
+import torch
+from datasets import load_dataset
+
+def get_llrd_param_groups(model, base_lr=1e-4, decay_factor=0.75, weight_decay=0.05):
+    """Create parameter groups with layer-wise learning rate decay."""
+    param_groups = []
+    num_layers = len(model.blocks)                             # e.g., 12 for ViT-B
+    for name, param in model.named_parameters():
+        if not param.requires_grad:
+            continue
+        if 'patch_embed' in name or 'pos_embed' in name or 'cls_token' in name:
+            layer_idx = 0                                      # embedding — lowest LR
+        elif 'blocks.' in name:
+            layer_idx = int(name.split('blocks.')[1].split('.')[0]) + 1
+        else:
+            layer_idx = num_layers                             # head — highest LR
+        lr = base_lr * (decay_factor ** (num_layers - layer_idx))
+        wd = 0.0 if ('bias' in name or 'norm' in name) else weight_decay
+        param_groups.append({'params': [param], 'lr': lr, 'weight_decay': wd})
+    return param_groups
+
+# --- Fine-tuning on COCO with LLRD ---
+# Load COCO from HuggingFace
+coco = load_dataset("detection-datasets/coco", split="train", streaming=True)
+
+# Create model with pretrained backbone + detection head
+backbone = ViTBase()  # pretrained weights loaded separately
+backbone.head = nn.Identity()  # remove classification head
+det_head = nn.Sequential(
+    nn.Linear(768, 256), nn.ReLU(),
+    nn.Linear(256, 4 + 80),                                   # 4 box coords + 80 classes
+)
+
+param_groups = get_llrd_param_groups(backbone, base_lr=1e-5, decay_factor=0.75)
+param_groups.append({'params': det_head.parameters(), 'lr': 1e-4, 'weight_decay': 0.05})
+optimizer = torch.optim.AdamW(param_groups)
+
+for epoch in range(50):
+    for batch in coco:
+        image = transform_train(batch["image"].convert("RGB")).unsqueeze(0).cuda()
+        features = backbone(image)                             # (1, 768)
+        pred = det_head(features)                              # (1, 84)
+        # ... compute detection loss (box regression + classification)
+</code></pre>
+
+      <h3>PEFT for Vision (2025-2026)</h3>
+
+      <p><strong>Image-LoRA</strong> applies low-rank adaptation only to the value projection within attention layers that process visual tokens — reducing trainable parameters to roughly 0.01% of the model while retaining 90-95% of full fine-tuning quality. <strong>Make LoRA Great Again</strong> (2025) improved LoRA with adaptive singular values that adjust per layer, combined with MoE-style alignment that routes different inputs through different low-rank subspaces.</p>
+
+      <div class="callout callout-insight">
+        <div class="callout-title">Key Insight</div>
+        <p>The central tension in ViT fine-tuning is between adaptation and preservation. Too much adaptation (high LR, all layers trainable, long schedule) causes catastrophic forgetting. Too little (low LR, frozen layers, short schedule) underfits the target task. LLRD, PEFT, and careful schedule design all address this tension — and can be combined. A strong recipe: LLRD with γ=0.75, Image-LoRA on value projections only, cosine LR schedule with 5 warmup epochs, train for 20 epochs total.</p>
+      </div>
+    </section>
+
+    <!-- ============================================================
+         SECTION 6: Detection and Segmentation Training
+         ============================================================ -->
+    <section class="chapter-section" id="detection-segmentation-training">
+      <h2>Detection and Segmentation Training Recipes</h2>
+
+      <p><strong>DETR training</strong> uses the Hungarian algorithm for bipartite matching between predictions and ground-truth objects. <strong>DN-DETR</strong> accelerates convergence by adding Gaussian noise to ground-truth boxes during training. <strong>Co-DETR</strong> adds auxiliary one-to-many matching heads that provide denser gradients during training and are discarded at inference.</p>
+
+      <p><strong>SAM training</strong> at scale used a model-in-the-loop data engine producing 1.1 billion masks on 11 million images (SA-1B). <strong>DINOv2 + linear probes</strong> demonstrate that strong pre-training enables trivially simple fine-tuning: freeze the ViT, attach a single linear layer, train with SGD for a few epochs — and achieve competitive results on depth estimation, semantic segmentation, and surface normal estimation.</p>
+    </section>
+
+    <!-- ============================================================
+         SECTION 7: Numerical Precision
+         ============================================================ -->
+    <section class="chapter-section" id="precision-efficiency">
+      <h2>Numerical Precision and Training Efficiency</h2>
+
+      <h3>Mixed Precision: BF16 vs FP16</h3>
+
+      <p>Vision transformers exhibit more extreme activation outliers than language models. <strong>BF16</strong> has the same dynamic range as FP32 (max ~$3.4 \times 10^{38}$), eliminating overflow risk entirely. Rule of thumb: use BF16 on A100+ hardware; use FP16 with loss scaling only when BF16 is unavailable.</p>
+
+      <h3>FP8 Training: 36% Throughput Gain</h3>
+
+      <p><strong>TWEO</strong> (2025) enabled full FP8 pre-training for ViTs by adding a regularization loss that suppresses extreme activation outliers, reducing them from 10,000+ to under 20. The result: 36% throughput improvement over BF16 with no accuracy degradation, tested up to 7B parameters.</p>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 200" xmlns="http://www.w3.org/2000/svg">
+          <text x="400" y="22" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="600" fill="#1A1A18">Numerical Precision for ViT Training</text>
+          <rect x="40" y="48" width="200" height="90" rx="8" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="1.5"/>
+          <text x="140" y="72" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="600" fill="#5C5B56">FP32</text>
+          <text x="140" y="92" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#5C5B56">32 bits per value</text>
+          <text x="140" y="110" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">Throughput: 1.0×</text>
+          <text x="140" y="126" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">Memory: 1.0×</text>
+          <rect x="290" y="48" width="200" height="90" rx="8" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <text x="390" y="72" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="600" fill="#534AB7">BF16</text>
+          <text x="390" y="92" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#534AB7">16 bits, FP32 range</text>
+          <text x="390" y="110" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">Throughput: ~1.8×</text>
+          <text x="390" y="126" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">Memory: 0.5×</text>
+          <rect x="540" y="48" width="220" height="90" rx="8" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1.5"/>
+          <text x="650" y="72" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="600" fill="#0F6E56">FP8 (TWEO)</text>
+          <text x="650" y="92" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#0F6E56">8 bits + outlier reg</text>
+          <text x="650" y="110" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">Throughput: ~2.4×</text>
+          <text x="650" y="126" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">Memory: 0.25×</text>
+          <text x="400" y="170" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#5C5B56">TWEO: one loss term → suppresses outliers → enables FP8 → 36% faster</text>
+          <text x="400" y="188" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">Works for ViT and Swin up to 7B+ params with no architectural changes</text>
+        </svg>
+        <figcaption>Figure 23a.6 — Numerical precision comparison. BF16 halves memory and nearly doubles throughput. FP8 with TWEO achieves 36% additional throughput over BF16 with matched accuracy.</figcaption>
+      </figure>
+
+      <h3>Distributed Training for Large ViTs</h3>
+
+      <p>ViT-G (1.8B parameters) and DINOv2's ViT-g (1.1B) require multi-GPU training. <strong>Tensor parallelism</strong> splits attention heads across GPUs. <strong>FSDP</strong> shards optimizer states, gradients, and parameters across devices. <strong>Activation checkpointing</strong> every other transformer block halves activation memory with ~25% compute overhead.</p>
+    </section>
+
+    <!-- ============================================================
+         SECTION 8: Complete Training Recipes
+         ============================================================ -->
+    <section class="chapter-section" id="training-recipes">
+      <h2>Complete Classification Training Recipes</h2>
+
+      <h3>Recipe 1: ViT-Base ImageNet Classification (DeiT III Style)</h3>
+      <table>
+        <tr><th>Component</th><th>Setting</th></tr>
+        <tr><td>Architecture</td><td>ViT-B/16 (86M) or ViT-5-B/16</td></tr>
+        <tr><td>Optimizer</td><td>AdamW, β₁=0.9, β₂=0.999</td></tr>
+        <tr><td>Learning rate</td><td>1e-3, cosine decay to 1e-6</td></tr>
+        <tr><td>Warmup</td><td>5 epochs, linear</td></tr>
+        <tr><td>Weight decay</td><td>0.05</td></tr>
+        <tr><td>Batch size</td><td>2048</td></tr>
+        <tr><td>Epochs</td><td>800</td></tr>
+        <tr><td>Augmentation</td><td>Random crop, flip, color jitter</td></tr>
+        <tr><td>Regularization</td><td>Stochastic depth (p_L=0.1), LayerScale (1e-4)</td></tr>
+        <tr><td>Precision</td><td>BF16</td></tr>
+        <tr><td>Hardware</td><td>8× A100, ~24 hours</td></tr>
+        <tr><td>Expected</td><td>83.8% (DeiT III) / 84.2% (ViT-5)</td></tr>
+      </table>
+
+      <h3>Recipe 2: DINOv2-Style Self-Supervised Pre-Training</h3>
+      <table>
+        <tr><th>Component</th><th>Setting</th></tr>
+        <tr><td>Architecture</td><td>ViT-L/14 (300M params)</td></tr>
+        <tr><td>Optimizer</td><td>AdamW, β₁=0.9, β₂=0.999</td></tr>
+        <tr><td>Learning rate</td><td>2e-4, cosine decay</td></tr>
+        <tr><td>Weight decay</td><td>0.04 → 0.4 (cosine)</td></tr>
+        <tr><td>Batch size</td><td>2048 (global crops)</td></tr>
+        <tr><td>Multi-crop</td><td>2 global (224²) + 8 local (96²)</td></tr>
+        <tr><td>Teacher EMA</td><td>0.996 → 1.0 (cosine)</td></tr>
+        <tr><td>Temperature</td><td>τ_s=0.1, τ_t=0.04→0.07</td></tr>
+        <tr><td>Epochs</td><td>300-625</td></tr>
+        <tr><td>Precision</td><td>BF16, FSDP</td></tr>
+        <tr><td>Hardware</td><td>16-40× A100 80GB</td></tr>
+      </table>
+
+      <h3>Recipe 3: Fine-Tuning for COCO Detection (with LLRD)</h3>
+      <table>
+        <tr><th>Component</th><th>Setting</th></tr>
+        <tr><td>Backbone</td><td>DINOv2 ViT-L/14, LLRD</td></tr>
+        <tr><td>Detector</td><td>DINO-det or Mask2Former</td></tr>
+        <tr><td>Backbone LR</td><td>1e-5 with LLRD (γ=0.75)</td></tr>
+        <tr><td>Head LR</td><td>1e-4</td></tr>
+        <tr><td>Weight decay</td><td>0.05</td></tr>
+        <tr><td>Batch size</td><td>16</td></tr>
+        <tr><td>Epochs</td><td>50 (DINO-det) / 100 (Mask2Former)</td></tr>
+        <tr><td>Resolution</td><td>1024×1024</td></tr>
+        <tr><td>Precision</td><td>BF16</td></tr>
+      </table>
+
+      <div class="callout callout-warning">
+        <div class="callout-title">Training Stability Checklist</div>
+        <p>Before starting any large ViT training run: (1) Use BF16, not FP16. (2) Enable gradient clipping (max norm 1.0). (3) Use warmup of at least 5 epochs. (4) Monitor attention entropy — if it collapses early, increase warmup or add QKNorm. (5) For models above 600M parameters, consider TWEO's outlier regularization for FP8.</p>
+      </div>
+    </section>
+
+  </article>
+
+  <footer class="chapter-footer">
+    <div class="footer-nav">
+      <a href="ch22.html">← Previous: Video Generation with Transformers</a>
+      <a href="ch23b.html">Next: Training Image Generation Transformers →</a>
+    </div>
+  </footer>
+
+</body>
+</html>

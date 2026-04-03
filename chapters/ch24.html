@@ -1,0 +1,1145 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Chapter 24: Evaluating Vision Transformers — Transformer Research Book</title>
+  <link rel="stylesheet" href="../assets/style.css">
+  <link rel="stylesheet" href="../assets/math.css">
+  <link rel="stylesheet" href="../assets/prism.css">
+  <!-- KaTeX for math rendering -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"
+    onload="renderMathInElement(document.body, {
+      delimiters: [
+        {left: '$$', right: '$$', display: true},
+        {left: '$', right: '$', display: false}
+      ]
+    })">
+  </script>
+  <!-- Prism for code blocks -->
+  <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/prism.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-python.min.js"></script>
+</head>
+<body>
+  <nav class="chapter-nav">
+    <a href="../index.html" class="nav-home">← Table of Contents</a>
+    <span class="nav-chapter">Chapter 24</span>
+    <div style="display:flex; align-items:center; gap:1rem;">
+      <button class="theme-toggle" onclick="toggleTheme()" aria-label="Toggle dark mode">
+        <span class="icon-moon">&#9789;</span><span class="icon-sun">&#9788;</span>
+      </button>
+      <a href="ch25.html" class="nav-next">Next Chapter →</a>
+    </div>
+  </nav>
+  <script>
+    function toggleTheme() {
+      document.documentElement.classList.toggle('dark');
+      localStorage.setItem('theme', document.documentElement.classList.contains('dark') ? 'dark' : 'light');
+    }
+    if (localStorage.getItem('theme') === 'dark') document.documentElement.classList.add('dark');
+  </script>
+
+  <article class="chapter">
+
+    <header class="chapter-header">
+      <div class="chapter-number">Chapter 24</div>
+      <h1 class="chapter-title">Evaluating Vision Transformers</h1>
+      <p class="chapter-lead">A vision transformer that achieves 92% top-1 accuracy on ImageNet can still fail catastrophically on photographs taken in sub-Saharan Africa, miss rare objects that appear once per thousand images, or generate videos where cups float through tables. The gap between a single accuracy number and genuine visual understanding is vast — and closing it requires a layered evaluation stack spanning classification robustness, detection precision, temporal reasoning, generative fidelity, computational efficiency, and geographic fairness. By the end of this chapter you will understand not just what each benchmark measures, but where each one breaks, what it misses, and how the field is building the next generation of evaluation frameworks to catch the failures that today's metrics cannot see.</p>
+    </header>
+
+    <!-- ============================================================
+         SECTION 1: IMAGE CLASSIFICATION BENCHMARKS
+         ============================================================ -->
+    <section class="chapter-section" id="image-classification-benchmarks">
+      <h2>Image Classification Benchmarks</h2>
+
+      <p>Image classification is where vision transformer evaluation began, and ImageNet remains the single most cited number in every ViT paper. But that number increasingly tells us less than we think. The trajectory from AlexNet's 63% in 2012 to foundation models exceeding 92% in 2025 is not a story of steady progress — it is a story of diminishing returns on a fixed test set, where the remaining errors are as much about annotation noise and cultural bias as about model capability.</p>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 300" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="ch24-arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+              <path d="M1 1L9 5L1 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </marker>
+          </defs>
+
+          <!-- Title -->
+          <text x="400" y="28" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="600" fill="#1A1A18">ImageNet Top-1 Accuracy: The Saturation Arc (2012–2026)</text>
+
+          <!-- Axes -->
+          <line x1="80" y1="250" x2="760" y2="250" stroke="#C8C6BE" stroke-width="1.5"/>
+          <line x1="80" y1="250" x2="80" y2="50" stroke="#C8C6BE" stroke-width="1.5"/>
+
+          <!-- Y-axis labels -->
+          <text x="70" y="250" text-anchor="end" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">50%</text>
+          <text x="70" y="210" text-anchor="end" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">60%</text>
+          <text x="70" y="170" text-anchor="end" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">70%</text>
+          <text x="70" y="130" text-anchor="end" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">80%</text>
+          <text x="70" y="90" text-anchor="end" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">90%</text>
+          <text x="70" y="60" text-anchor="end" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">95%</text>
+
+          <!-- Grid lines -->
+          <line x1="80" y1="210" x2="760" y2="210" stroke="#E5E3DC" stroke-width="0.5" stroke-dasharray="4 3"/>
+          <line x1="80" y1="170" x2="760" y2="170" stroke="#E5E3DC" stroke-width="0.5" stroke-dasharray="4 3"/>
+          <line x1="80" y1="130" x2="760" y2="130" stroke="#E5E3DC" stroke-width="0.5" stroke-dasharray="4 3"/>
+          <line x1="80" y1="90" x2="760" y2="90" stroke="#E5E3DC" stroke-width="0.5" stroke-dasharray="4 3"/>
+
+          <!-- Saturation zone -->
+          <rect x="80" y="50" width="680" height="50" fill="#FAEEDA" opacity="0.4"/>
+          <text x="760" y="72" text-anchor="end" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#854F0B">Saturation Zone</text>
+
+          <!-- Data points connected by line: AlexNet(2012,63%), VGG(2014,74%), ResNet(2015,76%), ViT(2020,77.9%), DeiT(2021,83.1%), Swin(2021,87.3%), BEiTv2(2022,88.4%), EVA-02(2023,90%), ViT-5(2026,84.2% no ext), SwinV3(2025,92+) -->
+          <!-- x: 2012=120, 2014=188, 2015=222, 2017=290, 2020=392, 2021=426, 2022=460, 2023=494, 2025=562, 2026=596 -->
+          <!-- y: 50%=250, each 10%=40px. 63%=198, 74%=154, 76%=146, 77.9%=138, 83.1%=117, 87.3%=100, 88.4%=96, 90%=90, 92%=82 -->
+
+          <!-- CNN era path (gray) -->
+          <polyline points="120,198 188,154 222,146" fill="none" stroke="#B4B2A9" stroke-width="2"/>
+
+          <!-- Transformer era path (purple) -->
+          <polyline points="392,138 426,117 460,100 494,96 528,90 596,82" fill="none" stroke="#534AB7" stroke-width="2.5"/>
+
+          <!-- Transition gap -->
+          <line x1="222" y1="146" x2="392" y2="138" stroke="#C8C6BE" stroke-width="1" stroke-dasharray="4 3"/>
+
+          <!-- Data points -->
+          <circle cx="120" cy="198" r="5" fill="#B4B2A9" stroke="#FFFFFF" stroke-width="1.5"/>
+          <circle cx="188" cy="154" r="5" fill="#B4B2A9" stroke="#FFFFFF" stroke-width="1.5"/>
+          <circle cx="222" cy="146" r="5" fill="#B4B2A9" stroke="#FFFFFF" stroke-width="1.5"/>
+          <circle cx="392" cy="138" r="6" fill="#534AB7" stroke="#FFFFFF" stroke-width="1.5"/>
+          <circle cx="426" cy="117" r="5" fill="#534AB7" stroke="#FFFFFF" stroke-width="1.5"/>
+          <circle cx="460" cy="100" r="5" fill="#534AB7" stroke="#FFFFFF" stroke-width="1.5"/>
+          <circle cx="494" cy="96" r="5" fill="#534AB7" stroke="#FFFFFF" stroke-width="1.5"/>
+          <circle cx="528" cy="90" r="5" fill="#534AB7" stroke="#FFFFFF" stroke-width="1.5"/>
+          <circle cx="596" cy="82" r="7" fill="#534AB7" stroke="#EEEDFE" stroke-width="2.5"/>
+
+          <!-- Labels -->
+          <text x="120" y="218" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">AlexNet</text>
+          <text x="120" y="228" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">63%</text>
+          <text x="188" y="144" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">VGG</text>
+          <text x="222" y="164" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">ResNet 76%</text>
+
+          <text x="392" y="155" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#534AB7">ViT</text>
+          <text x="392" y="167" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">77.9%</text>
+          <text x="426" y="108" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#5C5B56">DeiT 83%</text>
+          <text x="460" y="116" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#5C5B56">Swin 87%</text>
+          <text x="528" y="80" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#5C5B56">EVA-02 90%</text>
+          <text x="596" y="72" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#534AB7">SwinV3+</text>
+          <text x="596" y="105" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#534AB7">>92%</text>
+
+          <!-- X-axis year labels -->
+          <text x="120" y="270" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">2012</text>
+          <text x="222" y="270" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">2015</text>
+          <text x="392" y="270" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">2020</text>
+          <text x="460" y="270" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">2021</text>
+          <text x="528" y="270" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">2023</text>
+          <text x="596" y="270" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">2025</text>
+
+          <!-- Era labels -->
+          <rect x="100" y="280" width="80" height="16" rx="3" fill="#F1EFE8" stroke="#B4B2A9" stroke-width="0.5"/>
+          <text x="140" y="291" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="500" fill="#5C5B56">CNN Era</text>
+          <rect x="380" y="280" width="140" height="16" rx="3" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="0.5"/>
+          <text x="450" y="291" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="500" fill="#534AB7">Transformer Era</text>
+        </svg>
+        <figcaption>Figure 24.1 — ImageNet top-1 accuracy from AlexNet (2012) through modern vision transformers (2025–2026). The curve flattens above 90%, entering a saturation zone where incremental gains are dominated by annotation noise and evaluation protocol differences rather than genuine capability improvements.</figcaption>
+      </figure>
+
+      <h3>ImageNet-1K and ImageNet-21K</h3>
+
+      <p>ImageNet-1K remains the default classification benchmark: 1.28 million training images across 1,000 classes, evaluated by top-1 and top-5 accuracy on 50,000 validation images. The metric is simple — predict the single most likely class (top-1) or check whether the correct class is among the five highest-confidence predictions (top-5). With foundation models now exceeding 92% top-1 and 99%+ top-5, the remaining errors are increasingly about ambiguous ground truth labels (is this a "laptop" or a "notebook computer"?) rather than model failures.</p>
+
+      <p>ImageNet-21K extends the evaluation to 21,841 classes organized in the WordNet hierarchy. The standard protocol pre-trains on 21K, then fine-tunes on 1K to measure how well the broader visual knowledge transfers. Models like ViT-5 (2026) achieve 84.2% on ImageNet-1K without external data, while models pre-trained on larger corpora (JFT-3B, LAION) push past 92%. The gap between these two numbers quantifies the value of scale — and it remains substantial.</p>
+
+      <h3>Robustness Variants: ImageNet-C, -R, -A, and ObjectNet</h3>
+
+      <p>A model that achieves 90% on clean ImageNet validation images may drop to 40% when those same images are corrupted with fog, motion blur, or JPEG compression artifacts. ImageNet-C tests exactly this: 15 corruption types at 5 severity levels, reported as mean Corruption Error (mCE) normalized against a reference model (AlexNet). Lower mCE is better. ViTs generally outperform CNNs on corruption robustness — their global attention integrates context that local convolutions miss when patches are degraded.</p>
+
+      <p>ImageNet-R (renditions) collects naturally occurring domain shifts: art, cartoons, embroidery, graffiti, origami, tattoos, and other renditions of ImageNet classes. ImageNet-A (adversarial) contains natural photographs that fool ResNet-50 with high confidence but are correctly classified by humans. These are not synthetic adversarial examples — they are real images that expose systematic blind spots in learned features. On ImageNet-A, ViTs achieve 28.1% top-1 accuracy (4.3 times higher than BiT), demonstrating that self-attention captures more robust features than convolutions, though the absolute number remains far from human performance.</p>
+
+      <p>ObjectNet removes spurious correlations entirely. Every image is photographed against controlled backgrounds, at unusual viewpoints and rotations, specifically designed to defeat models that rely on context rather than object recognition. The accuracy gap between ImageNet validation and ObjectNet typically ranges from 10 to 20 percentage points — a sobering reminder that benchmark accuracy and deployment reliability are different things.</p>
+
+      <h3>Geographic Fairness and Diversity Benchmarks</h3>
+
+      <div class="callout callout-insight">
+        <div class="callout-title">Key Insight</div>
+        <p>ImageNet top-1 accuracy tells you how well a model classifies objects photographed in North America and Western Europe, from canonical viewpoints, against clean backgrounds. It does not tell you how well it classifies objects as they appear in the rest of the world.</p>
+      </div>
+
+      <p>Recent studies reveal that all major vision models — CNNs, ViTs, and foundation models alike — exhibit 7–20% accuracy gaps between geographic regions. A model trained predominantly on North American and European images will recognize a "stove" photographed in a German kitchen but may fail on a charcoal stove in a Rwandan home. The Dollar Street dataset (38,479 images from homes with incomes ranging from $27 to over $10,000 per month across 289 homes worldwide) quantifies this bias, showing that low-income households from the Global South are systematically misclassified.</p>
+
+      <p>Two frameworks from 2025 formalize geographic fairness evaluation. FHIBE (Fair Human-Centric Image Benchmark) from Sony AI collects consensually photographed images from 81+ countries — the most geographically diverse evaluation set to date — and evaluates face detection, pose estimation, and person recognition across demographic groups. GeoBS (Geo-Bias Scores) provides an information-theoretic framework for quantifying geographic bias, decomposing it into representational bias (uneven data coverage) and performative bias (uneven accuracy) across 8 datasets and 8 models. Both confirm a troubling pattern: progress on standard benchmarks does not improve geographic disparities, and in some cases makes them worse.</p>
+    </section>
+
+    <!-- ============================================================
+         SECTION 2: DETECTION AND SEGMENTATION BENCHMARKS
+         ============================================================ -->
+    <section class="chapter-section" id="detection-and-segmentation-benchmarks">
+      <h2>Detection and Segmentation Benchmarks</h2>
+
+      <p>Classification asks "what is in the image?"; detection and segmentation ask "where is it, and what is its shape?" The metrics are more complex, the failure modes more subtle, and the gap between benchmark performance and real-world reliability is even wider. A single number — 60 AP on COCO — conceals enormous variation in how well a model handles small objects versus large ones, rare categories versus common ones, and precise boundaries versus rough bounding boxes.</p>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 340" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="ch24-arr2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+              <path d="M1 1L9 5L1 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </marker>
+          </defs>
+
+          <text x="400" y="28" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="600" fill="#1A1A18">The COCO Detection Metric Hierarchy</text>
+
+          <!-- Root: COCO AP -->
+          <rect x="300" y="48" width="200" height="44" rx="6" fill="#534AB7" stroke="#534AB7"/>
+          <text x="400" y="67" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="600" fill="#FFFFFF">COCO AP</text>
+          <text x="400" y="82" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#AFA9EC">mean over IoU 0.50:0.05:0.95</text>
+
+          <!-- Level 2: IoU thresholds -->
+          <line x1="340" y1="92" x2="200" y2="120" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch24-arr2)"/>
+          <line x1="400" y1="92" x2="400" y2="120" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch24-arr2)"/>
+          <line x1="460" y1="92" x2="600" y2="120" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch24-arr2)"/>
+
+          <rect x="110" y="120" width="180" height="40" rx="6" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <text x="200" y="137" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="500" fill="#534AB7">AP₅₀</text>
+          <text x="200" y="152" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">Coarse localization</text>
+
+          <rect x="310" y="120" width="180" height="40" rx="6" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <text x="400" y="137" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="500" fill="#534AB7">AP₇₅</text>
+          <text x="400" y="152" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">Precise localization</text>
+
+          <rect x="510" y="120" width="180" height="40" rx="6" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <text x="600" y="137" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="500" fill="#534AB7">AP₉₅</text>
+          <text x="600" y="152" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">Pixel-perfect</text>
+
+          <!-- Level 3: Scale -->
+          <line x1="400" y1="160" x2="200" y2="195" stroke="#9C9A94" stroke-width="1" stroke-dasharray="4 3"/>
+          <line x1="400" y1="160" x2="400" y2="195" stroke="#9C9A94" stroke-width="1" stroke-dasharray="4 3"/>
+          <line x1="400" y1="160" x2="600" y2="195" stroke="#9C9A94" stroke-width="1" stroke-dasharray="4 3"/>
+
+          <rect x="110" y="195" width="180" height="40" rx="6" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1.5"/>
+          <text x="200" y="212" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="500" fill="#0F6E56">APₛ</text>
+          <text x="200" y="227" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">Small: area < 32²</text>
+
+          <rect x="310" y="195" width="180" height="40" rx="6" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1.5"/>
+          <text x="400" y="212" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="500" fill="#0F6E56">APₘ</text>
+          <text x="400" y="227" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">Medium: 32² ≤ area < 96²</text>
+
+          <rect x="510" y="195" width="180" height="40" rx="6" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1.5"/>
+          <text x="600" y="212" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="500" fill="#0F6E56">APₗ</text>
+          <text x="600" y="227" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">Large: area ≥ 96²</text>
+
+          <!-- Level 4: Box vs Mask -->
+          <rect x="110" y="270" width="280" height="36" rx="6" fill="#FAECE7" stroke="#F0997B" stroke-width="1.5"/>
+          <text x="250" y="292" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#993C1D">Box AP — bounding box overlap</text>
+
+          <rect x="410" y="270" width="280" height="36" rx="6" fill="#FAECE7" stroke="#F0997B" stroke-width="1.5"/>
+          <text x="550" y="292" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#993C1D">Mask AP — pixel-level segmentation</text>
+
+          <line x1="250" y1="235" x2="250" y2="270" stroke="#9C9A94" stroke-width="1" stroke-dasharray="4 3"/>
+          <line x1="550" y1="235" x2="550" y2="270" stroke="#9C9A94" stroke-width="1" stroke-dasharray="4 3"/>
+        </svg>
+        <figcaption>Figure 24.2 — The COCO AP metric hierarchy. A single "AP" number is the mean over 10 IoU thresholds (0.50 to 0.95), but decomposes into localization strictness (AP₅₀, AP₇₅), scale sensitivity (APₛ, APₘ, APₗ), and prediction type (box vs mask). A model with high AP₅₀ but low AP₇₅ finds objects but localizes them imprecisely.</figcaption>
+      </figure>
+
+      <h3>COCO Detection: AP, AP₅₀, AP₇₅</h3>
+
+      <p>The COCO benchmark defines AP as the mean Average Precision computed across 10 Intersection-over-Union (IoU) thresholds from 0.50 to 0.95 in steps of 0.05. For each IoU threshold, predictions are matched to ground-truth boxes greedily by confidence, and the precision-recall curve is interpolated at 101 recall levels. IoU between a predicted box $\hat{b}$ and ground-truth box $b$ is computed as (scalar result from element-wise operations on coordinate vectors):</p>
+
+      $$\text{IoU}(\hat{b}, b) = \frac{|\hat{b} \cap b|}{|\hat{b} \cup b|}$$
+
+      <p>where $|\hat{b} \cap b|$ is the area of intersection and $|\hat{b} \cup b|$ is the area of union. A prediction counts as a true positive at threshold $\tau$ only if $\text{IoU}(\hat{b}, b) \geq \tau$. AP₅₀ requires only a rough overlap — the predicted and true boxes need share just half their area. AP₇₅ demands precise alignment, penalizing detectors that find objects but localize them sloppily.</p>
+
+      <p>The state of the art has progressed dramatically. RF-DETR, built on a DINOv2 vision transformer backbone, became the first real-time detector to surpass 60 AP on COCO (ICLR 2026), while GroundingDINO 1.5 Pro achieves 54.3% AP in a zero-shot setting — detecting objects it was never explicitly trained to find. These numbers would have seemed unreachable five years ago, and they raise a natural question: is COCO itself becoming saturated?</p>
+
+      <h3>COCONut and COCO-ReM: Annotation Quality Matters</h3>
+
+      <p>The answer is nuanced: some of COCO's remaining "errors" are actually annotation mistakes. COCONut (CVPR 2024) re-annotated 383,000 images with 5.18 million human-verified panoptic masks, revealing that COCO-2017's original annotations suffer from coarse polygon boundaries, inconsistent occlusion handling, and non-exhaustive instance labeling. COCO-ReM (ECCV 2024) took a complementary approach: using SAM (Segment Anything Model) to refine mask boundaries in a three-stage pipeline — automatic boundary refinement, exhaustive instance annotation, and human correction of labeling errors.</p>
+
+      <p>The result is revealing: models that predict visually sharp masks were being incorrectly penalized by coarse ground-truth annotations. When evaluated on COCO-ReM, the rankings of fifty object detectors shifted — not because the models changed, but because the ground truth became more accurate. The implication is clear: benchmark scores are bounded by annotation quality, and what we measure is only as good as the labels we measure against.</p>
+
+      <h3>LVIS: Long-Tail Detection</h3>
+
+      <p>Real-world object distributions follow a power law: a handful of categories (person, car, chair) appear thousands of times, while most categories (raccoon, whisk, sundial) appear rarely. COCO's 80 categories are all reasonably common. LVIS exposes the long tail: 1,203 categories split into frequent (>100 images), common (10–100 images), and rare (<10 images) groups. Evaluation is stratified — AP is reported separately for each frequency group.</p>
+
+      <p>Models optimized for COCO typically achieve strong APᶠ (frequent) but dismal APʳ (rare) on LVIS. The rare categories are where transformer-based detectors — especially those with open-vocabulary capabilities like GroundingDINO — have an advantage: their language-vision alignment allows them to recognize categories from textual descriptions alone, bypassing the need for abundant visual examples.</p>
+
+      <h3>ADE20K and Cityscapes Segmentation</h3>
+
+      <p>For semantic segmentation, ADE20K provides 150 semantic categories across 25,000 images of diverse indoor and outdoor scenes. The metric is mean IoU (mIoU): the IoU between predicted and ground-truth masks, averaged across all classes. Averaging across classes gives equal weight to rare and common classes — a parking meter matters as much as sky — which makes mIoU a harder metric than pixel accuracy, where dominant classes inflate the score.</p>
+
+      <p>Cityscapes focuses on autonomous driving: 5,000 finely annotated images from European streets. Panoptic segmentation here combines instance segmentation (each car is a separate entity) with semantic segmentation (road, sidewalk, vegetation), evaluated by Panoptic Quality (PQ). The metric decomposes into Segmentation Quality (how well matched instances overlap) and Recognition Quality (how many instances are correctly detected), making it a more informative single number than mIoU alone.</p>
+    </section>
+
+    <!-- ============================================================
+         SECTION 3: VIDEO UNDERSTANDING BENCHMARKS
+         ============================================================ -->
+    <section class="chapter-section" id="video-understanding-benchmarks">
+      <h2>Video Understanding Benchmarks</h2>
+
+      <p>Video evaluation reveals the deepest gaps in current vision transformers. Many video benchmarks can be partially solved by looking at a single frame — recognizing "playing basketball" from the ball and court, without understanding the motion. The benchmarks that truly test temporal reasoning — where single-frame baselines fail — are where today's models struggle most.</p>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 350" xmlns="http://www.w3.org/2000/svg">
+          <text x="400" y="28" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="600" fill="#1A1A18">Video Benchmark Taxonomy: What Each Benchmark Actually Tests</text>
+
+          <!-- Column headers -->
+          <rect x="180" y="50" width="130" height="30" rx="4" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1"/>
+          <text x="245" y="70" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#534AB7">Appearance</text>
+          <rect x="320" y="50" width="130" height="30" rx="4" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1"/>
+          <text x="385" y="70" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#534AB7">Motion</text>
+          <rect x="460" y="50" width="130" height="30" rx="4" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1"/>
+          <text x="525" y="70" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#534AB7">Temporal</text>
+          <rect x="600" y="50" width="130" height="30" rx="4" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1"/>
+          <text x="665" y="70" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#534AB7">Planning</text>
+
+          <!-- Row labels -->
+          <rect x="30" y="90" width="140" height="36" rx="4" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="1"/>
+          <text x="100" y="113" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#5C5B56">Kinetics</text>
+
+          <rect x="30" y="136" width="140" height="36" rx="4" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="1"/>
+          <text x="100" y="159" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#5C5B56">SSv2</text>
+
+          <rect x="30" y="182" width="140" height="36" rx="4" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="1"/>
+          <text x="100" y="205" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#5C5B56">AVA</text>
+
+          <rect x="30" y="228" width="140" height="36" rx="4" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="1"/>
+          <text x="100" y="251" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#5C5B56">EgoSchema</text>
+
+          <rect x="30" y="274" width="140" height="36" rx="4" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="1"/>
+          <text x="100" y="297" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#5C5B56">EgoPlan</text>
+
+          <!-- Cells: filled = tests this capability, empty = does not -->
+          <!-- Kinetics: Appearance=strong, Motion=weak, Temporal=no, Planning=no -->
+          <rect x="195" y="95" width="100" height="26" rx="4" fill="#534AB7" opacity="0.9"/>
+          <text x="245" y="113" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#FFFFFF">Strong</text>
+          <rect x="335" y="95" width="100" height="26" rx="4" fill="#AFA9EC" opacity="0.5"/>
+          <text x="385" y="113" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#534AB7">Weak</text>
+          <rect x="475" y="95" width="100" height="26" rx="4" fill="#F1EFE8"/>
+          <text x="525" y="113" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">—</text>
+          <rect x="615" y="95" width="100" height="26" rx="4" fill="#F1EFE8"/>
+          <text x="665" y="113" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">—</text>
+
+          <!-- SSv2: Appearance=weak, Motion=strong, Temporal=strong, Planning=no -->
+          <rect x="195" y="141" width="100" height="26" rx="4" fill="#AFA9EC" opacity="0.5"/>
+          <text x="245" y="159" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#534AB7">Weak</text>
+          <rect x="335" y="141" width="100" height="26" rx="4" fill="#534AB7" opacity="0.9"/>
+          <text x="385" y="159" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#FFFFFF">Strong</text>
+          <rect x="475" y="141" width="100" height="26" rx="4" fill="#534AB7" opacity="0.9"/>
+          <text x="525" y="159" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#FFFFFF">Strong</text>
+          <rect x="615" y="141" width="100" height="26" rx="4" fill="#F1EFE8"/>
+          <text x="665" y="159" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">—</text>
+
+          <!-- AVA: Appearance=medium, Motion=strong, Temporal=medium, Planning=no -->
+          <rect x="195" y="187" width="100" height="26" rx="4" fill="#AFA9EC" opacity="0.7"/>
+          <text x="245" y="205" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#534AB7">Medium</text>
+          <rect x="335" y="187" width="100" height="26" rx="4" fill="#534AB7" opacity="0.9"/>
+          <text x="385" y="205" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#FFFFFF">Strong</text>
+          <rect x="475" y="187" width="100" height="26" rx="4" fill="#AFA9EC" opacity="0.7"/>
+          <text x="525" y="205" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#534AB7">Medium</text>
+          <rect x="615" y="187" width="100" height="26" rx="4" fill="#F1EFE8"/>
+          <text x="665" y="205" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">—</text>
+
+          <!-- EgoSchema: Appearance=medium, Motion=medium, Temporal=strong, Planning=weak -->
+          <rect x="195" y="233" width="100" height="26" rx="4" fill="#AFA9EC" opacity="0.7"/>
+          <text x="245" y="251" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#534AB7">Medium</text>
+          <rect x="335" y="233" width="100" height="26" rx="4" fill="#AFA9EC" opacity="0.7"/>
+          <text x="385" y="251" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#534AB7">Medium</text>
+          <rect x="475" y="233" width="100" height="26" rx="4" fill="#534AB7" opacity="0.9"/>
+          <text x="525" y="251" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#FFFFFF">Strong</text>
+          <rect x="615" y="233" width="100" height="26" rx="4" fill="#AFA9EC" opacity="0.5"/>
+          <text x="665" y="251" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#534AB7">Weak</text>
+
+          <!-- EgoPlan: Appearance=weak, Motion=medium, Temporal=strong, Planning=strong -->
+          <rect x="195" y="279" width="100" height="26" rx="4" fill="#AFA9EC" opacity="0.5"/>
+          <text x="245" y="297" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#534AB7">Weak</text>
+          <rect x="335" y="279" width="100" height="26" rx="4" fill="#AFA9EC" opacity="0.7"/>
+          <text x="385" y="297" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#534AB7">Medium</text>
+          <rect x="475" y="279" width="100" height="26" rx="4" fill="#534AB7" opacity="0.9"/>
+          <text x="525" y="297" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#FFFFFF">Strong</text>
+          <rect x="615" y="279" width="100" height="26" rx="4" fill="#534AB7" opacity="0.9"/>
+          <text x="665" y="297" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#FFFFFF">Strong</text>
+
+          <!-- Legend -->
+          <rect x="250" y="322" width="14" height="10" rx="2" fill="#534AB7" opacity="0.9"/>
+          <text x="270" y="331" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#5C5B56">Primary test axis</text>
+          <rect x="380" y="322" width="14" height="10" rx="2" fill="#AFA9EC" opacity="0.6"/>
+          <text x="400" y="331" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#5C5B56">Partial coverage</text>
+          <rect x="500" y="322" width="14" height="10" rx="2" fill="#F1EFE8"/>
+          <text x="520" y="331" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">Not tested</text>
+        </svg>
+        <figcaption>Figure 24.3 — Video benchmark taxonomy showing what each benchmark actually tests. Kinetics can largely be solved from appearance alone (single-frame bias), while Something-Something V2 and EgoPlan require genuine temporal reasoning and action planning. The diagonal from top-left to bottom-right reveals progressively harder evaluation axes.</figcaption>
+      </figure>
+
+      <h3>Kinetics-400/600/700: Action Recognition</h3>
+
+      <p>Kinetics is the ImageNet of video: classify 10-second YouTube clips into action categories. Kinetics-400 covers 400 actions with at least 400 clips each; Kinetics-600 and Kinetics-700 expand the vocabulary. The metric is simple top-1 / top-5 accuracy on the validation set.</p>
+
+      <p>The problem with Kinetics is the **frame bias**: many actions are recognizable from a single still frame. "Playing guitar" is identifiable from the guitar; "swimming" from the pool. A single-frame baseline (which ignores all temporal information) already achieves over 60% top-1 on Kinetics-400. This means a model can score well on Kinetics without understanding motion or temporal dynamics at all — it just needs to be a good image classifier applied to video frames.</p>
+
+      <h3>Something-Something V2: Temporal Reasoning</h3>
+
+      <p>Something-Something V2 (SSv2) is the antidote to frame bias. The dataset contains 220,847 short clips of humans performing 174 fine-grained actions with everyday objects: "pushing something from left to right" versus "pushing something from right to left", "pretending to put something on a surface" versus "putting something on a surface". These categories are visually indistinguishable in any single frame — the difference is entirely in the motion trajectory.</p>
+
+      <p>A frame-sampling baseline on SSv2 achieves barely 30% accuracy, compared to over 60% on Kinetics. This gap is the temporal reasoning gap, and it is where video transformers with factorized spatiotemporal attention (Chapter 21) earn their keep. Models that process temporal structure — capturing how objects move relative to each other over time — achieve 70%+ on SSv2, demonstrating genuine video understanding.</p>
+
+      <h3>AVA: Spatiotemporal Action Localization</h3>
+
+      <p>AVA goes beyond classification to localization: for each frame in 430 movie clips, annotators labeled bounding boxes around every person and tagged each person with one or more of 80 atomic actions (standing, sitting, talking, drinking, etc.). The metric is frame-level mAP at IoU threshold 0.5.</p>
+
+      <p>AVA is hard because multiple people can perform different actions simultaneously in the same frame, and actions are atomic (a person can simultaneously be "standing" and "talking on phone"). Recent work like YOLO-Act (2025) achieved a +28.18 mAP improvement over previous state-of-the-art LART, demonstrating that the benchmark is far from saturated — especially for rare action categories and complex multi-person interactions.</p>
+
+      <h3>Egocentric Benchmarks: EgoSchema and EgoPlan</h3>
+
+      <p>Egocentric video — shot from a head-mounted camera — represents the next frontier for embodied AI. EgoSchema provides 5,000+ human-curated multiple-choice questions over 250 hours of Ego4D video. Each question requires watching a three-minute clip and selecting the correct answer from five options. The results are stark: the best models achieve less than 33% accuracy, while random chance is 20% and human performance is 76%. The gap — 43 percentage points between models and humans — is the largest on any video benchmark, indicating that long-form egocentric understanding remains deeply unsolved.</p>
+
+      <p>EgoPlan-Bench2 pushes further into planning: given an egocentric video of a task in progress, predict the next action. The benchmark spans 4 domains (cooking, cleaning, crafting, repair) and 24 scenarios, testing whether models can connect visual observation with action planning. EASG-Bench (2025) adds structured reasoning by generating question-answer pairs from spatio-temporally grounded scene graphs that capture relationships between the camera wearer and objects.</p>
+
+      <h3>Video Question Answering</h3>
+
+      <p>ActivityNet QA and MSRVTT test open-ended video question answering — generating natural language answers to questions about video content. ActivityNet QA asks questions about 5,800 long YouTube videos (average 2 minutes), while MSRVTT covers 10,000 shorter clips with more diverse visual content. These benchmarks blend video understanding with language generation, making them a natural bridge between vision-only evaluation (this chapter) and multimodal evaluation (Chapter 36).</p>
+    </section>
+
+    <!-- ============================================================
+         SECTION 4: IMAGE GENERATION METRICS
+         ============================================================ -->
+    <section class="chapter-section" id="image-generation-metrics">
+      <h2>Image Generation Metrics</h2>
+
+      <p>Evaluating whether a generated image is "good" is fundamentally different from evaluating whether a classification is correct. There is no single right answer — a good image must be realistic, diverse, and faithful to its conditioning signal (text prompt, class label, or input image). The field has relied heavily on a single metric, FID, for nearly seven years. That reliance is now cracking under scrutiny.</p>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 320" xmlns="http://www.w3.org/2000/svg">
+          <text x="400" y="28" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="600" fill="#1A1A18">How FID Works — and Why It Breaks</text>
+
+          <!-- Left panel: The Assumption -->
+          <rect x="30" y="50" width="350" height="30" rx="5" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="205" y="70" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#0F6E56">The FID Assumption</text>
+
+          <!-- Gaussian blobs -->
+          <ellipse cx="140" cy="165" rx="80" ry="55" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1.5" opacity="0.7"/>
+          <text x="140" y="145" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#0F6E56">Real images</text>
+          <text x="140" y="160" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#5C5B56">μᵣ, Σᵣ</text>
+
+          <ellipse cx="280" cy="165" rx="80" ry="55" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5" opacity="0.7"/>
+          <text x="280" y="145" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#534AB7">Generated</text>
+          <text x="280" y="160" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#5C5B56">μ_g, Σ_g</text>
+
+          <!-- Overlap region -->
+          <text x="210" y="190" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="20" font-weight="300" fill="#B4B2A9">↔</text>
+          <text x="210" y="210" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">Fréchet distance</text>
+
+          <text x="205" y="250" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#5C5B56">Both distributions are Gaussian ✓</text>
+          <text x="205" y="265" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#0F6E56">FID = clean, interpretable distance</text>
+
+          <!-- Divider -->
+          <line x1="400" y1="50" x2="400" y2="290" stroke="#E5E3DC" stroke-width="1" stroke-dasharray="5 4"/>
+
+          <!-- Right panel: The Reality -->
+          <rect x="420" y="50" width="350" height="30" rx="5" fill="#FAECE7" stroke="#F0997B" stroke-width="1"/>
+          <text x="595" y="70" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#993C1D">The Reality</text>
+
+          <!-- Multimodal, non-Gaussian blobs -->
+          <ellipse cx="510" cy="140" rx="50" ry="30" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1" opacity="0.6"/>
+          <ellipse cx="560" cy="185" rx="35" ry="40" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1" opacity="0.6"/>
+          <ellipse cx="490" cy="200" rx="25" ry="20" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1" opacity="0.6"/>
+
+          <ellipse cx="640" cy="135" rx="55" ry="25" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1" opacity="0.6"/>
+          <ellipse cx="680" cy="190" rx="40" ry="35" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1" opacity="0.6"/>
+          <ellipse cx="610" cy="210" rx="30" ry="18" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1" opacity="0.6"/>
+
+          <text x="530" y="155" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#0F6E56">Real</text>
+          <text x="660" y="155" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#534AB7">Gen</text>
+
+          <text x="595" y="255" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#5C5B56">Features are multimodal, heavy-tailed ✗</text>
+          <text x="595" y="270" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#993C1D">FID can be misleading or contradictory</text>
+
+          <!-- Bottom note -->
+          <text x="400" y="305" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">Inception-v3 feature space is not Gaussian — FID's core assumption is violated</text>
+        </svg>
+        <figcaption>Figure 24.4 — FID assumes both real and generated image features form Gaussian distributions in Inception-v3 feature space (left). In reality, these features are multimodal and heavy-tailed (right), which means FID can rank generators incorrectly — especially when sample sizes are small or the domain shifts from natural images.</figcaption>
+      </figure>
+
+      <h3>FID: The Standard and Its Limitations</h3>
+
+      <p>The Fréchet Inception Distance computes the Fréchet distance between two multivariate Gaussians fitted to Inception-v3 features of real and generated images. Given real features with mean $\mu_r$ and covariance $\Sigma_r$, and generated features with mean $\mu_g$ and covariance $\Sigma_g$, FID is (this involves matrix multiplication $\Sigma_r \Sigma_g$ and a matrix square root):</p>
+
+      $$\text{FID} = \|\mu_r - \mu_g\|_2^2 + \text{Tr}\!\left(\Sigma_r + \Sigma_g - 2(\Sigma_r \Sigma_g)^{1/2}\right)$$
+
+      <p>where $\|\mu_r - \mu_g\|_2^2$ is the squared Euclidean distance between means (scalar result from the dot product $(\mu_r - \mu_g)^\top (\mu_r - \mu_g)$, yielding a scalar), $\text{Tr}$ is the matrix trace, $\Sigma_r \Sigma_g$ is the matrix product (matrix multiply, $\mathbb{R}^{d \times d} \times \mathbb{R}^{d \times d} \to \mathbb{R}^{d \times d}$ where $d = 2048$ for Inception-v3), and $(\cdot)^{1/2}$ is the matrix square root. Lower FID means the generated distribution is closer to the real one.</p>
+
+      <div class="callout callout-warning">
+        <div class="callout-title">Warning</div>
+        <p>FID is the Fréchet distance between two Gaussians fitted to Inception-v3 features — a network trained on ImageNet in 2015. When the features are not Gaussian (they rarely are), when the sample size is small (FID₅₀ₖ and FID₁₀ₖ can differ by over 10 points), or when the domain shifts from natural images, FID can be misleading or even contradictory. A model with lower FID is not necessarily better — it may just be closer to the biases of the Inception feature space.</p>
+      </div>
+
+      <p>Despite these limitations, FID remains the most widely reported number. DiT (Diffusion Transformer) achieves an FID of 1.73 on class-conditional ImageNet-256 generation — a score so low that the remaining gap may reflect Inception-v3's feature limitations more than the generator's quality. ViT-5 as a diffusion backbone consistently outperforms both DiT and SiT in FID, IS (Inception Score), precision, and recall.</p>
+
+      <h3>Beyond FID: CMMD, GenEval, DreamSim</h3>
+
+      <p>Three alternatives address FID's weaknesses from different angles. CMMD (CLIP Maximum Mean Discrepancy) replaces both the Gaussian assumption and the Inception backbone: it uses CLIP features (which generalize better across domains) and measures distribution distance with kernel MMD, which does not assume any parametric form. CMMD produces more stable rankings across sample sizes and better reflects human quality judgments.</p>
+
+      <p>GenEval takes a completely different approach: instead of comparing distributions, it tests whether generated images correctly compose visual elements. Given a prompt like "a red cube to the left of a blue sphere," GenEval uses an object detection model to verify: is there a red cube? A blue sphere? Is the cube to the left? This compositional evaluation catches failures that FID misses entirely — a generator can produce realistic textures (low FID) while systematically failing at spatial reasoning.</p>
+
+      <p>DreamSim evaluates perceptual similarity between image pairs, trained on human similarity judgments. Unlike FID (which compares sets), DreamSim compares individual images, making it useful for evaluating image-to-image tasks: style transfer, inpainting, super-resolution. The metric aligns with human perception better than older perceptual losses like LPIPS, particularly for subtle quality differences.</p>
+    </section>
+
+    <!-- ============================================================
+         SECTION 5: VIDEO GENERATION EVALUATION
+         ============================================================ -->
+    <section class="chapter-section" id="video-generation-evaluation">
+      <h2>Video Generation Evaluation</h2>
+
+      <p>If evaluating image generation is hard, evaluating video generation is harder by an order of magnitude. A good generated video must satisfy everything a good image does — realism, diversity, prompt fidelity — plus temporal coherence, motion smoothness, physical plausibility, and object permanence. No single metric captures all of these dimensions, and the field is rapidly building a layered evaluation stack.</p>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 380" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="ch24-arr3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+              <path d="M1 1L9 5L1 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </marker>
+          </defs>
+
+          <text x="400" y="28" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="600" fill="#1A1A18">The Video Generation Evaluation Stack</text>
+
+          <!-- Layer 4 (top): Human evaluation -->
+          <rect x="140" y="50" width="520" height="50" rx="8" fill="#534AB7" stroke="#534AB7"/>
+          <text x="400" y="72" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="600" fill="#FFFFFF">Human Evaluation</text>
+          <text x="400" y="90" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#AFA9EC">Pairwise comparison, Elo rating, expert assessment</text>
+
+          <!-- Layer 3: Multi-dimensional automated -->
+          <rect x="140" y="115" width="520" height="55" rx="8" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <text x="400" y="138" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="500" fill="#534AB7">Multi-Dimensional Automated Evaluation</text>
+          <text x="400" y="158" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#5C5B56">VBench (16→18 dims) · WorldScore · WCS · VLM-as-Judge</text>
+
+          <!-- Layer 2: Distribution metrics -->
+          <rect x="140" y="185" width="520" height="55" rx="8" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1.5"/>
+          <text x="400" y="208" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="500" fill="#0F6E56">Distribution Metrics</text>
+          <text x="400" y="228" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#5C5B56">FVD (I3D features) · JEDi (JEPA features) · CMMD</text>
+
+          <!-- Layer 1 (bottom): Per-frame metrics -->
+          <rect x="140" y="255" width="520" height="55" rx="8" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="1.5"/>
+          <text x="400" y="278" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="500" fill="#5C5B56">Per-Frame Metrics</text>
+          <text x="400" y="298" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">FID per frame · CLIP-SIM · SSIM · PSNR</text>
+
+          <!-- Left arrow: Human correlation -->
+          <line x1="100" y1="285" x2="100" y2="65" stroke="#534AB7" stroke-width="2" marker-end="url(#ch24-arr3)"/>
+          <text x="60" y="170" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#534AB7" transform="rotate(-90 60 170)">Human Correlation ↑</text>
+
+          <!-- Right arrow: Cost -->
+          <line x1="700" y1="65" x2="700" y2="285" stroke="#993C1D" stroke-width="2" marker-end="url(#ch24-arr3)"/>
+          <text x="740" y="170" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#993C1D" transform="rotate(90 740 170)">Cost &amp; Scalability ↑</text>
+
+          <!-- Bottom note -->
+          <text x="400" y="340" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">Each layer catches failures the layer below misses. Per-frame metrics ignore temporal coherence.</text>
+          <text x="400" y="356" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">Distribution metrics miss compositional errors. Only multi-dimensional evaluation + humans catch everything.</text>
+        </svg>
+        <figcaption>Figure 24.5 — The video generation evaluation stack. Lower layers are cheap and scalable but miss temporal and compositional failures. Higher layers catch more but cost more. The trend in 2024–2026 is moving from per-frame metrics toward multi-dimensional automated evaluation (VBench-2.0, WorldScore) that approximates human judgment without human cost.</figcaption>
+      </figure>
+
+      <h3>FVD (Fréchet Video Distance)</h3>
+
+      <p>FVD extends FID to video by replacing the 2D Inception-v3 backbone with an I3D (Inflated 3D ConvNet) that processes short video clips. The formula is identical to FID — Fréchet distance between two Gaussians in I3D feature space — but inherits all of FID's problems and adds new ones. I3D features are surprisingly insensitive to temporal distortions: shuffling frames or reversing playback changes FVD by less than expected, meaning FVD can give a good score to temporally incoherent videos as long as each frame looks realistic.</p>
+
+      <h3>FID per Frame and CLIP-SIM</h3>
+
+      <p>Two simpler metrics provide complementary signals. FID per frame computes standard image FID on each generated frame independently, capturing per-frame quality while ignoring temporal coherence entirely. CLIP-SIM measures how well each frame matches its text prompt by computing the cosine similarity between CLIP's text and image embeddings (dot product $e_{\text{text}}^\top e_{\text{image}}$, where $e_{\text{text}}, e_{\text{image}} \in \mathbb{R}^{512}$, yielding a scalar between -1 and 1), then averaging over all frames.</p>
+
+      <p>The following code computes CLIP-SIM for a set of generated video frames against a text prompt.</p>
+
+<pre><code class="language-python">
+import torch
+import torch.nn.functional as F
+
+def compute_clip_sim(image_features: torch.Tensor,
+                     text_features: torch.Tensor) -> torch.Tensor:
+    """Compute CLIP-SIM between video frames and a text prompt.
+
+    Args:
+        image_features: CLIP image embeddings, (num_frames, embed_dim)
+        text_features:  CLIP text embedding, (1, embed_dim)
+    Returns:
+        mean_sim: average cosine similarity (scalar)
+    """
+    # Normalize to unit vectors
+    image_features = F.normalize(image_features, dim=-1)  # (num_frames, 512)
+    text_features = F.normalize(text_features, dim=-1)    # (1, 512)
+
+    # Cosine similarity = dot product of normalized vectors
+    # (num_frames, 512) @ (512, 1) -> (num_frames, 1)
+    similarities = image_features @ text_features.T       # matrix multiply
+    return similarities.mean()                            # average over frames
+</code></pre>
+
+      <p>Neither metric captures temporal coherence. A video that repeats the same perfect frame 60 times would score excellently on both FID-per-frame and CLIP-SIM while being completely static. This is why distribution and multi-dimensional metrics exist.</p>
+
+      <h3>JEDi: A Better FVD</h3>
+
+      <p>JEDi (JEPA Embedding Distance) replaces both components that make FVD unreliable. Instead of I3D features (which are insensitive to temporal distortions), JEDi uses features from a Joint Embedding Predictive Architecture (JEPA) — a self-supervised model that learns to predict missing temporal segments, forcing its features to encode genuine temporal structure. Instead of the Gaussian Fréchet distance, JEDi uses Maximum Mean Discrepancy (MMD) with a polynomial kernel, which handles multimodal distributions without assuming a parametric form.</p>
+
+      <p>The results are striking: JEDi achieves 34% better alignment with human quality judgments than FVD, while requiring only 16% of the video samples to reach a stable estimate. Where FVD needs 50,000 videos for reliable scores, JEDi needs roughly 8,000 — a substantial reduction in compute cost for model evaluation.</p>
+
+      <h3>VBench and VBench-2.0</h3>
+
+      <p>VBench (CVPR 2024) pioneered the multi-dimensional approach: instead of collapsing video quality into a single number, it decomposes evaluation into 16 dimensions — motion smoothness, subject consistency, background consistency, aesthetic quality, temporal flickering, dynamic degree, and more. Each dimension uses a specialized automated evaluator (a motion estimation model for smoothness, a re-identification model for subject consistency, etc.), and the per-dimension scores are calibrated against 4,776 human annotations.</p>
+
+      <p>VBench-2.0 (2025) extends this to 18 capabilities organized into five groups: Human Fidelity, Creativity, Controllability, Physics, and Commonsense. The Physics and Commonsense groups are new — they evaluate whether generated videos obey gravity, conservation of objects, and everyday causal relationships. VBench-2.0 integrates VLMs and LLMs as evaluators for the more abstract dimensions (creativity, commonsense), while retaining specialist detectors for the measurable ones (flicker, motion smoothness).</p>
+
+      <h3>WorldScore and WCS</h3>
+
+      <p>WorldScore (ICCV 2025) takes the multi-dimensional approach and applies it specifically to world generation models — systems like Sora and Cosmos that aim to generate physically coherent worlds, not just visually plausible clips. The World Consistency Score (WCS) decomposes world consistency into four interpretable sub-components: object permanence (do objects persist when occluded?), relation stability (do spatial relationships between objects stay consistent?), causal compliance (do effects follow causes?), and flicker penalty (does the visual quality remain stable frame-to-frame).</p>
+
+      <p>WCS is computed using open-source tools — object trackers for permanence, action recognizers for causal compliance, CLIP embeddings for relation stability, and optical flow for flicker. The sub-component weights are learned from human preference data, making WCS a human-calibrated automated metric. Unlike VBench's broad coverage, WCS focuses specifically on physical plausibility — the dimension where today's generators fail most visibly (cups floating through tables, shadows moving independently of objects).</p>
+
+      <h3>Sora Evaluation and Ad-Hoc Expert Assessment</h3>
+
+      <p>When OpenAI released Sora in early 2024, no standardized benchmark existed for evaluating minute-long physically coherent video generation. Evaluation was ad-hoc: expert reviewers assessed physical plausibility, prompt fidelity, and visual quality through subjective rating. This created a reproducibility problem — different reviewers, different prompts, different conclusions.</p>
+
+      <p>The rapid development of VBench-2.0 and WorldScore is a direct response: providing standardized, automated frameworks so that the next generation of long-form video generators can be evaluated consistently. The pattern repeats from image generation: breakthrough models arrive before adequate evaluation, ad-hoc expert assessment fills the gap, and the community builds standardized benchmarks in response. The lag between model capability and evaluation capability is a structural feature of the field.</p>
+    </section>
+
+    <!-- ============================================================
+         SECTION 6: EFFICIENCY EVALUATION
+         ============================================================ -->
+    <section class="chapter-section" id="efficiency-evaluation">
+      <h2>Efficiency Evaluation</h2>
+
+      <p>A model that achieves state-of-the-art accuracy but cannot run within a latency budget is useless for deployment. Efficiency evaluation answers a different question from accuracy benchmarks: not "how well does this model perform?" but "how much does that performance cost?" The answer is more complex than counting FLOPs.</p>
+
+      <h3>FLOPs Are Not Latency</h3>
+
+      <p>The central lesson of efficiency evaluation is that theoretical compute (FLOPs) and real-world speed (latency, throughput) are weakly correlated for vision transformers. A ViT with 5.00 GFLOPs runs at 1.75 times the latency of a CNN with 4.95 GFLOPs on the same hardware. The reason is architectural: self-attention's memory access pattern is bandwidth-bound, not compute-bound. Moving $O(n^2)$ attention matrices between SRAM and HBM dominates wall-clock time, even though the arithmetic itself is fast.</p>
+
+      <p>Reporting FLOPs alone is misleading. A model with 50% fewer FLOPs may only be 10% faster if the bottleneck is memory bandwidth rather than arithmetic. For deployment decisions, the metrics that matter are:</p>
+
+      <ul>
+        <li><strong>Throughput</strong> (images/second) at a specific batch size and hardware target</li>
+        <li><strong>Latency</strong> (milliseconds) for single-sample inference — the deployment-relevant number for real-time applications</li>
+        <li><strong>Peak memory</strong> (GB) — determines whether the model fits on the target device</li>
+        <li><strong>Energy per inference</strong> (joules) — increasingly important for edge deployment and carbon accounting</li>
+      </ul>
+
+      <h3>EER and Holistic Efficiency Metrics</h3>
+
+      <p>The Efficient Error Rate (EER) attempts to collapse efficiency into a single number by combining error rate with multiple hardware-relevant factors: parameter count, bit-width (for quantized models), FLOPs, and model size on disk. The formula weights each factor, producing a composite score that penalizes large, slow, or memory-hungry models even if they achieve marginally better accuracy. While EER is not yet as standardized as AP or mIoU, it reflects a growing consensus that accuracy-only leaderboards are insufficient for real-world model selection.</p>
+
+      <p>Hardware-specific benchmarks like UL Procyon AI measure inference performance across GPU, CPU, and NPU configurations, providing vendor-neutral throughput numbers that account for driver optimization, memory layout, and operator fusion — factors invisible to FLOPs counting but critical for deployment.</p>
+    </section>
+
+    <!-- ============================================================
+         SECTION 7: VLM-AS-JUDGE
+         ============================================================ -->
+    <section class="chapter-section" id="vlm-as-judge">
+      <h2>VLM-as-Judge for Vision Evaluation</h2>
+
+      <p>The most ambitious development in vision evaluation is using vision-language models themselves as automated judges. Just as Chapter 15 described LLM-as-Judge for text evaluation, VLM-as-Judge applies multimodal models to evaluate visual outputs — rating image quality, assessing video coherence, and judging prompt fidelity according to customizable rubrics. The promise is scalable, flexible evaluation; the risk is that the judge inherits the biases and hallucinations of the model it is built on.</p>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 280" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="ch24-arr4" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+              <path d="M1 1L9 5L1 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </marker>
+          </defs>
+
+          <text x="400" y="28" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="600" fill="#1A1A18">VLM-as-Judge Pipeline</text>
+
+          <!-- Input: Generated image/video -->
+          <rect x="30" y="80" width="140" height="70" rx="6" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1.5"/>
+          <text x="100" y="108" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#0F6E56">Generated</text>
+          <text x="100" y="124" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#0F6E56">Image/Video</text>
+          <text x="100" y="140" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">+ text prompt</text>
+
+          <line x1="170" y1="115" x2="210" y2="115" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch24-arr4)"/>
+
+          <!-- Rubric -->
+          <rect x="30" y="175" width="140" height="55" rx="6" fill="#FAEEDA" stroke="#EF9F27" stroke-width="1.5"/>
+          <text x="100" y="198" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#854F0B">Custom Rubric</text>
+          <text x="100" y="215" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">Score criteria + levels</text>
+
+          <line x1="170" y1="200" x2="250" y2="160" stroke="#9C9A94" stroke-width="1" stroke-dasharray="4 3"/>
+
+          <!-- VLM Judge -->
+          <rect x="210" y="80" width="180" height="90" rx="8" fill="#534AB7" stroke="#534AB7"/>
+          <text x="300" y="115" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="600" fill="#FFFFFF">VLM Judge</text>
+          <text x="300" y="135" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#AFA9EC">Prometheus-Vision</text>
+          <text x="300" y="152" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#AFA9EC">UNIVERSE · VideoJudge</text>
+
+          <line x1="390" y1="125" x2="430" y2="125" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch24-arr4)"/>
+
+          <!-- Structured scores -->
+          <rect x="430" y="75" width="170" height="100" rx="6" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <text x="515" y="98" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#534AB7">Structured Scores</text>
+          <text x="515" y="116" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#5C5B56">Realism: 4/5</text>
+          <text x="515" y="131" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#5C5B56">Prompt fidelity: 3/5</text>
+          <text x="515" y="146" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#5C5B56">Coherence: 5/5</text>
+          <text x="515" y="163" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">+ natural language rationale</text>
+
+          <line x1="600" y1="125" x2="640" y2="125" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch24-arr4)"/>
+
+          <!-- Calibration -->
+          <rect x="640" y="80" width="130" height="90" rx="6" fill="#FAECE7" stroke="#F0997B" stroke-width="1.5"/>
+          <text x="705" y="108" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#993C1D">Human</text>
+          <text x="705" y="124" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#993C1D">Calibration</text>
+          <text x="705" y="146" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">Spot-check</text>
+          <text x="705" y="160" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">alignment</text>
+
+          <!-- Bottom annotation -->
+          <text x="400" y="260" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">VLM judges scale to thousands of evaluations per hour, but require human calibration to detect hallucinated scores.</text>
+        </svg>
+        <figcaption>Figure 24.6 — VLM-as-Judge pipeline. A generated image or video plus its text prompt and a custom scoring rubric are fed to a VLM evaluator. The judge produces structured per-dimension scores with natural language rationale, which are then spot-checked against human ratings to ensure calibration. The rubric is customizable — the same VLM can evaluate realism, creativity, or physics compliance depending on the criteria provided.</figcaption>
+      </figure>
+
+      <h3>Prometheus-Vision</h3>
+
+      <p>Prometheus-Vision is the first open-source VLM evaluator model that accepts user-defined scoring criteria. The system takes an image, an instruction, a candidate response (or generated image), and a rubric specifying what each score level means. It then produces a score and a natural-language rationale explaining the judgment. The Perception Collection — 150,000 annotated judgments across 5,000 images — provides the training data for this capability.</p>
+
+      <p>The key innovation is rubric customization. Rather than training separate evaluation models for realism, prompt fidelity, aesthetic quality, and physical plausibility, Prometheus-Vision uses a single model that adapts its evaluation criteria based on the input rubric. This makes it far more flexible than fixed-metric approaches, at the cost of potential inconsistency if the rubric is ambiguous.</p>
+
+      <h3>UNIVERSE and VideoJudge</h3>
+
+      <p>UNIVERSE (UNIfied Vision-language Evaluator for Rollouts in Simulated Environments) extends VLM-as-Judge to video world models. Given a generated video rollout from a world model (such as a self-driving simulator or a robotic manipulation environment), UNIVERSE evaluates physical plausibility, consistency, and task completion. Human studies across seven diverse environments confirm strong alignment with human judgments, suggesting that VLM judges can replace expensive human evaluation for rapid model iteration.</p>
+
+      <p>VideoJudge applies the same principle to creative video generation, evaluating dimensions like narrative coherence, visual appeal, and prompt adherence. The parallel with LLM-as-Judge (Chapter 15) is exact: both use a capable foundation model to evaluate a less capable model's outputs, trading evaluation cost for scale.</p>
+
+      <h3>Biases and Limitations</h3>
+
+      <p>VLM judges inherit every bias from their training data. A VLM trained predominantly on Western images may rate culturally unfamiliar scenes as lower quality. VLMs also hallucinate — the judge may "see" objects that are not present and score them positively, or miss errors that are plainly visible to a human. Current best practice treats VLM-as-Judge as a screening layer: use it for rapid evaluation during model development, but validate final results with human calibration. The VLM judge is a powerful microscope, not an infallible oracle.</p>
+    </section>
+
+    <!-- ============================================================
+         SECTION 8: HANDS-ON — COMPUTING DETECTION AND GENERATION METRICS
+         ============================================================ -->
+    <section class="chapter-section" id="hands-on-metrics">
+      <h2>Hands-On: Computing Detection and Generation Metrics</h2>
+
+      <p>Understanding evaluation metrics deeply requires implementing them. The two most important metrics in vision transformer evaluation — COCO-style AP and FID — are both surprisingly subtle in their implementation details.</p>
+
+      <h3>Computing COCO-Style AP</h3>
+
+      <p>The following pure PyTorch implementation computes Average Precision at a single IoU threshold, then averages across COCO's standard thresholds to produce the final AP score.</p>
+
+<pre><code class="language-python">
+import torch
+
+def compute_iou_matrix(pred_boxes: torch.Tensor,
+                       gt_boxes: torch.Tensor) -> torch.Tensor:
+    """Compute pairwise IoU between predicted and ground-truth boxes.
+    Args:
+        pred_boxes: (N, 4) in [x1, y1, x2, y2] format
+        gt_boxes:   (M, 4) in [x1, y1, x2, y2] format
+    Returns:
+        iou: (N, M) pairwise IoU matrix
+    """
+    # Intersection coordinates
+    x1 = torch.max(pred_boxes[:, None, 0], gt_boxes[None, :, 0])  # (N, M)
+    y1 = torch.max(pred_boxes[:, None, 1], gt_boxes[None, :, 1])
+    x2 = torch.min(pred_boxes[:, None, 2], gt_boxes[None, :, 2])
+    y2 = torch.min(pred_boxes[:, None, 3], gt_boxes[None, :, 3])
+
+    intersection = (x2 - x1).clamp(min=0) * (y2 - y1).clamp(min=0)  # (N, M)
+
+    area_pred = (pred_boxes[:, 2] - pred_boxes[:, 0]) * \
+                (pred_boxes[:, 3] - pred_boxes[:, 1])  # (N,)
+    area_gt = (gt_boxes[:, 2] - gt_boxes[:, 0]) * \
+              (gt_boxes[:, 3] - gt_boxes[:, 1])        # (M,)
+
+    union = area_pred[:, None] + area_gt[None, :] - intersection  # (N, M)
+    return intersection / (union + 1e-6)
+
+
+def compute_ap(pred_boxes: torch.Tensor, pred_scores: torch.Tensor,
+               gt_boxes: torch.Tensor,
+               iou_thresholds: list = None) -> dict:
+    """Compute COCO-style AP across multiple IoU thresholds.
+    Returns dict with 'AP', 'AP_50', 'AP_75'.
+    """
+    if iou_thresholds is None:
+        iou_thresholds = [0.50 + 0.05 * i for i in range(10)]  # 0.50:0.05:0.95
+
+    # Sort predictions by confidence (descending)
+    order = pred_scores.argsort(descending=True)
+    pred_boxes = pred_boxes[order]                                # (N, 4)
+
+    iou_matrix = compute_iou_matrix(pred_boxes, gt_boxes)         # (N, M)
+    aps = {}
+
+    for tau in iou_thresholds:
+        matched_gt = set()
+        tp = torch.zeros(len(pred_boxes))
+        for i in range(len(pred_boxes)):
+            ious = iou_matrix[i]                                  # (M,)
+            best_gt = ious.argmax().item()
+            if ious[best_gt] >= tau and best_gt not in matched_gt:
+                tp[i] = 1.0
+                matched_gt.add(best_gt)
+
+        # Precision-recall curve
+        tp_cumsum = tp.cumsum(dim=0)
+        precision = tp_cumsum / torch.arange(1, len(tp) + 1, dtype=torch.float32)
+        recall = tp_cumsum / max(len(gt_boxes), 1)
+
+        # 101-point interpolation
+        recall_levels = torch.linspace(0, 1, 101)
+        interp_prec = torch.zeros(101)
+        for j, r in enumerate(recall_levels):
+            mask = recall >= r
+            interp_prec[j] = precision[mask].max() if mask.any() else 0.0
+        aps[f"AP_{int(tau*100)}"] = interp_prec.mean().item()
+
+    aps["AP"] = sum(aps[f"AP_{int(t*100)}"] for t in iou_thresholds) / len(iou_thresholds)
+    return aps
+</code></pre>
+
+      <p>Look at the IoU computation closely. The intersection area uses element-wise operations on coordinate tensors ($\odot$ is implicit in the `*` between clamped width and height, both tensors of shape $(N, M)$). The greedy matching loop assigns each prediction to its best-overlapping unmatched ground truth — this greedy strategy is what makes AP sensitive to prediction ordering by confidence.</p>
+
+      <h3>Computing FID</h3>
+
+      <p>The following implementation computes FID given two sets of features already extracted from a backbone network. The subtle part is the matrix square root, which we compute via eigendecomposition.</p>
+
+<pre><code class="language-python">
+import torch
+
+def compute_fid(features_real: torch.Tensor,
+                features_gen: torch.Tensor) -> float:
+    """Compute Frechet Inception Distance between two feature sets.
+    Args:
+        features_real: (N, d) features from real images
+        features_gen:  (M, d) features from generated images
+    Returns:
+        fid: scalar FID score
+    """
+    # Compute statistics
+    mu_r = features_real.mean(dim=0)                  # (d,)
+    mu_g = features_gen.mean(dim=0)                   # (d,)
+    sigma_r = torch.cov(features_real.T)              # (d, d)
+    sigma_g = torch.cov(features_gen.T)               # (d, d)
+
+    # Squared distance between means
+    diff = mu_r - mu_g                                # (d,)
+    mean_term = diff @ diff                           # dot product -> scalar
+
+    # Matrix square root of sigma_r @ sigma_g via eigendecomposition
+    product = sigma_r @ sigma_g                       # (d, d) matrix multiply
+    eigenvalues, eigenvectors = torch.linalg.eigh(product)
+    eigenvalues = eigenvalues.clamp(min=0)            # numerical stability
+    sqrt_product = eigenvectors @ torch.diag(eigenvalues.sqrt()) @ eigenvectors.T
+
+    # FID = ||mu_r - mu_g||^2 + Tr(sigma_r + sigma_g - 2 * sqrt(sigma_r @ sigma_g))
+    trace_term = torch.trace(sigma_r + sigma_g - 2 * sqrt_product)
+    return (mean_term + trace_term).item()
+</code></pre>
+
+      <p>The matrix square root computation is where FID's Gaussian assumption lives in code. We compute $(\Sigma_r \Sigma_g)^{1/2}$ by eigendecomposing the matrix product $\Sigma_r \Sigma_g$ (matrix multiply, $\mathbb{R}^{d \times d} \times \mathbb{R}^{d \times d} \to \mathbb{R}^{d \times d}$), taking the square root of each eigenvalue, and reconstructing. When the product's eigenvalues are negative (which happens when the Gaussian assumption is violated), we clamp them to zero — a numerical band-aid over a statistical problem.</p>
+    </section>
+
+    <!-- ============================================================
+         SECTION 9: INTERACTIVE — IoU THRESHOLD EXPLORER
+         ============================================================ -->
+    <section class="chapter-section" id="interactive-iou-explorer">
+      <h2>Interactive: IoU Threshold Explorer</h2>
+
+      <p>The relationship between IoU threshold and detection "accuracy" is central to understanding AP. The following widget lets you drag a predicted bounding box over a ground-truth box and observe how the IoU score changes — and whether the prediction counts as a true positive at different AP thresholds.</p>
+
+      <figure class="diagram-figure diagram-interactive">
+        <div class="widget-container" id="widget-ch24-iou">
+          <style>
+            #widget-ch24-iou .controls { display: flex; gap: 1.5rem; padding: 0.5rem 0 0.5rem; flex-wrap: wrap; }
+            #widget-ch24-iou .controls label { font-family: system-ui, -apple-system, sans-serif; font-size: 13px; color: #5C5B56; display: flex; align-items: center; gap: 8px; }
+            #widget-ch24-iou canvas { border: 1px solid #E5E3DC; border-radius: 6px; cursor: grab; display: block; width: 100%; max-width: 760px; }
+            #widget-ch24-iou canvas:active { cursor: grabbing; }
+            #widget-ch24-iou .status-row { display: flex; gap: 2rem; margin-top: 0.5rem; flex-wrap: wrap; }
+            #widget-ch24-iou .status-item { font-family: system-ui, -apple-system, sans-serif; font-size: 13px; }
+            #widget-ch24-iou .status-label { color: #9C9A94; }
+            #widget-ch24-iou .status-val { font-weight: 600; }
+          </style>
+
+          <div class="controls">
+            <label>IoU Threshold:
+              <span id="ch24-thresh-display" style="font-weight:600; color:#534AB7; min-width:35px;">0.50</span>
+              <input type="range" min="0.1" max="0.95" step="0.05" value="0.50"
+                style="width:160px; accent-color:#534AB7;"
+                oninput="ch24UpdateThreshold(parseFloat(this.value))">
+            </label>
+          </div>
+
+          <canvas id="ch24-iou-canvas" width="760" height="300"></canvas>
+
+          <div class="status-row">
+            <div class="status-item"><span class="status-label">IoU: </span><span class="status-val" id="ch24-iou-val" style="color:#534AB7;">0.00</span></div>
+            <div class="status-item"><span class="status-label">AP₅₀: </span><span class="status-val" id="ch24-ap50-status">—</span></div>
+            <div class="status-item"><span class="status-label">AP₇₅: </span><span class="status-val" id="ch24-ap75-status">—</span></div>
+            <div class="status-item"><span class="status-label">At threshold: </span><span class="status-val" id="ch24-thresh-status">—</span></div>
+          </div>
+
+          <p style="font-family:system-ui, -apple-system, sans-serif; font-size:13px; color:#9C9A94; font-style:italic;
+                    padding:0.5rem 0 0.2rem;" id="ch24-observation">
+            Drag the purple predicted box over the green ground-truth box. Watch how IoU changes with overlap.
+          </p>
+        </div>
+
+        <script>
+          (function() {
+            var canvas = document.getElementById('ch24-iou-canvas');
+            var ctx = canvas.getContext('2d');
+            var gtBox = { x: 280, y: 80, w: 200, h: 140 };
+            var predBox = { x: 100, y: 60, w: 200, h: 140 };
+            var threshold = 0.50;
+            var dragging = false;
+            var dragOffX = 0, dragOffY = 0;
+
+            function computeIoU() {
+              var x1 = Math.max(predBox.x, gtBox.x);
+              var y1 = Math.max(predBox.y, gtBox.y);
+              var x2 = Math.min(predBox.x + predBox.w, gtBox.x + gtBox.w);
+              var y2 = Math.min(predBox.y + predBox.h, gtBox.y + gtBox.h);
+              var inter = Math.max(0, x2 - x1) * Math.max(0, y2 - y1);
+              var union = predBox.w * predBox.h + gtBox.w * gtBox.h - inter;
+              return union > 0 ? inter / union : 0;
+            }
+
+            function draw() {
+              var dpr = window.devicePixelRatio || 1;
+              var rect = canvas.getBoundingClientRect();
+              canvas.width = rect.width * dpr;
+              canvas.height = 300 * dpr;
+              ctx.scale(dpr, dpr);
+              canvas.style.height = '300px';
+
+              var scaleX = rect.width / 760;
+              ctx.clearRect(0, 0, rect.width, 300);
+
+              ctx.save();
+              ctx.scale(scaleX, 1);
+
+              // Ground truth box
+              ctx.fillStyle = 'rgba(225, 245, 238, 0.6)';
+              ctx.fillRect(gtBox.x, gtBox.y, gtBox.w, gtBox.h);
+              ctx.strokeStyle = '#0F6E56';
+              ctx.lineWidth = 2;
+              ctx.strokeRect(gtBox.x, gtBox.y, gtBox.w, gtBox.h);
+              ctx.font = '500 12px system-ui, -apple-system, sans-serif';
+              ctx.fillStyle = '#0F6E56';
+              ctx.fillText('Ground Truth', gtBox.x + 6, gtBox.y - 6);
+
+              // Intersection highlight
+              var ix1 = Math.max(predBox.x, gtBox.x);
+              var iy1 = Math.max(predBox.y, gtBox.y);
+              var ix2 = Math.min(predBox.x + predBox.w, gtBox.x + gtBox.w);
+              var iy2 = Math.min(predBox.y + predBox.h, gtBox.y + gtBox.h);
+              if (ix2 > ix1 && iy2 > iy1) {
+                ctx.fillStyle = 'rgba(175, 169, 236, 0.35)';
+                ctx.fillRect(ix1, iy1, ix2 - ix1, iy2 - iy1);
+              }
+
+              // Predicted box
+              var iou = computeIoU();
+              ctx.fillStyle = 'rgba(238, 237, 254, 0.4)';
+              ctx.fillRect(predBox.x, predBox.y, predBox.w, predBox.h);
+              ctx.strokeStyle = '#534AB7';
+              ctx.lineWidth = 2.5;
+              ctx.setLineDash([6, 3]);
+              ctx.strokeRect(predBox.x, predBox.y, predBox.w, predBox.h);
+              ctx.setLineDash([]);
+              ctx.fillStyle = '#534AB7';
+              ctx.fillText('Prediction (drag me)', predBox.x + 6, predBox.y - 6);
+
+              // IoU display in center
+              var cx = (Math.max(predBox.x, gtBox.x) + Math.min(predBox.x + predBox.w, gtBox.x + gtBox.w)) / 2;
+              var cy = (Math.max(predBox.y, gtBox.y) + Math.min(predBox.y + predBox.h, gtBox.y + gtBox.h)) / 2;
+              if (ix2 > ix1 && iy2 > iy1) {
+                ctx.font = '700 18px system-ui, -apple-system, sans-serif';
+                ctx.fillStyle = iou >= threshold ? '#0F6E56' : '#993C1D';
+                ctx.textAlign = 'center';
+                ctx.fillText('IoU: ' + iou.toFixed(3), cx, cy + 6);
+                ctx.textAlign = 'left';
+              }
+
+              ctx.restore();
+
+              // Update status
+              document.getElementById('ch24-iou-val').textContent = iou.toFixed(3);
+              document.getElementById('ch24-iou-val').style.color = iou >= threshold ? '#0F6E56' : '#993C1D';
+              document.getElementById('ch24-ap50-status').textContent = iou >= 0.50 ? '✓ TP' : '✗ FP';
+              document.getElementById('ch24-ap50-status').style.color = iou >= 0.50 ? '#0F6E56' : '#993C1D';
+              document.getElementById('ch24-ap75-status').textContent = iou >= 0.75 ? '✓ TP' : '✗ FP';
+              document.getElementById('ch24-ap75-status').style.color = iou >= 0.75 ? '#0F6E56' : '#993C1D';
+              document.getElementById('ch24-thresh-status').textContent = iou >= threshold ? '✓ TP' : '✗ FP';
+              document.getElementById('ch24-thresh-status').style.color = iou >= threshold ? '#0F6E56' : '#993C1D';
+
+              if (iou < 0.01) {
+                document.getElementById('ch24-observation').textContent = 'No overlap — this prediction would be a false positive at any threshold.';
+              } else if (iou < 0.50) {
+                document.getElementById('ch24-observation').textContent = 'IoU ' + iou.toFixed(2) + ' — too low for even AP₅₀. The model found the approximate region but the localization is poor.';
+              } else if (iou < 0.75) {
+                document.getElementById('ch24-observation').textContent = 'IoU ' + iou.toFixed(2) + ' — passes AP₅₀ but fails AP₇₅. This is "coarse detection" — good enough for counting objects, not for precise segmentation.';
+              } else if (iou < 0.90) {
+                document.getElementById('ch24-observation').textContent = 'IoU ' + iou.toFixed(2) + ' — passes both AP₅₀ and AP₇₅. Strong localization. This prediction contributes to the COCO AP score.';
+              } else {
+                document.getElementById('ch24-observation').textContent = 'IoU ' + iou.toFixed(2) + ' — near-perfect overlap. This passes even the strictest thresholds. Excellent localization.';
+              }
+            }
+
+            canvas.addEventListener('mousedown', function(e) {
+              var rect = canvas.getBoundingClientRect();
+              var scaleX = 760 / rect.width;
+              var mx = (e.clientX - rect.left) * scaleX;
+              var my = e.clientY - rect.top;
+              if (mx >= predBox.x && mx <= predBox.x + predBox.w &&
+                  my >= predBox.y && my <= predBox.y + predBox.h) {
+                dragging = true;
+                dragOffX = mx - predBox.x;
+                dragOffY = my - predBox.y;
+              }
+            });
+            canvas.addEventListener('mousemove', function(e) {
+              if (!dragging) return;
+              var rect = canvas.getBoundingClientRect();
+              var scaleX = 760 / rect.width;
+              var mx = (e.clientX - rect.left) * scaleX;
+              var my = e.clientY - rect.top;
+              predBox.x = Math.max(0, Math.min(760 - predBox.w, mx - dragOffX));
+              predBox.y = Math.max(0, Math.min(300 - predBox.h, my - dragOffY));
+              draw();
+            });
+            canvas.addEventListener('mouseup', function() { dragging = false; });
+            canvas.addEventListener('mouseleave', function() { dragging = false; });
+
+            // Touch support
+            canvas.addEventListener('touchstart', function(e) {
+              e.preventDefault();
+              var rect = canvas.getBoundingClientRect();
+              var scaleX = 760 / rect.width;
+              var t = e.touches[0];
+              var mx = (t.clientX - rect.left) * scaleX;
+              var my = t.clientY - rect.top;
+              if (mx >= predBox.x && mx <= predBox.x + predBox.w &&
+                  my >= predBox.y && my <= predBox.y + predBox.h) {
+                dragging = true;
+                dragOffX = mx - predBox.x;
+                dragOffY = my - predBox.y;
+              }
+            }, {passive: false});
+            canvas.addEventListener('touchmove', function(e) {
+              if (!dragging) return;
+              e.preventDefault();
+              var rect = canvas.getBoundingClientRect();
+              var scaleX = 760 / rect.width;
+              var t = e.touches[0];
+              var mx = (t.clientX - rect.left) * scaleX;
+              var my = t.clientY - rect.top;
+              predBox.x = Math.max(0, Math.min(760 - predBox.w, mx - dragOffX));
+              predBox.y = Math.max(0, Math.min(300 - predBox.h, my - dragOffY));
+              draw();
+            }, {passive: false});
+            canvas.addEventListener('touchend', function() { dragging = false; });
+
+            window.ch24UpdateThreshold = function(val) {
+              threshold = val;
+              document.getElementById('ch24-thresh-display').textContent = val.toFixed(2);
+              draw();
+            };
+
+            // Initial draw
+            draw();
+            window.addEventListener('resize', draw);
+          })();
+        </script>
+
+        <figcaption>Figure 24.7 — Interactive: Drag the purple predicted bounding box over the green ground-truth box. The IoU score updates in real time. Use the threshold slider to see how the same prediction can be a true positive at AP₅₀ but a false positive at AP₇₅ — illustrating why COCO averages across 10 thresholds.</figcaption>
+      </figure>
+    </section>
+
+    <!-- ============================================================
+         SUMMARY BAR CHART
+         ============================================================ -->
+    <section class="chapter-section" id="sota-landscape">
+      <h2>The 2026 Vision Evaluation Landscape</h2>
+
+      <p>The following chart summarizes where vision transformers stand across the major evaluation axes as of early 2026. The bars show representative best-model performance — but the colors tell the real story: green tasks are approaching saturation, amber tasks show steady progress, and coral tasks remain deeply unsolved.</p>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 360" xmlns="http://www.w3.org/2000/svg">
+          <text x="400" y="28" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="600" fill="#1A1A18">Vision Transformer SOTA Across Tasks (2026)</text>
+
+          <!-- Y-axis -->
+          <line x1="200" y1="60" x2="200" y2="310" stroke="#C8C6BE" stroke-width="1"/>
+          <text x="190" y="65" text-anchor="end" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">100%</text>
+          <text x="190" y="127" text-anchor="end" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">75%</text>
+          <text x="190" y="190" text-anchor="end" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">50%</text>
+          <text x="190" y="252" text-anchor="end" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">25%</text>
+          <text x="190" y="312" text-anchor="end" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">0%</text>
+
+          <!-- Grid lines -->
+          <line x1="200" y1="65" x2="760" y2="65" stroke="#E5E3DC" stroke-width="0.5" stroke-dasharray="4 3"/>
+          <line x1="200" y1="127" x2="760" y2="127" stroke="#E5E3DC" stroke-width="0.5" stroke-dasharray="4 3"/>
+          <line x1="200" y1="190" x2="760" y2="190" stroke="#E5E3DC" stroke-width="0.5" stroke-dasharray="4 3"/>
+          <line x1="200" y1="252" x2="760" y2="252" stroke="#E5E3DC" stroke-width="0.5" stroke-dasharray="4 3"/>
+
+          <!-- Human baseline line -->
+          <line x1="200" y1="78" x2="760" y2="78" stroke="#B4B2A9" stroke-width="1" stroke-dasharray="6 3"/>
+          <text x="762" y="78" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#9C9A94">~95% human</text>
+
+          <!-- Bars: ImageNet (92%), COCO AP (60%), ADE20K mIoU (58%), K400 (88%), SSv2 (75%), EgoSchema (33%) -->
+          <!-- Scale: 0% at y=310, 100% at y=60. Each % = 2.5px -->
+
+          <!-- ImageNet 92% — saturating (teal) -->
+          <rect x="220" y="80" width="70" height="230" rx="4" fill="#0F6E56" opacity="0.85"/>
+          <text x="255" y="72" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#0F6E56">92%</text>
+          <text x="255" y="328" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#5C5B56">ImageNet</text>
+          <text x="255" y="342" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#9C9A94">Top-1</text>
+
+          <!-- COCO AP 60% — progressing (amber) -->
+          <rect x="320" y="160" width="70" height="150" rx="4" fill="#854F0B" opacity="0.85"/>
+          <text x="355" y="152" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#854F0B">60 AP</text>
+          <text x="355" y="328" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#5C5B56">COCO</text>
+          <text x="355" y="342" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#9C9A94">Det AP</text>
+
+          <!-- ADE20K 58% — progressing (amber) -->
+          <rect x="420" y="165" width="70" height="145" rx="4" fill="#854F0B" opacity="0.75"/>
+          <text x="455" y="157" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#854F0B">58%</text>
+          <text x="455" y="328" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#5C5B56">ADE20K</text>
+          <text x="455" y="342" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#9C9A94">mIoU</text>
+
+          <!-- Kinetics-400 88% — near saturation (teal-ish) -->
+          <rect x="520" y="90" width="70" height="220" rx="4" fill="#0F6E56" opacity="0.7"/>
+          <text x="555" y="82" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#0F6E56">88%</text>
+          <text x="555" y="328" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#5C5B56">K-400</text>
+          <text x="555" y="342" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#9C9A94">Top-1</text>
+
+          <!-- SSv2 75% — progressing (amber) -->
+          <rect x="620" y="122" width="70" height="188" rx="4" fill="#854F0B" opacity="0.8"/>
+          <text x="655" y="114" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#854F0B">75%</text>
+          <text x="655" y="328" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#5C5B56">SSv2</text>
+          <text x="655" y="342" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#9C9A94">Top-1</text>
+
+          <!-- EgoSchema 33% — unsolved (coral) -->
+          <rect x="720" y="228" width="35" height="82" rx="4" fill="#993C1D" opacity="0.9"/>
+          <text x="738" y="220" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#993C1D">33%</text>
+          <text x="738" y="328" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="500" fill="#5C5B56">Ego</text>
+          <text x="738" y="342" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#9C9A94">Schema</text>
+
+          <!-- Legend -->
+          <rect x="220" y="355" width="10" height="10" rx="2" fill="#0F6E56"/>
+          <text x="235" y="364" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#5C5B56">Saturating</text>
+          <rect x="320" y="355" width="10" height="10" rx="2" fill="#854F0B"/>
+          <text x="335" y="364" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#5C5B56">Progressing</text>
+          <rect x="430" y="355" width="10" height="10" rx="2" fill="#993C1D"/>
+          <text x="445" y="364" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#5C5B56">Unsolved</text>
+        </svg>
+        <figcaption>Figure 24.8 — Vision transformer state of the art across major benchmarks (2026). ImageNet classification and Kinetics action recognition are near saturation (green). Detection, segmentation, and temporal reasoning show steady progress (amber). Egocentric long-form video understanding remains deeply unsolved (coral) — a 43-point gap between models and humans on EgoSchema.</figcaption>
+      </figure>
+
+      <p>The landscape reveals a clear pattern: benchmarks that can be solved primarily through appearance features (ImageNet, Kinetics) are saturating. Benchmarks that require precise spatial reasoning (COCO AP, ADE20K mIoU) are improving steadily. And benchmarks that demand temporal understanding, planning, and long-form reasoning (EgoSchema, EgoPlan) remain wide open. The next generation of vision transformers will be defined not by another percentage point on ImageNet, but by closing the gap on the tasks that require genuine visual understanding — understanding that unfolds over time, respects physics, and generalizes across the diversity of the real world.</p>
+    </section>
+
+  </article>
+
+  <footer class="chapter-footer">
+    <div class="footer-nav">
+      <a href="ch23c.html">← Previous: Training Video Generation Transformers</a>
+      <a href="ch25.html">Next: Speech Recognition Transformers →</a>
+    </div>
+  </footer>
+
+</body>
+</html>

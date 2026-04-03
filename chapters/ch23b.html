@@ -1,0 +1,788 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Chapter 23b: Training Image Generation Transformers — Transformer Research Book</title>
+  <link rel="stylesheet" href="../assets/style.css">
+  <link rel="stylesheet" href="../assets/math.css">
+  <link rel="stylesheet" href="../assets/prism.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"
+    onload="renderMathInElement(document.body, {
+      delimiters: [{left: '$$', right: '$$', display: true},{left: '$', right: '$', display: false}]
+    })"></script>
+  <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/prism.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-python.min.js"></script>
+</head>
+<body>
+  <nav class="chapter-nav">
+    <a href="../index.html" class="nav-home">← Table of Contents</a>
+    <span class="nav-chapter">Chapter 23b</span>
+    <div style="display:flex; align-items:center; gap:1rem;">
+      <button class="theme-toggle" onclick="toggleTheme()" aria-label="Toggle dark mode">
+        <span class="icon-moon">&#9789;</span><span class="icon-sun">&#9788;</span>
+      </button>
+      <a href="ch23c.html" class="nav-next">Next Chapter →</a>
+    </div>
+  </nav>
+  <script>
+    function toggleTheme(){document.documentElement.classList.toggle('dark');localStorage.setItem('theme',document.documentElement.classList.contains('dark')?'dark':'light');}
+    if(localStorage.getItem('theme')==='dark')document.documentElement.classList.add('dark');
+  </script>
+
+  <article class="chapter">
+
+    <header class="chapter-header">
+      <div class="chapter-number">Chapter 23b</div>
+      <h1 class="chapter-title">Training Image Generation Transformers</h1>
+      <p class="chapter-lead">Diffusion Transformers have replaced U-Nets as the dominant backbone for image generation, powering FLUX, Stable Diffusion 3.5, and SANA. But training a DiT is nothing like training a classifier — the loss landscape is different, the conditioning mechanisms are different, and the path from a trained model to a fast inference model requires an entirely separate distillation stage. This chapter walks through every step of the image generation training pipeline with complete PyTorch code: encoding images into latent space, training a DiT with rectified flow and classifier-free guidance, distilling a 50-step model into a 1-step generator, and training conditional adapters like ControlNet. Each recipe uses real data from HuggingFace datasets and produces a model you can sample from.</p>
+    </header>
+
+    <!-- ============================================================
+         SECTION 1: Latent Diffusion Fundamentals
+         ============================================================ -->
+    <section class="chapter-section" id="latent-diffusion-fundamentals">
+      <h2>Latent Diffusion Fundamentals for Transformers</h2>
+
+      <p>Generating a 512×512 image directly in pixel space requires a transformer to process 262,144 pixels — far too many tokens for self-attention. Latent diffusion solves this by compressing images into a much smaller latent space using a pretrained Variational Autoencoder (VAE), running the diffusion process in that compressed space, and decoding back to pixels only at the end. The compression ratio is dramatic: the standard SD VAE with a spatial downsampling factor $f = 8$ and 4 latent channels compresses a 512×512×3 image (786,432 values) into a 64×64×4 latent (16,384 values) — a 48× reduction.</p>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 240" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="ch23b-arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+              <path d="M1 1L9 5L1 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </marker>
+          </defs>
+          <text x="400" y="22" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="600" fill="#1A1A18">Latent Diffusion: Pixel Space → Latent Space → Pixel Space</text>
+
+          <!-- Pixel image -->
+          <rect x="30" y="55" width="120" height="120" rx="6" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1.5"/>
+          <text x="90" y="105" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#0F6E56">Image</text>
+          <text x="90" y="122" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">512×512×3</text>
+          <text x="90" y="138" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">786K values</text>
+
+          <line x1="150" y1="115" x2="190" y2="115" stroke="#534AB7" stroke-width="2" marker-end="url(#ch23b-arr)"/>
+
+          <!-- VAE Encoder -->
+          <rect x="195" y="75" width="100" height="80" rx="8" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <text x="245" y="108" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#534AB7">VAE</text>
+          <text x="245" y="124" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#534AB7">Encoder</text>
+          <text x="245" y="145" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#9C9A94">f=8, 4-ch</text>
+
+          <line x1="295" y1="115" x2="335" y2="115" stroke="#534AB7" stroke-width="2" marker-end="url(#ch23b-arr)"/>
+
+          <!-- Latent -->
+          <rect x="340" y="80" width="70" height="70" rx="6" fill="#534AB7" stroke="#534AB7"/>
+          <text x="375" y="108" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#FFFFFF">Latent</text>
+          <text x="375" y="124" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#AFA9EC">64×64×4</text>
+          <text x="375" y="140" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#AFA9EC">16K values</text>
+
+          <line x1="410" y1="115" x2="450" y2="115" stroke="#534AB7" stroke-width="2" marker-end="url(#ch23b-arr)"/>
+
+          <!-- DiT -->
+          <rect x="455" y="65" width="130" height="100" rx="8" fill="#FAEEDA" stroke="#EF9F27" stroke-width="1.5"/>
+          <text x="520" y="98" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#854F0B">DiT</text>
+          <text x="520" y="114" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#5C5B56">Denoise in</text>
+          <text x="520" y="128" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#5C5B56">latent space</text>
+          <text x="520" y="150" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#9C9A94">+ text/class cond</text>
+
+          <line x1="585" y1="115" x2="625" y2="115" stroke="#534AB7" stroke-width="2" marker-end="url(#ch23b-arr)"/>
+
+          <!-- VAE Decoder -->
+          <rect x="630" y="75" width="100" height="80" rx="8" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <text x="680" y="108" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#534AB7">VAE</text>
+          <text x="680" y="124" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#534AB7">Decoder</text>
+
+          <!-- Compression ratio -->
+          <text x="375" y="195" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#534AB7">48× compression</text>
+          <text x="375" y="212" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">DiT attention operates on 64×64 = 4096 tokens instead of 512×512 = 262K pixels</text>
+        </svg>
+        <figcaption>Figure 23b.1 — Latent diffusion pipeline. A pretrained VAE encoder compresses a 512×512 image to a 64×64×4 latent (48× reduction). The Diffusion Transformer operates entirely in this compressed space. The VAE decoder reconstructs pixels from the denoised latent. The DiT never sees raw pixels.</figcaption>
+      </figure>
+
+      <h3>The SD VAE: Encoding and Decoding</h3>
+
+      <p>The standard Stable Diffusion VAE is a convolutional autoencoder trained with a combination of pixel reconstruction loss, perceptual loss (from a pretrained VGG), adversarial loss (patch discriminator), and KL regularization on the latent distribution. The encoder maps an image $x \in \mathbb{R}^{H \times W \times 3}$ to a distribution $q(z|x) = \mathcal{N}(\mu(x), \sigma^2(x))$, where $\mu$ and $\sigma$ are spatial feature maps of shape $\frac{H}{f} \times \frac{W}{f} \times C_z$. A latent sample is drawn as $z = \mu + \sigma \odot \epsilon$ (element-wise product between the learned standard deviation $\sigma \in \mathbb{R}^{h \times w \times C_z}$ and random noise $\epsilon \sim \mathcal{N}(0, I)$ of the same shape, known as the reparameterization trick). In practice, the latent is rescaled by a constant factor (0.18215 for the SD 1.x/2.x VAE) so that the initial latent distribution has approximately unit variance.</p>
+
+      <p>The following code demonstrates encoding images to latent space and decoding back, using ImageNet images loaded from HuggingFace datasets.</p>
+
+<pre><code class="language-python">
+import torch
+import torch.nn as nn
+from torchvision import transforms
+from datasets import load_dataset
+
+# --- Simplified VAE Encoder / Decoder ---
+class SimpleVAEEncoder(nn.Module):
+    """Downsample 3-channel image to 4-channel latent (f=8)."""
+    def __init__(self, in_ch=3, latent_ch=4):
+        super().__init__()
+        self.encoder = nn.Sequential(
+            nn.Conv2d(in_ch, 64, 3, stride=2, padding=1),    # H/2
+            nn.SiLU(),
+            nn.Conv2d(64, 128, 3, stride=2, padding=1),      # H/4
+            nn.SiLU(),
+            nn.Conv2d(128, 256, 3, stride=2, padding=1),     # H/8
+            nn.SiLU(),
+            nn.Conv2d(256, latent_ch * 2, 3, padding=1),     # mu + logvar
+        )
+
+    def forward(self, x):
+        h = self.encoder(x)                                   # (B, 8, H/8, W/8)
+        mu, logvar = h.chunk(2, dim=1)                        # each (B, 4, H/8, W/8)
+        std = (0.5 * logvar).exp()
+        z = mu + std * torch.randn_like(std)                  # reparameterization: μ + σ ⊙ ε
+        return z, mu, logvar                                  # z: (B, 4, H/8, W/8)
+
+class SimpleVAEDecoder(nn.Module):
+    """Upsample 4-channel latent back to 3-channel image."""
+    def __init__(self, latent_ch=4, out_ch=3):
+        super().__init__()
+        self.decoder = nn.Sequential(
+            nn.ConvTranspose2d(latent_ch, 256, 4, stride=2, padding=1),  # H/4
+            nn.SiLU(),
+            nn.ConvTranspose2d(256, 128, 4, stride=2, padding=1),        # H/2
+            nn.SiLU(),
+            nn.ConvTranspose2d(128, 64, 4, stride=2, padding=1),         # H
+            nn.SiLU(),
+            nn.Conv2d(64, out_ch, 3, padding=1),
+            nn.Tanh(),
+        )
+
+    def forward(self, z):
+        return self.decoder(z)                                # (B, 3, H, W)
+
+# --- Usage with HuggingFace datasets ---
+transform = transforms.Compose([
+    transforms.Resize(256), transforms.CenterCrop(256),
+    transforms.ToTensor(), transforms.Normalize([0.5]*3, [0.5]*3),
+])
+ds = load_dataset("imagenet-1k", split="train", streaming=True)
+
+encoder = SimpleVAEEncoder().cuda()
+decoder = SimpleVAEDecoder().cuda()
+
+for item in ds:
+    img = transform(item["image"].convert("RGB")).unsqueeze(0).cuda()  # (1, 3, 256, 256)
+    z, mu, logvar = encoder(img)                              # z: (1, 4, 32, 32)
+    recon = decoder(z)                                        # (1, 3, 256, 256)
+    # Loss: reconstruction + KL divergence
+    recon_loss = nn.functional.mse_loss(recon, img)
+    kl_loss = -0.5 * (1 + logvar - mu.pow(2) - logvar.exp()).sum() / img.size(0)
+    loss = recon_loss + 1e-6 * kl_loss                        # small KL weight
+    break  # demo: single step
+</code></pre>
+    </section>
+
+    <!-- ============================================================
+         SECTION 2: DiT and MMDiT Training
+         ============================================================ -->
+    <section class="chapter-section" id="dit-mmdit-training">
+      <h2>DiT and MMDiT Training</h2>
+
+      <p>Training a Diffusion Transformer follows the standard diffusion recipe: sample a clean data point $z_0$ from the VAE latent space, add noise at a random timestep $t$ to get $z_t$, predict the noise (or velocity), and minimize the prediction error. But the conditioning mechanism — how the model learns to use timestep, class label, or text information — is where DiT diverges from U-Net diffusion.</p>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 340" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="ch23b-arr2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+              <path d="M1 1L9 5L1 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </marker>
+          </defs>
+          <text x="400" y="22" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="600" fill="#1A1A18">DiT Training: One Forward Pass</text>
+
+          <!-- Clean latent -->
+          <rect x="30" y="60" width="100" height="60" rx="6" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1.5"/>
+          <text x="80" y="85" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#0F6E56">z₀</text>
+          <text x="80" y="102" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#9C9A94">clean latent</text>
+
+          <!-- Noise -->
+          <rect x="30" y="150" width="100" height="60" rx="6" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="1"/>
+          <text x="80" y="175" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#5C5B56">ε ~ N(0,I)</text>
+          <text x="80" y="195" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#9C9A94">random noise</text>
+
+          <!-- t -->
+          <rect x="30" y="235" width="100" height="40" rx="6" fill="#FAEEDA" stroke="#EF9F27" stroke-width="1"/>
+          <text x="80" y="260" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#854F0B">t ~ U(0,1)</text>
+
+          <!-- Interpolation -->
+          <line x1="130" y1="90" x2="180" y2="120" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch23b-arr2)"/>
+          <line x1="130" y1="180" x2="180" y2="140" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch23b-arr2)"/>
+          <rect x="185" y="105" width="120" height="50" rx="6" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <text x="245" y="126" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#534AB7">z_t = (1-t)z₀ + tε</text>
+          <text x="245" y="144" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#9C9A94">rectified flow</text>
+
+          <!-- Conditioning -->
+          <line x1="130" y1="255" x2="380" y2="165" stroke="#854F0B" stroke-width="1" stroke-dasharray="4 3"/>
+          <rect x="30" y="290" width="100" height="40" rx="6" fill="#FAEEDA" stroke="#EF9F27" stroke-width="1"/>
+          <text x="80" y="315" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#854F0B">text / class</text>
+          <line x1="130" y1="310" x2="380" y2="185" stroke="#854F0B" stroke-width="1" stroke-dasharray="4 3"/>
+
+          <!-- DiT -->
+          <line x1="305" y1="130" x2="370" y2="160" stroke="#534AB7" stroke-width="2" marker-end="url(#ch23b-arr2)"/>
+          <rect x="375" y="120" width="160" height="90" rx="8" fill="#534AB7" stroke="#534AB7"/>
+          <text x="455" y="150" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="600" fill="#FFFFFF">DiT</text>
+          <text x="455" y="170" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#AFA9EC">AdaLN-Zero blocks</text>
+          <text x="455" y="188" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#AFA9EC">t + cond → modulate</text>
+
+          <!-- Output: v_pred -->
+          <line x1="535" y1="165" x2="580" y2="165" stroke="#534AB7" stroke-width="2" marker-end="url(#ch23b-arr2)"/>
+          <rect x="585" y="140" width="90" height="50" rx="6" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <text x="630" y="163" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#534AB7">v_pred</text>
+          <text x="630" y="180" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#9C9A94">velocity</text>
+
+          <!-- Loss -->
+          <rect x="30" y="140" width="1" height="1" fill="none"/>
+          <line x1="630" y1="190" x2="630" y2="225" stroke="#993C1D" stroke-width="1.5" marker-end="url(#ch23b-arr2)"/>
+          <rect x="565" y="230" width="130" height="50" rx="6" fill="#FAECE7" stroke="#F0997B" stroke-width="1.5"/>
+          <text x="630" y="252" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#993C1D">MSE Loss</text>
+          <text x="630" y="270" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#9C9A94">||v_pred - v_target||²</text>
+
+          <!-- v_target from z0, eps -->
+          <text x="80" y="140" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#9C9A94">v_target = ε - z₀</text>
+          <line x1="130" y1="135" x2="565" y2="260" stroke="#993C1D" stroke-width="1" stroke-dasharray="4 3"/>
+        </svg>
+        <figcaption>Figure 23b.2 — DiT training: one forward pass. A clean latent z₀ is interpolated with random noise ε at timestep t using rectified flow (linear interpolation). The DiT, conditioned on t and text/class embeddings via AdaLN-Zero, predicts the velocity v. The MSE loss measures how close v_pred is to the true velocity v_target = ε - z₀.</figcaption>
+      </figure>
+
+      <h3>Rectified Flow: Linear Interpolation Between Data and Noise</h3>
+
+      <p>Rectified flow (used by SD3, FLUX, and SANA) defines a straight-line path between data and noise. At timestep $t \in [0, 1]$, the noisy latent is:</p>
+
+      $$z_t = (1 - t) z_0 + t \epsilon$$
+
+      <p>where $z_0$ is the clean latent and $\epsilon \sim \mathcal{N}(0, I)$ is pure noise. The velocity at any point along this path is constant: $v = \epsilon - z_0$ (element-wise subtraction, both tensors in $\mathbb{R}^{C \times H \times W}$). The model learns to predict this velocity, and the loss is simply:</p>
+
+      $$\mathcal{L}_v = \mathbb{E}_{t, z_0, \epsilon}\!\left[\|v_\theta(z_t, t, c) - (\epsilon - z_0)\|^2\right]$$
+
+      <p>where $c$ is the conditioning signal (class label or text embedding). The beauty of rectified flow is its simplicity: straight paths mean fewer integration steps at inference, and the velocity target $\epsilon - z_0$ does not depend on any noise schedule coefficients.</p>
+
+      <h3>AdaLN-Zero Conditioning</h3>
+
+      <p>DiT conditions on timestep and class/text through <strong>Adaptive Layer Normalization with Zero initialization (AdaLN-Zero)</strong>. The timestep $t$ and class embedding $c$ are combined, projected through an MLP to produce per-layer modulation parameters $(\gamma_1, \beta_1, \alpha_1, \gamma_2, \beta_2, \alpha_2)$. These modulate the output of each transformer sublayer:</p>
+
+      $$h = \alpha_1 \odot \text{Attn}(\gamma_1 \odot \text{LN}(x) + \beta_1) + x$$
+
+      <p>where $\gamma_1, \beta_1$ are shift and scale applied element-wise to the layer-normalized input (element-wise products, $\gamma_1 \odot \text{LN}(x)$, both $\in \mathbb{R}^{d}$, first annotated occurrence of $\odot$ in this chapter), and $\alpha_1$ gates the output before the residual connection. The "Zero" initialization sets all $\alpha$ parameters to zero at initialization, so the model starts as an identity function — a critical stability trick.</p>
+
+      <h3>Classifier-Free Guidance Training</h3>
+
+      <p>To enable classifier-free guidance (CFG) at inference, the model must learn to generate both conditionally and unconditionally. During training, the conditioning signal is randomly dropped with probability $p_{\text{drop}} = 0.1$-$0.2$ — replaced with a null embedding (zeros). At inference, the model produces both a conditioned prediction $v_c$ and an unconditioned prediction $v_\emptyset$, combined as:</p>
+
+      $$v_{\text{guided}} = v_\emptyset + w (v_c - v_\emptyset)$$
+
+      <p>where $w$ is the guidance scale (scalar multiplied element-wise with the velocity difference, typically $w = 4$-$7$ for image generation).</p>
+
+      <h3>Hands-On: Complete DiT Training Loop</h3>
+
+      <p>The following code implements a complete class-conditional DiT training loop on ImageNet, using HuggingFace datasets for data loading.</p>
+
+<pre><code class="language-python">
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from torchvision import transforms
+from datasets import load_dataset
+import math
+
+# --- AdaLN-Zero DiT Block ---
+class DiTBlock(nn.Module):
+    def __init__(self, dim=768, heads=12, mlp_ratio=4.0):
+        super().__init__()
+        self.norm1 = nn.LayerNorm(dim, elementwise_affine=False)
+        self.attn = nn.MultiheadAttention(dim, heads, batch_first=True)
+        self.norm2 = nn.LayerNorm(dim, elementwise_affine=False)
+        self.mlp = nn.Sequential(
+            nn.Linear(dim, int(dim * mlp_ratio)),
+            nn.GELU(),
+            nn.Linear(int(dim * mlp_ratio), dim),
+        )
+        # AdaLN-Zero: 6 modulation params per block
+        self.adaLN = nn.Sequential(
+            nn.SiLU(), nn.Linear(dim, 6 * dim),
+        )
+        # Zero-initialize the output gates
+        nn.init.zeros_(self.adaLN[1].weight)
+        nn.init.zeros_(self.adaLN[1].bias)
+
+    def forward(self, x, cond):
+        """x: (B, N, D), cond: (B, D) timestep + class embedding."""
+        shift1, scale1, gate1, shift2, scale2, gate2 = \
+            self.adaLN(cond).chunk(6, dim=-1)                 # each (B, D)
+        # Attention with AdaLN modulation
+        h = self.norm1(x)
+        h = h * (1 + scale1.unsqueeze(1)) + shift1.unsqueeze(1)  # modulate
+        h, _ = self.attn(h, h, h)
+        x = x + gate1.unsqueeze(1) * h                        # gated residual
+        # FFN with AdaLN modulation
+        h = self.norm2(x)
+        h = h * (1 + scale2.unsqueeze(1)) + shift2.unsqueeze(1)
+        h = self.mlp(h)
+        x = x + gate2.unsqueeze(1) * h
+        return x
+
+class DiT(nn.Module):
+    def __init__(self, latent_ch=4, patch_size=2, dim=768, depth=12,
+                 heads=12, num_classes=1000):
+        super().__init__()
+        self.patch_size = patch_size
+        self.proj = nn.Conv2d(latent_ch, dim, patch_size, stride=patch_size)
+        self.num_patches = (32 // patch_size) ** 2             # 256 for 32×32 latent
+        self.pos_embed = nn.Parameter(torch.zeros(1, self.num_patches, dim))
+        # Timestep + class conditioning
+        self.time_embed = nn.Sequential(
+            nn.Linear(256, dim), nn.SiLU(), nn.Linear(dim, dim),
+        )
+        self.class_embed = nn.Embedding(num_classes + 1, dim)  # +1 for null class
+        self.blocks = nn.ModuleList([DiTBlock(dim, heads) for _ in range(depth)])
+        self.final_norm = nn.LayerNorm(dim, elementwise_affine=False)
+        self.final_adaLN = nn.Sequential(nn.SiLU(), nn.Linear(dim, 2 * dim))
+        self.head = nn.Linear(dim, patch_size**2 * latent_ch)  # predict patch pixels
+        nn.init.zeros_(self.head.weight)
+        nn.init.zeros_(self.head.bias)
+
+    def timestep_embedding(self, t, dim=256):
+        """Sinusoidal timestep embedding."""
+        half = dim // 2
+        freqs = torch.exp(-math.log(10000) * torch.arange(half, device=t.device) / half)
+        args = t[:, None] * freqs[None]
+        return torch.cat([args.cos(), args.sin()], dim=-1)     # (B, 256)
+
+    def forward(self, z_t, t, class_labels):
+        """z_t: (B, 4, 32, 32), t: (B,), class_labels: (B,)."""
+        B = z_t.size(0)
+        x = self.proj(z_t).flatten(2).transpose(1, 2)         # (B, 256, 768)
+        x = x + self.pos_embed
+        cond = self.time_embed(self.timestep_embedding(t)) + \
+               self.class_embed(class_labels)                  # (B, 768)
+        for blk in self.blocks:
+            x = blk(x, cond)
+        # Final layer with AdaLN
+        shift, scale = self.final_adaLN(cond).chunk(2, dim=-1)
+        x = self.final_norm(x) * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
+        x = self.head(x)                                      # (B, 256, patch²×4)
+        # Unpatchify: (B, 256, 16) → (B, 4, 32, 32)
+        ps = self.patch_size
+        h = w = 32 // ps
+        x = x.reshape(B, h, w, ps, ps, 4).permute(0, 5, 1, 3, 2, 4)
+        return x.reshape(B, 4, 32, 32)                        # predicted velocity
+
+# --- Training Loop ---
+transform = transforms.Compose([
+    transforms.Resize(256), transforms.CenterCrop(256),
+    transforms.ToTensor(), transforms.Normalize([0.5]*3, [0.5]*3),
+])
+ds = load_dataset("imagenet-1k", split="train", streaming=True)
+
+dit = DiT(depth=12, dim=768, heads=12).cuda()
+vae_encoder = SimpleVAEEncoder().cuda().eval()                 # pretrained, frozen
+optimizer = torch.optim.AdamW(dit.parameters(), lr=1e-4, weight_decay=0.0)
+cfg_drop = 0.1                                                # CFG dropout probability
+null_class = 1000                                              # null class index
+
+for step, item in enumerate(ds):
+    img = transform(item["image"].convert("RGB")).unsqueeze(0).cuda()
+    label = torch.tensor([item["label"]], device="cuda")
+
+    # Encode to latent
+    with torch.no_grad():
+        z_0, _, _ = vae_encoder(img)                           # (1, 4, 32, 32)
+
+    # Random timestep and noise
+    t = torch.rand(1, device="cuda")                           # (1,)
+    eps = torch.randn_like(z_0)                                # (1, 4, 32, 32)
+    z_t = (1 - t.view(1, 1, 1, 1)) * z_0 + t.view(1, 1, 1, 1) * eps
+
+    # CFG: randomly drop class conditioning
+    if torch.rand(1).item() < cfg_drop:
+        label = torch.tensor([null_class], device="cuda")
+
+    # Forward + loss
+    v_pred = dit(z_t, t, label)                                # (1, 4, 32, 32)
+    v_target = eps - z_0                                       # velocity target
+    loss = F.mse_loss(v_pred, v_target)
+
+    optimizer.zero_grad()
+    loss.backward()
+    torch.nn.utils.clip_grad_norm_(dit.parameters(), 1.0)
+    optimizer.step()
+
+    if step % 1000 == 0:
+        print(f"Step {step}, Loss: {loss.item():.4f}")
+</code></pre>
+    </section>
+
+    <!-- ============================================================
+         SECTION 3: MMDiT and Text-to-Image Training
+         ============================================================ -->
+    <section class="chapter-section" id="mmdit-text-to-image">
+      <h2>Training Text-to-Image Models</h2>
+
+      <h3>MMDiT: Dual-Stream Text-Image Processing</h3>
+
+      <p>Stable Diffusion 3 and FLUX use the <strong>Multi-Modal Diffusion Transformer (MMDiT)</strong>, which processes text and image tokens through parallel transformer streams that interact via joint attention. Text tokens from T5-XXL and CLIP are concatenated and processed alongside the patchified latent tokens. In each MMDiT block, text and image tokens attend to each other through shared attention — the query, key, and value projections operate on the concatenated sequence $[x_{\text{text}}; x_{\text{image}}]$ (matrix multiply, $W_Q [x_{\text{text}}; x_{\text{image}}] \in \mathbb{R}^{(n_t + n_i) \times d_k}$ where $n_t$ and $n_i$ are the text and image token counts), but separate MLPs process each modality afterwards.</p>
+
+      <p>FLUX (2024) introduced a hybrid architecture: the first half of the network uses double-stream MMDiT blocks (separate attention for text and image with cross-attention), while the second half uses single-stream blocks (text and image tokens are concatenated and processed jointly). This captures both modality-specific processing and deep cross-modal fusion.</p>
+
+      <h3>Noise Schedule Design</h3>
+
+      <p>The distribution of training timesteps $t$ matters significantly. Uniform sampling $t \sim U(0, 1)$ oversamples very noisy and very clean timesteps, which are easy to denoise. SD3 uses <strong>logit-normal sampling</strong>: $t = \sigma(\text{logit}(u))$ where $u \sim \mathcal{N}(0, 1)$, which concentrates samples around $t = 0.5$ — the perceptually relevant regime where the model must distinguish signal from noise. This shift in sampling distribution produces visibly better image quality at the same training cost.</p>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 220" xmlns="http://www.w3.org/2000/svg">
+          <text x="400" y="22" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="600" fill="#1A1A18">Timestep Sampling: Uniform vs Logit-Normal</text>
+
+          <!-- Uniform distribution -->
+          <rect x="50" y="50" width="300" height="30" rx="4" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="1"/>
+          <text x="200" y="70" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#5C5B56">Uniform: t ~ U(0, 1)</text>
+          <rect x="50" y="90" width="300" height="60" rx="4" fill="#EEEDFE" opacity="0.3"/>
+          <rect x="50" y="110" width="300" height="40" rx="0" fill="#AFA9EC" opacity="0.5"/>
+          <text x="200" y="185" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">Wastes compute on easy extremes</text>
+
+          <!-- Logit-normal distribution -->
+          <rect x="450" y="50" width="300" height="30" rx="4" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="600" y="70" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#0F6E56">Logit-Normal (SD3/FLUX)</text>
+          <rect x="450" y="90" width="300" height="60" rx="4" fill="#E1F5EE" opacity="0.3"/>
+          <!-- Bell curve approximation -->
+          <polygon points="450,150 500,148 530,140 560,120 580,100 600,95 620,100 640,120 670,140 700,148 750,150" fill="#5DCAA5" opacity="0.5"/>
+          <text x="600" y="185" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">Focuses on perceptually relevant t ≈ 0.5</text>
+
+          <!-- Labels -->
+          <text x="50" y="165" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#9C9A94">t=0</text>
+          <text x="340" y="165" text-anchor="end" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#9C9A94">t=1</text>
+          <text x="450" y="165" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#9C9A94">t=0</text>
+          <text x="740" y="165" text-anchor="end" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#9C9A94">t=1</text>
+        </svg>
+        <figcaption>Figure 23b.3 — Timestep sampling distributions. Uniform sampling (left) wastes compute on very noisy (t≈1) and very clean (t≈0) timesteps that are easy for the model. Logit-normal sampling (right, used by SD3/FLUX) concentrates training on the perceptually challenging middle range, improving image quality without extra compute.</figcaption>
+      </figure>
+
+      <h3>Hands-On: Text-Conditioned DiT Training Step</h3>
+
+      <p>The following code shows how to adapt the class-conditional DiT to text conditioning with dual text encoders.</p>
+
+<pre><code class="language-python">
+import torch
+import torch.nn as nn
+import math
+
+class TextConditionedDiT(nn.Module):
+    """DiT with dual text encoder conditioning (T5 + CLIP)."""
+    def __init__(self, dim=768, depth=12, heads=12, t5_dim=4096, clip_dim=768):
+        super().__init__()
+        # Project text embeddings to model dimension
+        self.t5_proj = nn.Linear(t5_dim, dim)                  # T5-XXL: 4096 → 768
+        self.clip_proj = nn.Linear(clip_dim, dim)              # CLIP: 768 → 768
+        self.time_embed = nn.Sequential(
+            nn.Linear(256, dim), nn.SiLU(), nn.Linear(dim, dim))
+        # Cross-attention for text tokens
+        self.cross_attn = nn.MultiheadAttention(dim, heads, batch_first=True)
+        self.blocks = nn.ModuleList([DiTBlock(dim, heads) for _ in range(depth)])
+        # ... (same as DiT above for patch embed, final layer, etc.)
+
+    def forward(self, z_t, t, t5_tokens, clip_pooled):
+        """
+        z_t: (B, 4, H, W) noisy latent
+        t: (B,) timestep
+        t5_tokens: (B, seq_len, 4096) T5-XXL text features
+        clip_pooled: (B, 768) CLIP pooled text embedding
+        """
+        # Combine timestep + CLIP pooled as global conditioning
+        t_emb = self.time_embed(self.timestep_embedding(t))    # (B, 768)
+        c_pooled = self.clip_proj(clip_pooled)                 # (B, 768)
+        global_cond = t_emb + c_pooled                         # (B, 768)
+
+        # Project T5 tokens for cross-attention
+        text_tokens = self.t5_proj(t5_tokens)                  # (B, seq_len, 768)
+
+        # Patchify z_t → image tokens
+        x = self.proj(z_t).flatten(2).transpose(1, 2)         # (B, N, 768)
+        x = x + self.pos_embed
+
+        for blk in self.blocks:
+            x = blk(x, global_cond)                            # AdaLN conditioning
+            # Cross-attend to text tokens
+            x_cross, _ = self.cross_attn(x, text_tokens, text_tokens)
+            x = x + x_cross                                   # add cross-attention
+
+        return self.unpatchify(self.head(self.final_layer(x, global_cond)))
+
+# Training with logit-normal timestep sampling:
+def sample_logit_normal(batch_size, device, m=0.0, s=1.0):
+    """Sample timesteps from logit-normal distribution."""
+    u = torch.randn(batch_size, device=device) * s + m
+    return torch.sigmoid(u)                                    # t ∈ (0, 1)
+
+# In training loop:
+# t = sample_logit_normal(B, device)  # instead of torch.rand(B)
+</code></pre>
+    </section>
+
+    <!-- ============================================================
+         SECTION 4: Consistency Distillation
+         ============================================================ -->
+    <section class="chapter-section" id="consistency-distillation">
+      <h2>Consistency Distillation for Few-Step Generation</h2>
+
+      <p>A trained diffusion model requires 20-50 denoising steps for quality results — each step is a full forward pass through a billion-parameter network. <strong>Consistency distillation</strong> trains a student model to shortcut the denoising trajectory, generating in 1-4 steps by learning to map any point on the trajectory directly to the final clean output.</p>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 250" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="ch23b-arr3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+              <path d="M1 1L9 5L1 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </marker>
+          </defs>
+          <text x="400" y="22" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="600" fill="#1A1A18">Consistency Distillation: 50 Steps → 1 Step</text>
+
+          <!-- Teacher trajectory (50 steps) -->
+          <rect x="40" y="50" width="160" height="28" rx="4" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="1"/>
+          <text x="120" y="69" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#5C5B56">Teacher (50 steps)</text>
+
+          <!-- Dots showing trajectory -->
+          <circle cx="80" cy="110" r="4" fill="#C8C6BE"/>
+          <circle cx="120" cy="110" r="4" fill="#C8C6BE"/>
+          <circle cx="160" cy="110" r="4" fill="#C8C6BE"/>
+          <text x="190" y="115" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="400" fill="#9C9A94">···</text>
+          <circle cx="220" cy="110" r="4" fill="#C8C6BE"/>
+          <circle cx="260" cy="110" r="4" fill="#C8C6BE"/>
+          <line x1="80" y1="110" x2="260" y2="110" stroke="#C8C6BE" stroke-width="1" stroke-dasharray="4 3"/>
+          <text x="80" y="135" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#9C9A94">z_T (noise)</text>
+          <text x="260" y="135" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#9C9A94">z_0 (clean)</text>
+
+          <!-- Student (1-4 steps) -->
+          <rect x="40" y="160" width="160" height="28" rx="4" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="120" y="179" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#0F6E56">Student (1-4 steps)</text>
+
+          <circle cx="80" cy="220" r="6" fill="#534AB7"/>
+          <line x1="86" y1="220" x2="254" y2="220" stroke="#534AB7" stroke-width="2.5" marker-end="url(#ch23b-arr3)"/>
+          <circle cx="260" cy="220" r="6" fill="#0F6E56"/>
+          <text x="170" y="213" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#534AB7">direct jump</text>
+          <text x="80" y="242" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#9C9A94">z_t (any t)</text>
+          <text x="260" y="242" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#9C9A94">z_0 (clean)</text>
+
+          <!-- Methods panel -->
+          <rect x="350" y="50" width="420" height="180" rx="8" fill="none" stroke="#E5E3DC" stroke-width="1" stroke-dasharray="5 4"/>
+          <text x="560" y="75" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#1A1A18">Distillation Methods (2024-2026)</text>
+
+          <rect x="370" y="90" width="180" height="50" rx="6" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1"/>
+          <text x="460" y="110" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="600" fill="#534AB7">SANA-Sprint (ICCV 2025)</text>
+          <text x="460" y="128" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#5C5B56">sCM + LADD → 1 step, 7.59 FID</text>
+
+          <rect x="570" y="90" width="180" height="50" rx="6" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+          <text x="660" y="110" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="600" fill="#0F6E56">DMD2</text>
+          <text x="660" y="128" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#5C5B56">Distribution matching, 1.28 FID</text>
+
+          <rect x="370" y="155" width="180" height="50" rx="6" fill="#FAEEDA" stroke="#EF9F27" stroke-width="1"/>
+          <text x="460" y="175" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="600" fill="#854F0B">ADD (SD3.5 Turbo)</text>
+          <text x="460" y="193" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#5C5B56">Adversarial, 1-4 steps</text>
+
+          <rect x="570" y="155" width="180" height="50" rx="6" fill="#FAECE7" stroke="#F0997B" stroke-width="1"/>
+          <text x="660" y="175" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="600" fill="#993C1D">SenseFlow (ICLR 2026)</text>
+          <text x="660" y="193" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#5C5B56">Flow matching for SD3.5/FLUX</text>
+        </svg>
+        <figcaption>Figure 23b.4 — Consistency distillation trains a student to shortcut the teacher's 50-step denoising trajectory into 1-4 direct jumps. Four major approaches: SANA-Sprint combines continuous-time consistency with adversarial distillation; DMD2 uses distribution matching; ADD adds a discriminator at each timestep; SenseFlow extends distribution matching to flow-based models.</figcaption>
+      </figure>
+
+      <h3>SANA-Sprint: Continuous-Time Consistency + Adversarial Distillation</h3>
+
+      <p><strong>SANA-Sprint</strong> (ICCV 2025) achieves one-step generation by combining two distillation objectives. The <strong>continuous-time consistency model (sCM)</strong> loss enforces that the student's output is the same regardless of where on the trajectory you start — $f_\theta(z_{t_1}, t_1) \approx f_\theta(z_{t_2}, t_2)$ for any two points on the same trajectory. The <strong>latent adversarial distillation (LADD)</strong> loss adds a discriminator in latent space that distinguishes real latents from student-generated ones, providing sharper gradients than pure consistency loss alone. Together they achieve 7.59 FID on GenEval in just one step — 10× faster than FLUX-Schnell with better quality.</p>
+
+      <h3>DMD2: Distribution Matching Without Regression</h3>
+
+      <p><strong>DMD2</strong> (Distribution Matching Distillation 2) takes a different approach: instead of matching individual trajectories, it matches the overall distribution of generated images to the teacher's distribution. The key insight is that you do not need a regression loss (MSE between student and teacher outputs) — pure distribution matching via a learned discriminator is sufficient and produces sharper images. DMD2 achieves 1.28 FID on ImageNet-64 and scales to megapixel distillation of SDXL.</p>
+
+      <h3>Hands-On: Consistency Distillation Training Step</h3>
+
+      <p>The following code implements a simplified consistency distillation step where a student learns to predict the clean output from any noise level.</p>
+
+<pre><code class="language-python">
+import torch
+import torch.nn.functional as F
+
+def consistency_distillation_step(student, teacher, ema_student,
+                                   z_0, class_labels, optimizer):
+    """One step of continuous-time consistency distillation.
+
+    The student must map any z_t to the same clean output z_0,
+    regardless of the timestep t.
+    """
+    B = z_0.size(0)
+    eps = torch.randn_like(z_0)
+
+    # Sample two adjacent timesteps on the same trajectory
+    t1 = torch.rand(B, device=z_0.device) * 0.95 + 0.05       # t1 ∈ (0.05, 1.0)
+    dt = 0.01                                                  # small step
+    t2 = (t1 - dt).clamp(min=0.001)                           # t2 slightly cleaner
+
+    # Create noisy latents at both timesteps (rectified flow)
+    z_t1 = (1 - t1.view(B, 1, 1, 1)) * z_0 + t1.view(B, 1, 1, 1) * eps
+    z_t2 = (1 - t2.view(B, 1, 1, 1)) * z_0 + t2.view(B, 1, 1, 1) * eps
+
+    # Student predicts clean output from z_t1
+    pred_from_t1 = student(z_t1, t1, class_labels)             # (B, 4, H, W)
+
+    # EMA student predicts clean output from z_t2 (target, no gradient)
+    with torch.no_grad():
+        pred_from_t2 = ema_student(z_t2, t2, class_labels)    # (B, 4, H, W)
+
+    # Consistency loss: both should predict the same clean output
+    loss = F.mse_loss(pred_from_t1, pred_from_t2)
+
+    optimizer.zero_grad()
+    loss.backward()
+    torch.nn.utils.clip_grad_norm_(student.parameters(), 1.0)
+    optimizer.step()
+
+    # Update EMA student
+    with torch.no_grad():
+        for p_s, p_e in zip(student.parameters(), ema_student.parameters()):
+            p_e.data = 0.999 * p_e.data + 0.001 * p_s.data
+
+    return loss.item()
+</code></pre>
+
+      <div class="callout callout-insight">
+        <div class="callout-title">Key Insight</div>
+        <p>Consistency distillation does not train a model from scratch — it compresses a pretrained teacher's knowledge into fewer inference steps. The teacher must already be a good generator. Think of it as lossy compression of the denoising trajectory: the student learns the teacher's shortcuts, trading a small quality drop for a 10-50× speed gain. The best results (SANA-Sprint, DMD2) combine consistency with adversarial objectives — the adversarial loss prevents the blurriness that pure MSE consistency tends to produce.</p>
+      </div>
+    </section>
+
+    <!-- ============================================================
+         SECTION 5: ControlNet and Adapter Training
+         ============================================================ -->
+    <section class="chapter-section" id="controlnet-adapter-training">
+      <h2>ControlNet and Adapter Training</h2>
+
+      <p>A trained text-to-image model generates images from text prompts alone. <strong>ControlNet</strong> adds spatial conditioning — depth maps, edge maps, pose skeletons — by training a copy of the encoder blocks that processes the condition signal and injects its output into the main network via zero-initialized linear layers.</p>
+
+      <h3>ControlNet Architecture and Training</h3>
+
+      <p>ControlNet creates a trainable copy of the first half of the DiT blocks. The condition image (e.g., a Canny edge map) is encoded by a lightweight CNN and added to the copied blocks' inputs. The copied blocks' outputs are added to the corresponding layers of the frozen main model through zero-initialized convolutions — so at initialization, ControlNet has zero effect, and the model generates exactly as before. Training unfreezes only the copied blocks and the zero convolutions, keeping the main model frozen.</p>
+
+<pre><code class="language-python">
+import torch
+import torch.nn as nn
+
+class ControlNet(nn.Module):
+    """ControlNet: add spatial control to a frozen DiT."""
+    def __init__(self, frozen_dit, condition_channels=1):
+        super().__init__()
+        # Lightweight condition encoder
+        self.cond_encoder = nn.Sequential(
+            nn.Conv2d(condition_channels, 64, 3, stride=2, padding=1),
+            nn.SiLU(),
+            nn.Conv2d(64, 128, 3, stride=2, padding=1),
+            nn.SiLU(),
+            nn.Conv2d(128, frozen_dit.blocks[0].norm1.normalized_shape[0],
+                      3, stride=2, padding=1),                 # match DiT dim
+        )
+        # Copy first half of DiT blocks
+        n_copy = len(frozen_dit.blocks) // 2
+        self.ctrl_blocks = nn.ModuleList([
+            DiTBlock(dim=768, heads=12) for _ in range(n_copy)
+        ])
+        # Zero-initialized output projections
+        self.zero_convs = nn.ModuleList([
+            nn.Linear(768, 768) for _ in range(n_copy)
+        ])
+        for zc in self.zero_convs:
+            nn.init.zeros_(zc.weight)
+            nn.init.zeros_(zc.bias)
+
+    def forward(self, z_t, t, text_cond, spatial_cond):
+        """Returns residuals to add to frozen DiT's intermediate features."""
+        cond_feat = self.cond_encoder(spatial_cond)            # (B, D, h, w)
+        cond_tokens = cond_feat.flatten(2).transpose(1, 2)    # (B, N, D)
+
+        h = cond_tokens  # start from condition
+        residuals = []
+        for blk, zc in zip(self.ctrl_blocks, self.zero_convs):
+            h = blk(h, text_cond)
+            residuals.append(zc(h))                            # zero-init residual
+        return residuals
+
+# Training: freeze main DiT, train only ControlNet
+# for param in frozen_dit.parameters():
+#     param.requires_grad = False
+# optimizer = torch.optim.AdamW(controlnet.parameters(), lr=1e-5)
+</code></pre>
+
+      <h3>IP-Adapter: Image Prompt Conditioning</h3>
+
+      <p><strong>IP-Adapter</strong> conditions generation on a reference image rather than spatial controls. It uses a pretrained CLIP image encoder to extract features from the reference image, then injects these through decoupled cross-attention: the original cross-attention attends to text tokens, and a new parallel cross-attention layer attends to image tokens. Only the new cross-attention layers are trained; everything else stays frozen. This enables "generate an image like this reference, but with this text description" — powerful for style transfer and character consistency.</p>
+    </section>
+
+    <!-- ============================================================
+         SECTION 6: Complete Training Recipes
+         ============================================================ -->
+    <section class="chapter-section" id="image-gen-recipes">
+      <h2>Complete Image Generation Training Recipes</h2>
+
+      <h3>Recipe 1: DiT-L/2 Class-Conditional ImageNet 256×256</h3>
+      <table>
+        <tr><th>Component</th><th>Setting</th></tr>
+        <tr><td>Architecture</td><td>DiT-L/2 (458M params), 24 blocks, dim=1024</td></tr>
+        <tr><td>VAE</td><td>SD VAE (f=8, 4-channel latent), frozen</td></tr>
+        <tr><td>Optimizer</td><td>AdamW, β₁=0.9, β₂=0.999</td></tr>
+        <tr><td>Learning rate</td><td>1e-4, constant (no schedule)</td></tr>
+        <tr><td>Weight decay</td><td>0.0</td></tr>
+        <tr><td>Batch size</td><td>256</td></tr>
+        <tr><td>Training steps</td><td>400K (quick) to 7M (best)</td></tr>
+        <tr><td>EMA decay</td><td>0.9999</td></tr>
+        <tr><td>CFG dropout</td><td>10%</td></tr>
+        <tr><td>Noise schedule</td><td>Rectified flow (linear)</td></tr>
+        <tr><td>Loss</td><td>V-prediction MSE</td></tr>
+        <tr><td>Precision</td><td>BF16</td></tr>
+        <tr><td>Hardware</td><td>8× A100 80GB, ~5 days for 400K steps</td></tr>
+        <tr><td>Expected FID</td><td>~2.0 (DiT-L/2), ~1.84 (ViT-5 backbone)</td></tr>
+      </table>
+
+      <h3>Recipe 2: Text-to-Image Rectified Flow at 512×512</h3>
+      <table>
+        <tr><th>Component</th><th>Setting</th></tr>
+        <tr><td>Architecture</td><td>MMDiT (2B params), 24 double + 14 single blocks</td></tr>
+        <tr><td>Text encoders</td><td>T5-XXL (frozen) + CLIP-L (frozen)</td></tr>
+        <tr><td>VAE</td><td>SD VAE (f=8, 16-channel latent for SD3)</td></tr>
+        <tr><td>Optimizer</td><td>AdamW, lr=1e-4</td></tr>
+        <tr><td>Batch size</td><td>2048 (effective, with grad accumulation)</td></tr>
+        <tr><td>Training steps</td><td>500K-1M</td></tr>
+        <tr><td>Timestep sampling</td><td>Logit-normal (m=0, s=1)</td></tr>
+        <tr><td>CFG dropout</td><td>10% text, 10% image (independent)</td></tr>
+        <tr><td>Resolution</td><td>256² → 512² progressive</td></tr>
+        <tr><td>Precision</td><td>BF16, FSDP across 64+ GPUs</td></tr>
+      </table>
+
+      <h3>Recipe 3: Consistency Distillation from a Trained Teacher</h3>
+      <table>
+        <tr><th>Component</th><th>Setting</th></tr>
+        <tr><td>Student</td><td>Same architecture as teacher</td></tr>
+        <tr><td>Teacher</td><td>Pretrained DiT/MMDiT (frozen)</td></tr>
+        <tr><td>Loss</td><td>sCM consistency + LADD adversarial</td></tr>
+        <tr><td>Optimizer</td><td>AdamW, lr=5e-6</td></tr>
+        <tr><td>Training steps</td><td>20K-50K</td></tr>
+        <tr><td>EMA decay</td><td>0.999</td></tr>
+        <tr><td>QK-Norm</td><td>Added to stabilize sCM gradients</td></tr>
+        <tr><td>Discriminator</td><td>Patch-based in latent space</td></tr>
+        <tr><td>Target steps</td><td>1-4 inference steps</td></tr>
+        <tr><td>Expected quality</td><td>~90% of teacher at 1 step, ~98% at 4 steps</td></tr>
+      </table>
+
+      <div class="callout callout-warning">
+        <div class="callout-title">Image Generation Training Pitfalls</div>
+        <p>The three most common failures: (1) <strong>VAE quality ceiling</strong> — your generated images can never be sharper than what the VAE can reconstruct. Always verify VAE reconstruction quality on your data before training the DiT. (2) <strong>CFG dropout too low</strong> — without enough unconditional training (≥10%), guidance at inference produces artifacts. (3) <strong>Constant LR instability</strong> — DiT training uses a constant learning rate (no cosine schedule), but this requires gradient clipping (max norm 1.0) and BF16 to avoid divergence.</p>
+      </div>
+    </section>
+
+  </article>
+
+  <footer class="chapter-footer">
+    <div class="footer-nav">
+      <a href="ch23a.html">← Previous: Training Vision Transformers — Classification</a>
+      <a href="ch23c.html">Next: Training Video Generation Transformers →</a>
+    </div>
+  </footer>
+
+</body>
+</html>

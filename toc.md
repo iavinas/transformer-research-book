@@ -977,7 +977,7 @@ through dense prediction, video understanding, and video generation.*
 
 ---
 
-### Chapter 23: Training Vision Transformers
+### Chapter 23a: Training Vision Transformers — Classification and Transfer Learning
 
 **The ViT training landscape**
 - Why ViT training is harder than CNN training: no inductive biases, data hunger, optimization fragility
@@ -987,27 +987,29 @@ through dense prediction, video understanding, and video generation.*
 - ViT-5 (Feb 2026): QKNorm, RoPE+APE dual encoding, registers, SwiGLU, RMSNorm — 84.2% ImageNet
 - DeiT III recipe: only 3 augmentations, LayerScale, stochastic depth, RegNetY teacher distillation
 - Data regime comparison: ImageNet-1K vs 21K vs JFT-300M/3B — when each matters
+- Hands-on: full ViT-B supervised training loop on ImageNet with HuggingFace datasets
 
 **Data augmentation for vision transformers**
 - The augmentation suite: RandAugment, AutoAugment, TrivialAugment
-- MixUp and CutMix: interpolation and patch-swapping augmentation
+- MixUp and CutMix: interpolation and patch-swapping augmentation with full PyTorch code
 - Regularization as augmentation: stochastic depth (DropPath), patch dropout, LayerScale
 - Synthetic data augmentation: diffusion-generated training data (CVPR 2026), 20% gains from realistic synthetic data
 
 **Self-supervised pre-training strategies**
 - DINO/DINOv2 training: teacher-student, centering, sharpening, EMA update, curated LVD-142M
-- DINOv2 at scale: PyTorch 2 FSDP, xFormers, training ViT-g/14 (1.1B params)
+- Hands-on: complete DINO training loop with multi-crop augmentation using ImageNet from HF datasets
 - MAE training: 75% masking, asymmetric encoder-decoder, DailyMAE 5.8× speedup
+- Hands-on: complete MAE pre-training loop with masking and reconstruction code
 - FastDINOv2: spectral-domain curriculum, 62% training time with matched accuracy
 - iBOT / BEiT: discrete tokenizer, masked prediction in token space
 - Contrastive objectives: MoCo v3, SigLIP 2 unified recipe
 
 **Fine-tuning vision transformers**
 - Layer-wise learning rate decay (LLRD): exponential LR decay per layer group
+- Hands-on: full fine-tuning pipeline on COCO detection with LLRD and HuggingFace datasets
 - Resolution adaptation: interpolate 2D positional embeddings, Swin window size adaptation
 - PEFT for vision (2025-2026): Image-LoRA, head-selection via influence scores, visual prompt tuning
 - Make LoRA Great Again: adaptive singular values + MoE alignment
-- Avoiding catastrophic forgetting: small LR, short schedules, elastic weight consolidation
 
 **Detection and segmentation training recipes**
 - DETR training: bipartite matching loss, DN-DETR denoising, Co-DETR hybrid assignment
@@ -1019,49 +1021,144 @@ through dense prediction, video understanding, and video generation.*
 - FP8 training (TWEO, 2025): full FP8 pre-training with 36% throughput gain, no architecture changes
 - Distributed training: tensor parallelism for ViT-G, FSDP for DINOv2, activation checkpointing
 
-**Diffusion and video generation training**
-- DiT/MMDiT training: AdaLN-Zero, rectified flow, classifier-free guidance dropout
-- Consistency distillation: SANA-Sprint (ICCV 2025), SenseFlow (ICLR 2026), DMD2, ADD
-- 3D VAE training: 2D initialization, group causal convolution (CVPR 2025), temporal consistency
-- Mixed image-video training: domain-specific normalization, progressive resolution-duration curriculum
-- Pyramidal flow matching (ICLR 2025): temporal pyramids reduce tokens 119K → 15K
+**Complete classification training recipes**
+- Recipe 1: ViT-Base ImageNet classification (DeiT III) — full hyperparameter table
+- Recipe 2: DINOv2-style self-supervised pre-training — full hyperparameter table
+- Recipe 3: Fine-tuning for COCO detection with LLRD — full hyperparameter table
 
-**Complete training recipes**
-- Recipe 1: ViT-Base ImageNet classification (DeiT III)
-- Recipe 2: DINOv2-style self-supervised pre-training
-- Recipe 3: Fine-tuning for COCO detection with LLRD
-- Recipe 4: DiT-L/2 ImageNet generation
-- Hyperparameter reference tables for each recipe
+---
+
+### Chapter 23b: Training Image Generation Transformers
+
+**Latent diffusion fundamentals for transformers**
+- From pixel-space to latent-space: why VAE encoding makes transformer-based diffusion tractable
+- The SD VAE: encoder, decoder, KL regularization, f=8 spatial compression, 4-channel latent
+- Hands-on: encoding images to latent space and reconstructing with a pretrained VAE
+
+**DiT and MMDiT training**
+- DiT architecture recap: patchify latents, AdaLN-Zero conditioning, final linear head
+- Rectified flow: linear interpolation between data and noise, V-prediction loss
+- Classifier-free guidance training: random conditioning dropout at 10-20%
+- Hands-on: complete DiT training loop on ImageNet with HuggingFace datasets
+- MMDiT: dual-stream text-image processing, FLUX architecture, joint attention blocks
+
+**Training text-to-image models**
+- Text encoder training: frozen T5-XXL + CLIP, dual text conditioning
+- Noise schedule design: logit-normal sampling for rectified flow, resolution-dependent schedules
+- Progressive resolution training: start at 256×256, scale to 1024×1024
+- Hands-on: text-conditioned DiT training step with dual text encoders
+
+**Consistency distillation for few-step generation**
+- Consistency models: map any point on the denoising trajectory to the final clean output
+- SANA-Sprint (ICCV 2025): continuous-time consistency distillation + latent adversarial distillation
+- DMD2: distribution matching distillation without regression loss, 1.28 FID on ImageNet-64
+- Adversarial Diffusion Distillation (ADD): discriminator at each timestep, 1-4 step generation
+- SenseFlow (ICLR 2026): distribution matching for flow-based models (SD3.5, FLUX)
+- Hands-on: consistency distillation training step
+
+**ControlNet and adapter training**
+- ControlNet: zero-initialized copies of encoder blocks, condition on depth/edge/pose
+- IP-Adapter: image prompt adapter with decoupled cross-attention
+- Training recipes and hyperparameters for conditional generation
+
+**Complete image generation training recipes**
+- Recipe 1: DiT-L/2 class-conditional ImageNet 256×256 — full hyperparameter table
+- Recipe 2: Text-to-image rectified flow at 512×512 — full hyperparameter table
+- Recipe 3: Consistency distillation from a trained teacher — full hyperparameter table
+
+---
+
+### Chapter 23c: Training Video Generation Transformers
+
+**3D VAE training for video compression**
+- From 2D VAE to 3D: temporal compression with causal 3D convolutions
+- Group causal convolution (CVPR 2025): fixing quality inconsistency across frames
+- Open-Sora 2.0 Video DC-AE: EfficientViT blocks, 8×8×8 compression, pixel-shuffle decoder
+- Hands-on: 3D VAE encoder-decoder forward pass and latent space visualization
+
+**Video diffusion transformer training**
+- CogVideoX expert transformer: expert adaptive LayerNorm, 3D full attention
+- Full 3D attention vs factorized spatial-temporal: quality vs cost tradeoff
+- 3D RoPE: rotary position embeddings extended to spatiotemporal coordinates
+- Hands-on: complete video diffusion training step with 3D attention
+
+**Mixed image-video training**
+- Domain-specific normalization: separate batch norm statistics for images and videos
+- Why mixed training matters: preventing image quality forgetting
+- Open-Sora 2.0: zero-padding images to match video input format
+- Mixed video-length training: randomized durations with zero-padding
+
+**Progressive training pipeline**
+- Open-Sora 2.0 three-stage pipeline: text-to-image → image-to-video → high-res video
+- Checkpoint transfer between stages: what to keep, what to reinitialize
+- Resolution and duration scaling: $200K total training cost for commercial quality
+- Hands-on: progressive training stage transitions
+
+**Pyramidal flow matching for efficient training**
+- Temporal pyramids: recent frames at full resolution, older frames compressed
+- Token reduction: 119K → 15K for 10-second 241-frame video (8× reduction)
+- Training the pyramid: multi-resolution denoising within a single forward pass
+- Hands-on: pyramidal flow matching training step
+
+**Data curation and filtering for video training**
+- Video data pipeline: filtering, captioning, deduplication, quality scoring
+- Caption generation: using VLMs to generate dense video descriptions
+- Aesthetic and motion filtering: removing static or low-quality clips
+
+**Complete video generation training recipes**
+- Recipe 1: CogVideoX-style text-to-video at 480p — full hyperparameter table
+- Recipe 2: Open-Sora 2.0 progressive pipeline — full hyperparameter table
+- Recipe 3: Pyramidal flow matching for long video — full hyperparameter table
 
 ---
 
 ### Chapter 24: Evaluating Vision Transformers
 
 **Image classification benchmarks**
-- ImageNet-1K: top-1 and top-5 accuracy, 1000 classes
+- ImageNet-1K: top-1 and top-5 accuracy, 1000 classes, saturation at >92% for foundation models
 - ImageNet-21K: fine-grained, 21K classes, transfer learning evaluation
 - ImageNet variants for robustness: ImageNet-C (corruptions), ImageNet-R (renditions), ImageNet-A (adversarial)
 - ObjectNet: distribution-shifted test set designed to remove spurious correlations
+- Geographic fairness: 7-20% accuracy gaps between regions, FHIBE (81+ countries), GeoBS information-theoretic framework, Dollar Street socioeconomic diversity
 
 **Detection and segmentation benchmarks**
-- COCO detection: AP, AP_50, AP_75 across box and mask
+- COCO detection: AP, AP_50, AP_75 across box and mask; RF-DETR >60 AP (first real-time, ICLR 2026)
+- COCONut (CVPR 2024): 383K images, 5.18M panoptic masks; COCO-ReM (ECCV 2024): refined masks via SAM
 - LVIS: long-tail detection, 1203 categories, frequency-stratified evaluation
 - ADE20K semantic segmentation: mean IoU across 150 classes
 - Cityscapes: autonomous driving scenes, panoptic segmentation
 
 **Video understanding benchmarks**
-- Kinetics-400/600/700: action recognition
+- Kinetics-400/600/700: action recognition, frame bias problem
 - Something-Something V2: motion-centric, temporal reasoning required
-- AVA: spatiotemporal action localization
-- EgoSchema, EgoPlan: egocentric video question answering
+- AVA: spatiotemporal action localization; YOLO-Act +28.18 mAP gain
+- EgoSchema: 5000+ questions, models <33% vs humans 76%; EgoPlan-Bench2: planning across 4 domains
+- EASG-Bench (2025): egocentric action scene graphs for video QA
 - ActivityNet QA, MSRVTT: video question answering benchmarks
 
+**Image generation metrics**
+- FID: Frechet Inception Distance, Gaussian assumption limitations, sample size sensitivity
+- Beyond FID: CMMD (robust distribution metric), GenEval (compositional), DreamSim (perceptual)
+- DiT achieving FID 1.73 on ImageNet-256
+
 **Video generation evaluation**
-- FVD (Frechet Video Distance): 3D convolution feature distribution distance
+- FVD (Frechet Video Distance): 3D convolution feature distribution distance, poor temporal sensitivity
 - FID per frame: per-frame image quality
 - CLIP-SIM: text-video alignment score
-- Human evaluation: VBench framework -- 16 dimensions including motion smoothness, subject consistency, background consistency, aesthetic quality, temporal flickering
+- JEDi: JEPA-based alternative to FVD, 34% better human alignment, 16% sample requirement
+- VBench and VBench-2.0 (2025): 18 capabilities across Human Fidelity, Creativity, Controllability, Physics, Commonsense
+- WorldScore (ICCV 2025): unified world generation benchmark; WCS for object permanence and causal compliance
 - Sora evaluation: ad-hoc expert assessment, physical plausibility, prompt fidelity
+
+**Efficiency evaluation**
+- FLOPs ≠ real latency: ViT with 5.00 GFLOPs = 1.75x latency of CNN with 4.95 GFLOPs
+- EER (Efficient Error Rate): parameters, bits, FLOPs, model size
+- Throughput, peak memory, and hardware-specific benchmarks
+
+**VLM-as-Judge for vision evaluation**
+- Prometheus-Vision: first open-source VLM evaluator with custom rubrics
+- UNIVERSE: VLM-based evaluator for video world model rollouts
+- Biases and calibration challenges for VLM judges
 
 ---
 
