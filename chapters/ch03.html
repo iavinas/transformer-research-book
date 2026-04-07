@@ -1296,12 +1296,14 @@ class PositionalEncoding(nn.Module):
 
 
 # ─── Scaled Dot-Product Attention ─────────────────────────────────
-def scaled_dot_product_attention(Q, K, V, mask=None):
+def scaled_dot_product_attention(Q, K, V, mask=None, dropout=None):
     """
     Q: (batch, heads, seq_q, d_k)
     K: (batch, heads, seq_k, d_k)
     V: (batch, heads, seq_k, d_v)
-    mask: broadcastable to (batch, 1, seq_q, seq_k)
+    mask: broadcastable to (batch, 1, seq_q, seq_k). If a query row masks
+        all keys, softmax is undefined (NaN); nan_to_num maps those rows to 0.
+    dropout: optional nn.Dropout applied to attention weights after softmax (Vaswani et al.)
 
     Returns: (batch, heads, seq_q, d_v), attention weights
     """
@@ -1311,6 +1313,9 @@ def scaled_dot_product_attention(Q, K, V, mask=None):
     if mask is not None:
         scores = scores.masked_fill(mask == 0, float("-inf"))
     weights = F.softmax(scores, dim=-1)                 # (batch, heads, seq_q, seq_k)
+    weights = weights.nan_to_num(0.0)                   # all-masked rows -> 0, not nan
+    if dropout is not None:
+        weights = dropout(weights)                      # paper applies it right here
     return weights @ V, weights                         # (batch, heads, seq_q, d_v)
 
 
@@ -1334,7 +1339,7 @@ class MultiHeadAttention(nn.Module):
         K = self.W_K(key).view(B, -1, self.n_heads, self.d_k).transpose(1, 2)
         V = self.W_V(value).view(B, -1, self.n_heads, self.d_k).transpose(1, 2)
 
-        attn_out, _ = scaled_dot_product_attention(Q, K, V, mask)
+        attn_out, _ = scaled_dot_product_attention(Q, K, V, mask, self.dropout)
         # Concatenate heads: (batch, heads, seq, d_k) -> (batch, seq, d_model)
         concat = attn_out.transpose(1, 2).contiguous().view(B, -1, self.n_heads * self.d_k)
         return self.W_O(concat)                         # (batch, seq, d_model)
