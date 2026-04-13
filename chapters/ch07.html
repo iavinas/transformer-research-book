@@ -818,6 +818,255 @@ with torch.no_grad():
     similarity = F.cosine_similarity(emb_a, emb_b)  # scalar in [-1, 1]
 </code></pre>
 
+      <h3>Project: Building a Sentence Transformer from Scratch</h3>
+
+      <p>The mean-pooling snippet above produces sentence embeddings, but those embeddings are not yet <em>good</em>. A vanilla BERT encoder was never trained to place semantically similar sentences near each other in vector space. Reimers and Gurevsky (2019) showed that BERT's raw <code>[CLS]</code> embeddings actually perform <em>worse</em> than GloVe averages on semantic similarity benchmarks. The fix is Sentence-BERT (SBERT): fine-tune the encoder with a Siamese architecture and a contrastive objective so that the resulting embeddings capture sentence-level meaning.</p>
+
+      <p>The practical motivation is speed. A cross-encoder &mdash; feeding both sentences as a single pair through BERT &mdash; is accurate but requires $O(n^2)$ forward passes to compare $n$ sentences. With 10,000 sentences, that is roughly 50 million forward passes, taking ~65 hours. A sentence transformer encodes each sentence <em>once</em>, stores the embedding, and compares embeddings with cosine similarity. Encoding 10,000 sentences takes seconds; pairwise comparison of the stored vectors takes milliseconds.</p>
+
+      <p>In this project we build a sentence transformer end-to-end: we take a pre-trained BERT encoder (already trained with MLM to understand language), wrap it with mean pooling, fine-tune it with a contrastive loss on real NLI data, and use the resulting embeddings for semantic search.</p>
+
+      <figure class="diagram-figure">
+        <svg width="100%" viewBox="0 0 800 520" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="ch07-arr6" viewBox="0 0 10 10" refX="9" refY="5"
+              markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+              <path d="M1 1L9 5L1 9" fill="none" stroke="context-stroke"
+                stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </marker>
+          </defs>
+
+          <!-- Title -->
+          <text x="400" y="24" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="600" fill="#1A1A18">Siamese Sentence Transformer Architecture</text>
+
+          <!-- Shared weights dashed container -->
+          <rect x="40" y="100" width="720" height="200" rx="10" fill="none" stroke="#B4B2A9" stroke-width="1" stroke-dasharray="5 4"/>
+          <text x="400" y="118" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#9C9A94">Shared Weights</text>
+
+          <!-- LEFT BRANCH -->
+          <!-- Input A -->
+          <rect x="80" y="48" width="240" height="36" rx="6" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1.5"/>
+          <text x="200" y="71" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="500" fill="#0F6E56">Sentence A (tokens)</text>
+
+          <line x1="200" y1="84" x2="200" y2="130" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch07-arr6)"/>
+
+          <!-- Encoder A -->
+          <rect x="80" y="132" width="240" height="56" rx="6" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <text x="200" y="157" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="500" fill="#534AB7">BERT Encoder</text>
+          <text x="200" y="175" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">Pre-trained (12 layers, 768-d)</text>
+
+          <line x1="200" y1="188" x2="200" y2="216" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch07-arr6)"/>
+
+          <!-- Mean Pool A -->
+          <rect x="110" y="218" width="180" height="36" rx="6" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1"/>
+          <text x="200" y="241" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#534AB7">Mean Pooling</text>
+
+          <line x1="200" y1="254" x2="200" y2="326" stroke="#534AB7" stroke-width="2" marker-end="url(#ch07-arr6)"/>
+
+          <!-- Embedding u -->
+          <rect x="140" y="328" width="120" height="36" rx="6" fill="#534AB7" stroke="#534AB7"/>
+          <text x="200" y="351" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="500" fill="#FFFFFF">u</text>
+          <text x="200" y="382" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">(batch, 768)</text>
+
+          <!-- RIGHT BRANCH -->
+          <!-- Input B -->
+          <rect x="480" y="48" width="240" height="36" rx="6" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1.5"/>
+          <text x="600" y="71" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="500" fill="#0F6E56">Sentence B (tokens)</text>
+
+          <line x1="600" y1="84" x2="600" y2="130" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch07-arr6)"/>
+
+          <!-- Encoder B -->
+          <rect x="480" y="132" width="240" height="56" rx="6" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1.5"/>
+          <text x="600" y="157" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="500" fill="#534AB7">BERT Encoder</text>
+          <text x="600" y="175" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">Pre-trained (12 layers, 768-d)</text>
+
+          <line x1="600" y1="188" x2="600" y2="216" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch07-arr6)"/>
+
+          <!-- Mean Pool B -->
+          <rect x="510" y="218" width="180" height="36" rx="6" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1"/>
+          <text x="600" y="241" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#534AB7">Mean Pooling</text>
+
+          <line x1="600" y1="254" x2="600" y2="326" stroke="#534AB7" stroke-width="2" marker-end="url(#ch07-arr6)"/>
+
+          <!-- Embedding v -->
+          <rect x="540" y="328" width="120" height="36" rx="6" fill="#534AB7" stroke="#534AB7"/>
+          <text x="600" y="351" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="500" fill="#FFFFFF">v</text>
+          <text x="600" y="382" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">(batch, 768)</text>
+
+          <!-- Converging arrows to similarity -->
+          <line x1="200" y1="364" x2="320" y2="420" stroke="#534AB7" stroke-width="2" marker-end="url(#ch07-arr6)"/>
+          <line x1="600" y1="364" x2="480" y2="420" stroke="#534AB7" stroke-width="2" marker-end="url(#ch07-arr6)"/>
+
+          <!-- Cosine Similarity -->
+          <rect x="300" y="422" width="200" height="36" rx="6" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="1"/>
+          <text x="400" y="445" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#5C5B56">Cosine Similarity Matrix</text>
+          <text x="400" y="408" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="400" fill="#9C9A94">(batch &times; batch)</text>
+
+          <line x1="400" y1="458" x2="400" y2="476" stroke="#993C1D" stroke-width="2" marker-end="url(#ch07-arr6)"/>
+
+          <!-- MNR Loss -->
+          <rect x="300" y="478" width="200" height="36" rx="6" fill="#FAECE7" stroke="#F0997B" stroke-width="1.5"/>
+          <text x="400" y="501" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="600" fill="#993C1D">MNR Loss</text>
+        </svg>
+        <figcaption>Figure 7.7 &mdash; The Siamese sentence transformer architecture. Both branches share identical weights. Each sentence is encoded independently, mean-pooled to a fixed-size vector, then compared via a cosine similarity matrix. During training, Multiple Negatives Ranking Loss treats diagonal entries (true pairs) as positives and all off-diagonal entries as in-batch negatives.</figcaption>
+      </figure>
+
+      <h4>Step 1: Sentence Transformer Model</h4>
+
+      <p>A sentence transformer starts from a pre-trained encoder &mdash; one that already understands language from masked language modeling &mdash; and wraps it with mean pooling. We load <code>bert-base-uncased</code> as our backbone. The pre-trained weights give us rich token representations; our job is to teach the model to <em>pool</em> those representations into a single sentence vector that captures meaning.</p>
+
+<pre><code class="language-python">
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from transformers import AutoModel
+
+class SentenceTransformer(nn.Module):
+    def __init__(self, model_name="bert-base-uncased"):
+        super().__init__()
+        self.encoder = AutoModel.from_pretrained(model_name)
+        self.d_model = self.encoder.config.hidden_size  # 768 for bert-base
+
+    def forward(self, input_ids, attention_mask):
+        # input_ids: (batch, seq_len)   attention_mask: (batch, seq_len)
+        out = self.encoder(input_ids=input_ids, attention_mask=attention_mask)
+        hidden = out.last_hidden_state         # (batch, seq_len, 768)
+        return self._mean_pool(hidden, attention_mask)
+
+    def _mean_pool(self, hidden, mask):
+        # hidden: (batch, seq_len, 768)  mask: (batch, seq_len)
+        mask_exp = mask.unsqueeze(-1).float()              # (batch, seq_len, 1)
+        summed = (hidden * mask_exp).sum(dim=1)            # (batch, 768)
+        counts = mask_exp.sum(dim=1).clamp(min=1e-9)       # (batch, 1)
+        return summed / counts                              # (batch, 768)
+
+    @torch.no_grad()
+    def encode(self, input_ids, attention_mask):
+        """Encode sentences to normalized embeddings for similarity search."""
+        embs = self.forward(input_ids, attention_mask)     # (batch, 768)
+        return F.normalize(embs, p=2, dim=-1)              # unit vectors
+</code></pre>
+
+      <p>The architecture is intentionally minimal. BERT already contains 12 transformer layers with multi-head attention and feed-forward networks &mdash; all the heavy lifting that earlier chapters covered in detail. Our <code>SentenceTransformer</code> adds exactly one thing: mean pooling that collapses the per-token outputs into a single vector per sentence. The real work happens in the training objective.</p>
+
+      <h4>Step 2: Multiple Negatives Ranking Loss</h4>
+
+      <p>The key training signal comes from Multiple Negatives Ranking (MNR) loss &mdash; also known as InfoNCE. Given a batch of $B$ anchor-positive pairs, we compute a $B \times B$ cosine similarity matrix (matrix multiply of L2-normalized embeddings, $\mathbb{R}^{B \times d} \times \mathbb{R}^{d \times B} \to \mathbb{R}^{B \times B}$). The diagonal entries are the correct pairs; every off-diagonal entry is an in-batch negative. A temperature-scaled cross-entropy loss pushes each anchor toward its true positive and away from all negatives:</p>
+
+      $$\mathcal{L}_i = -\log \frac{\exp\!\bigl(\text{sim}(a_i, p_i) / \tau\bigr)}{\sum_{j=1}^{B} \exp\!\bigl(\text{sim}(a_i, p_j) / \tau\bigr)}$$
+
+      <p>where $\text{sim}(a_i, p_j) = a_i^\top p_j$ is the cosine similarity (dot product of L2-normalized vectors, yielding a scalar in $[-1, 1]$) and $\tau = 1/20 = 0.05$ is the temperature. Larger batches provide more negatives per anchor, producing a stronger learning signal.</p>
+
+<pre><code class="language-python">
+class MNRLoss(nn.Module):
+    """Multiple Negatives Ranking Loss with in-batch negatives."""
+    def __init__(self, scale=20.0):
+        super().__init__()
+        self.scale = scale               # 1 / temperature
+        self.cross_entropy = nn.CrossEntropyLoss()
+
+    def forward(self, anchors, positives):
+        # anchors:   (batch, d_model) — already L2-normalized
+        # positives: (batch, d_model) — already L2-normalized
+        # Cosine similarity matrix via matrix multiply:
+        # (batch, d_model) @ (d_model, batch) -> (batch, batch)
+        scores = anchors @ positives.T * self.scale
+        # Target: each anchor i should match positive i (diagonal)
+        labels = torch.arange(scores.size(0), device=scores.device)
+        return self.cross_entropy(scores, labels)
+</code></pre>
+
+      <h4>Step 3: Training on NLI Data</h4>
+
+      <p>We train on entailment pairs from SNLI &mdash; each pair consists of a premise and a hypothesis that logically follows from it, giving us natural positive pairs for contrastive learning.</p>
+
+<pre><code class="language-python">
+from transformers import AutoTokenizer
+from datasets import load_dataset
+from torch.utils.data import DataLoader
+
+# HuggingFace for tokenizer + data loading; model fine-tuning is all PyTorch
+tokenizer = AutoTokenizer.from_pretrained("bert-base-uncased")
+ds = load_dataset("stanfordnlp/snli", split="train")
+ds = ds.filter(lambda x: x["label"] == 0)  # keep entailment pairs only
+
+model = SentenceTransformer("bert-base-uncased").cuda()  # loads pre-trained weights
+optimizer = torch.optim.AdamW(model.parameters(), lr=2e-5, weight_decay=0.01)
+criterion = MNRLoss(scale=20.0)
+
+def collate(batch):
+    premises = [ex["premise"] for ex in batch]
+    hypotheses = [ex["hypothesis"] for ex in batch]
+    enc_p = tokenizer(premises, padding=True, truncation=True,
+                      max_length=128, return_tensors="pt")
+    enc_h = tokenizer(hypotheses, padding=True, truncation=True,
+                      max_length=128, return_tensors="pt")
+    return enc_p, enc_h
+
+loader = DataLoader(ds, batch_size=32, shuffle=True, collate_fn=collate)
+
+model.train()
+for step, (enc_p, enc_h) in enumerate(loader):
+    # Forward pass through the shared encoder (not .encode() — we need gradients)
+    anc = F.normalize(model(enc_p["input_ids"].cuda(), enc_p["attention_mask"].cuda()))
+    pos = F.normalize(model(enc_h["input_ids"].cuda(), enc_h["attention_mask"].cuda()))
+
+    loss = criterion(anc, pos)
+    optimizer.zero_grad()
+    loss.backward()
+    optimizer.step()
+
+    if step % 500 == 0:
+        print(f"step {step:>5d}  loss {loss.item():.4f}")
+</code></pre>
+
+      <p>A single epoch over the ~183K entailment pairs takes roughly 30&ndash;60 minutes on a modern GPU. Production sentence transformers train for longer, on larger datasets (AllNLI combines SNLI + MultiNLI for ~1M pairs), and often add a second fine-tuning stage on STS regression data. Even this minimal setup produces embeddings that dramatically outperform raw BERT outputs on similarity tasks.</p>
+
+      <h4>Step 4: Semantic Search</h4>
+
+      <p>With a trained model, semantic search is a single matrix operation &mdash; encode the corpus once, then compare any query embedding against all stored embeddings.</p>
+
+<pre><code class="language-python">
+@torch.no_grad()
+def semantic_search(model, tokenizer, corpus, query, top_k=3):
+    """Encode a corpus and retrieve the top-k most similar sentences to a query."""
+    model.eval()
+
+    # Encode entire corpus in one batch
+    enc_c = tokenizer(corpus, padding=True, truncation=True,
+                      max_length=128, return_tensors="pt")
+    corpus_embs = model.encode(enc_c["input_ids"].cuda(),
+                               enc_c["attention_mask"].cuda())  # (N, 768)
+
+    # Encode query
+    enc_q = tokenizer([query], padding=True, truncation=True,
+                      max_length=128, return_tensors="pt")
+    query_emb = model.encode(enc_q["input_ids"].cuda(),
+                             enc_q["attention_mask"].cuda())    # (1, 768)
+
+    # Cosine similarities: (1, 768) @ (768, N) -> (1, N)
+    scores = (query_emb @ corpus_embs.T).squeeze(0)
+    top_indices = scores.argsort(descending=True)[:top_k]
+
+    for idx in top_indices:
+        print(f"  [{scores[idx]:.3f}] {corpus[idx]}")
+
+# Example usage
+corpus = [
+    "A man is eating food.",
+    "Someone plays the piano.",
+    "A woman is reading a book in the park.",
+    "The cat sat on the mat.",
+    "A person is playing a musical instrument.",
+]
+semantic_search(model, tokenizer, corpus, "A person is eating a meal.")
+# Expected: "A man is eating food." ranks highest
+</code></pre>
+
+      <p>This project demonstrates the full SBERT pipeline: a pre-trained encoder fine-tuned with a contrastive objective to produce meaningful sentence-level embeddings, and an inference pattern that scales to millions of documents. The key insight is that the architecture is almost unchanged from BERT &mdash; the magic is in the training objective. Mean pooling combined with MNR loss transforms a token-level language model into a sentence-level embedding engine.</p>
+
+      <p>Production systems extend this recipe with harder negatives (mining or using contradiction pairs from NLI), larger base encoders (RoBERTa-large or DeBERTa-v3), knowledge distillation to smaller models, and matryoshka representation learning that produces embeddings useful at multiple dimensionalities. But the core architecture &mdash; shared encoder, mean pooling, contrastive loss &mdash; remains exactly what we built here.</p>
+
       <h3>When to Choose Encoder-Only Over Generative</h3>
 
       <figure class="diagram-figure">
@@ -874,7 +1123,7 @@ with torch.no_grad():
           <rect x="310" y="312" width="180" height="28" rx="6" fill="#FAECE7" stroke="#F0997B" stroke-width="1"/>
           <text x="400" y="331" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#993C1D">Consider a decoder (LLM)</text>
         </svg>
-        <figcaption>Figure 7.7 &mdash; Decision guide for choosing encoder-only models. Encoders dominate when the task is discriminative (not generative), latency matters, labeled data is available, or batch embedding is needed. Decoders are preferred for free-form text generation and few-shot scenarios with limited labeled data.</figcaption>
+        <figcaption>Figure 7.8 &mdash; Decision guide for choosing encoder-only models. Encoders dominate when the task is discriminative (not generative), latency matters, labeled data is available, or batch embedding is needed. Decoders are preferred for free-form text generation and few-shot scenarios with limited labeled data.</figcaption>
       </figure>
 
       <p>The encoder advantage comes from three sources:</p>
