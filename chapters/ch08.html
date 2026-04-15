@@ -148,6 +148,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from dataclasses import dataclass
 
 class GPTBlock(nn.Module):
     """Single GPT-1 decoder block: causal self-attention + FFN with post-norm."""
@@ -185,8 +186,36 @@ class GPTBlock(nn.Module):
         x = self.norm2(x + self.ffn(x))
         return x
 
-# GPT-1 config: 12 layers, d_model=768, 12 heads, d_ff=3072
-blocks = nn.ModuleList([GPTBlock(768, 12, 3072) for _ in range(12)])
+@dataclass(frozen=True)
+class GPT1Config:
+    """GPT-1 (117M): 12 layers, d_model=768, 12 heads, d_ff=3072, context 512."""
+    n_layers: int = 12
+    d_model: int = 768
+    n_heads: int = 12
+    d_ff: int = 3072
+    max_seq_len: int = 512
+
+class GPT1DecoderStack(nn.Module):
+    """Full decoder depth: stacked GPTBlocks (expects token+position embeddings as input)."""
+    def __init__(self, cfg: GPT1Config):
+        super().__init__()
+        assert cfg.d_model % cfg.n_heads == 0, "d_model must be divisible by n_heads"
+        self.cfg = cfg
+        self.blocks = nn.ModuleList([
+            GPTBlock(cfg.d_model, cfg.n_heads, cfg.d_ff) for _ in range(cfg.n_layers)
+        ])
+
+    def forward(self, x):
+        # x: (batch, seq_len, d_model)
+        for block in self.blocks:
+            x = block(x)
+        return x
+
+cfg = GPT1Config()
+model = GPT1DecoderStack(cfg)
+x = torch.randn(2, 64, cfg.d_model)  # (batch, seq_len, d_model) — random embeddings for a shape check
+y = model(x)
+assert y.shape == x.shape
 </code></pre>
 
       <p>Second, GPT-1 is fine-tuned on each downstream task with a task-specific classification head. The authors add a linear layer on top of the final transformer hidden state and combine the task loss with the language modeling loss as an auxiliary objective:</p>
