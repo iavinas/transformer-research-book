@@ -3,6 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="prev" href="ch08.html">
+  <link rel="next" href="ch09.html">
   <title>Chapter 8 Bonus: Project — Building a Mixture of Experts Language Model — Transformer Research Book</title>
   <link rel="stylesheet" href="../assets/style.css">
   <link rel="stylesheet" href="../assets/math.css">
@@ -40,6 +42,161 @@
       <h1 class="chapter-title">Project: Building a Mixture of Experts Language Model from Scratch</h1>
       <p class="chapter-lead">Mixtral 8&times;7B has 47 billion parameters but its forward pass costs the same as a 13B dense model. DeepSeek V3 is a 671B model that activates 37B per token. That arithmetic &mdash; total parameters decoupled from active parameters &mdash; is the entire promise of sparse Mixture of Experts. The papers describe it cleanly. The actual training is a different story: routers collapse onto two experts within a hundred steps, gradients refuse to flow through the top-k operator, and the load-balance auxiliary loss has to be tuned to a tenth of a percent or the model never learns anything. By the end of this chapter you will have built a working MoE language model in pure PyTorch, trained it on TinyStories on a single A100 in under an hour, and watched expert specialization emerge in real time &mdash; one expert quietly claiming punctuation, another firing on dialogue, a third on character names &mdash; with no supervision telling them what to specialize on.</p>
     </header>
+
+    <p>The rest of the chapter stacks ideas in order: what MoE buys you, then each trainable piece, then how training and inference close the loop. The figure below is a single reference map &mdash; use it to see where the current section sits, and come back when a detail needs a home in the whole system. Read the left column depth stack as <strong>L Transformer blocks</strong> (attention + FFN + residuals, as in Chapter 8); the small <strong>D</strong> / <strong>M</strong> labels refer only to the FFN half of each block, not to attention.</p>
+
+    <figure class="diagram-figure">
+      <svg width="100%" viewBox="0 0 800 752" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <marker id="ch08map-arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+            <path d="M1 1L9 5L1 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+          </marker>
+          <marker id="ch08map-arr-p" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+            <path d="M1 1L9 5L1 9" fill="none" stroke="#534AB7" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+          </marker>
+        </defs>
+
+        <text x="400" y="22" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="15" font-weight="600" fill="#1A1A18">Project Map: MoE Language Model - End-to-End</text>
+        <text x="400" y="42" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#5C5B56">How sections, tensors, and losses connect in this chapter</text>
+
+        <!-- ========== LEFT: Data + full model spine ========== -->
+        <text x="175" y="68" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#0F6E56">Data &amp; model spine</text>
+        <text x="175" y="82" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">sec. 7 Training</text>
+
+        <rect x="50" y="92" width="250" height="44" rx="6" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1.5"/>
+        <text x="175" y="112" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#0F6E56">TinyStories (stream)</text>
+        <text x="175" y="128" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#5C5B56">HF datasets | GPT-2 BPE | packed seq 512</text>
+
+        <line x1="175" y1="136" x2="175" y2="152" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch08map-arr)"/>
+
+        <rect x="55" y="154" width="240" height="38" rx="6" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="1"/>
+        <text x="175" y="172" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#5C5B56">(B, T) tokens -&gt; DataLoader</text>
+        <text x="175" y="186" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">shifted labels for LM</text>
+
+        <line x1="175" y1="192" x2="175" y2="208" stroke="#9C9A94" stroke-width="1.5" marker-end="url(#ch08map-arr)"/>
+
+        <rect x="40" y="210" width="270" height="218" rx="8" fill="#FFFFFF" stroke="#AFA9EC" stroke-width="1.5" stroke-dasharray="4 3"/>
+        <text x="175" y="228" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#534AB7">MoELM | sec. 6 Block + full model</text>
+
+        <rect x="55" y="236" width="240" height="28" rx="5" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="1"/>
+        <text x="175" y="254" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#0F6E56">tok_emb + RoPE tables</text>
+
+        <text x="175" y="276" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="600" fill="#1A1A18">Transformer block x L (stacked depth)</text>
+        <text x="175" y="291" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#5C5B56">each block = Attn sublayer + FFN sublayer (+ residuals)</text>
+
+        <!-- Each tile is ONE full transformer block; letter = FFN type only -->
+        <rect x="48" y="298" width="254" height="36" rx="6" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="1" stroke-dasharray="3 2"/>
+        <text x="175" y="312" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="500" fill="#5C5B56">inside each block: MHA -&gt; then FFN</text>
+
+        <rect x="58" y="318" width="42" height="22" rx="4" fill="#FFFFFF" stroke="#C8C6BE" stroke-width="1"/>
+        <text x="79" y="333" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" fill="#5C5B56">D</text>
+        <rect x="104" y="318" width="42" height="22" rx="4" fill="#EEEDFE" stroke="#534AB7" stroke-width="1.2"/>
+        <text x="125" y="333" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="600" fill="#534AB7">M</text>
+        <rect x="150" y="318" width="42" height="22" rx="4" fill="#FFFFFF" stroke="#C8C6BE" stroke-width="1"/>
+        <text x="171" y="333" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" fill="#5C5B56">D</text>
+        <rect x="196" y="318" width="42" height="22" rx="4" fill="#EEEDFE" stroke="#534AB7" stroke-width="1.2"/>
+        <text x="217" y="333" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="600" fill="#534AB7">M</text>
+        <text x="255" y="333" font-family="system-ui, -apple-system, sans-serif" font-size="10" fill="#9C9A94">...</text>
+
+        <text x="175" y="352" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-style="italic" fill="#9C9A94">D / M = FFN only (dense SwiGLU sec. 2 vs MoE sec. 3-5); odd layers often MoE</text>
+
+        <rect x="55" y="360" width="240" height="34" rx="5" fill="#FFFFFF" stroke="#C8C6BE" stroke-width="1"/>
+        <text x="175" y="378" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="500" fill="#5C5B56">final RMSNorm -&gt; lm_head (tied emb)</text>
+
+        <line x1="175" y1="394" x2="175" y2="408" stroke="#993C1D" stroke-width="1.5" marker-end="url(#ch08map-arr)"/>
+
+        <rect x="55" y="410" width="240" height="32" rx="6" fill="#FAECE7" stroke="#F0997B" stroke-width="1.5"/>
+        <text x="175" y="430" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#993C1D">logits (B, T, vocab)</text>
+
+        <!-- bracket to MoE detail: from M tile vertical middle ~329 -->
+        <path d="M 318 329 Q 355 329 388 295" fill="none" stroke="#534AB7" stroke-width="1.2" stroke-dasharray="4 2"/>
+        <text x="328" y="322" font-family="system-ui, -apple-system, sans-serif" font-size="9" fill="#534AB7">FFN=M -&gt;</text>
+
+        <!-- ========== RIGHT: full Transformer block, MoE in FFN slot ========== -->
+        <text x="585" y="68" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#534AB7">One Transformer block (FFN = MoE)</text>
+        <text x="585" y="82" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">same block shape as Ch. 8; sec. 3-5 only replace dense FFN</text>
+
+        <rect x="395" y="92" width="385" height="218" rx="8" fill="#FAFAF9" stroke="#E5E3DC" stroke-width="1"/>
+        <text x="412" y="110" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="600" fill="#5C5B56">Pre-norm repeat</text>
+
+        <rect x="405" y="118" width="100" height="26" rx="4" fill="#FFFFFF" stroke="#C8C6BE" stroke-width="1"/>
+        <text x="455" y="135" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#5C5B56">RMSNorm</text>
+        <line x1="505" y1="131" x2="518" y2="131" stroke="#9C9A94" stroke-width="1" marker-end="url(#ch08map-arr)"/>
+        <rect x="520" y="118" width="115" height="26" rx="4" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1"/>
+        <text x="577" y="135" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#534AB7">MHA + RoPE</text>
+        <text x="652" y="128" font-family="system-ui, -apple-system, sans-serif" font-size="9" fill="#9C9A94">KV sec. 8</text>
+        <line x1="635" y1="131" x2="652" y2="131" stroke="#9C9A94" stroke-width="1" marker-end="url(#ch08map-arr)"/>
+        <circle cx="668" cy="131" r="9" fill="#FFFFFF" stroke="#5C5B56" stroke-width="1"/>
+        <text x="668" y="135" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#5C5B56">+</text>
+
+        <rect x="405" y="152" width="100" height="26" rx="4" fill="#FFFFFF" stroke="#C8C6BE" stroke-width="1"/>
+        <text x="455" y="169" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#5C5B56">RMSNorm</text>
+        <line x1="505" y1="165" x2="525" y2="165" stroke="#534AB7" stroke-width="1.5" marker-end="url(#ch08map-arr-p)"/>
+
+        <rect x="530" y="148" width="72" height="34" rx="4" fill="#534AB7" stroke="#534AB7"/>
+        <text x="566" y="170" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="600" fill="#FFFFFF">Router</text>
+        <text x="566" y="182" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="8" font-weight="400" fill="#AFA9EC">W_g, sec. 3</text>
+
+        <line x1="602" y1="165" x2="618" y2="165" stroke="#534AB7" stroke-width="1.2" marker-end="url(#ch08map-arr-p)"/>
+        <text x="618" y="158" font-family="system-ui, -apple-system, sans-serif" font-size="9" fill="#534AB7">top-k</text>
+
+        <!-- 8 experts miniature -->
+        <rect x="635" y="148" width="18" height="14" rx="2" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="0.8"/>
+        <rect x="656" y="148" width="18" height="14" rx="2" fill="#534AB7" stroke="#534AB7"/>
+        <rect x="677" y="148" width="18" height="14" rx="2" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="0.8"/>
+        <rect x="698" y="148" width="18" height="14" rx="2" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="0.8"/>
+        <rect x="635" y="164" width="18" height="14" rx="2" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="0.8"/>
+        <rect x="656" y="164" width="18" height="14" rx="2" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="0.8"/>
+        <rect x="677" y="164" width="18" height="14" rx="2" fill="#534AB7" stroke="#534AB7"/>
+        <rect x="698" y="164" width="18" height="14" rx="2" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="0.8"/>
+        <text x="668" y="192" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" fill="#5C5B56">N experts, each SwiGLU sec. 2</text>
+
+        <line x1="455" y1="198" x2="455" y2="208" stroke="#993C1D" stroke-width="1"/>
+        <text x="520" y="212" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#993C1D">sum_i g_i E_i(x) + E_shared + sec. 4 scatter / index_add</text>
+
+        <rect x="405" y="222" width="365" height="44" rx="5" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1"/>
+        <text x="412" y="240" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#534AB7">Routing tensors returned to training:</text>
+        <text x="412" y="256" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#5C5B56">topk_idx, topk_weights -&gt; forward | full_probs, logits -&gt; L_aux, L_z (sec. 5)</text>
+
+        <text x="588" y="278" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-style="italic" fill="#9C9A94">sec. 1: total params &gt;&gt; active params per token</text>
+
+        <!-- ========== Losses row (below left logits, ends ~442) ========== -->
+        <text x="400" y="458" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#993C1D">Training objective (sec. 7) - three losses, one backward</text>
+
+        <rect x="35" y="468" width="230" height="52" rx="6" fill="#FAECE7" stroke="#F0997B" stroke-width="1.5"/>
+        <text x="150" y="488" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#993C1D">L_CE</text>
+        <text x="150" y="504" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#5C5B56">cross-entropy on next-token</text>
+
+        <rect x="285" y="468" width="230" height="52" rx="6" fill="#FAEEDA" stroke="#EF9F27" stroke-width="1.5"/>
+        <text x="400" y="486" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#854F0B">alpha * L_aux</text>
+        <text x="400" y="500" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#5C5B56">N * sum_i f_i P_i - fights collapse (sec. 5)</text>
+        <text x="400" y="514" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#9C9A94">uses full softmax probs</text>
+
+        <rect x="535" y="468" width="230" height="52" rx="6" fill="#E6F1FB" stroke="#85B7EB" stroke-width="1.5"/>
+        <text x="650" y="486" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#185FA5">beta * L_z</text>
+        <text x="650" y="500" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#5C5B56">router z-loss on logits (sec. 5)</text>
+        <text x="650" y="514" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="400" fill="#9C9A94">stabilizes gating scale</text>
+
+        <line x1="265" y1="494" x2="275" y2="494" stroke="#C8C6BE" stroke-width="1"/>
+        <line x1="515" y1="494" x2="525" y2="494" stroke="#C8C6BE" stroke-width="1"/>
+        <text x="400" y="538" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-style="italic" fill="#5C5B56">L = L_CE + alpha L_aux + beta L_z - summed over MoE layers for aux / z</text>
+
+        <!-- ========== Inference strip ========== -->
+        <rect x="35" y="550" width="730" height="92" rx="8" fill="#F1EFE8" stroke="#C8C6BE" stroke-width="1"/>
+        <text x="400" y="572" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#0F6E56">Inference &amp; forensics (sec. 8)</text>
+        <text x="55" y="592" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#5C5B56">- KV cache: append new K,V per layer; query only last position; MoE still routes that single token</text>
+        <text x="55" y="608" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#5C5B56">- Autoregressive loop: logits[-1] -&gt; sample -&gt; append token until EOS</text>
+        <text x="55" y="624" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#5C5B56">- Expert stats: histograms over tokens, per-layer heatmaps - check specialization vs. collapse</text>
+
+        <!-- Reading order -->
+        <rect x="35" y="654" width="730" height="92" rx="8" fill="#FFFFFF" stroke="#E5E3DC" stroke-width="1"/>
+        <text x="400" y="674" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#1A1A18">Suggested reading order (matches section sequence)</text>
+        <text x="50" y="688" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#5C5B56">(1) Why sparse FFN | (2) SwiGLU expert | (3) Router | (4) Dispatch | (5) Aux + z-loss | (6) Full block + MoELM</text>
+        <text x="50" y="704" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#5C5B56">(7) Data + train loop | (8) Generate + forensics</text>
+        <text x="50" y="722" font-family="system-ui, -apple-system, sans-serif" font-size="10" font-weight="400" fill="#9C9A94">Return here whenever you need to place router logits, expert outputs, or auxiliary terms in the forward graph.</text>
+      </svg>
+      <figcaption>Figure 8B.0 &mdash; Full project map for this bonus chapter. Left: after embeddings, the depth stack is <strong>L Transformer blocks</strong> (same pre-norm block as Chapter 8: attention sublayer + FFN sublayer + residuals). Letters D and M label the <em>FFN slot only</em> (dense SwiGLU vs routed MoE). Right: zoom of <strong>one full Transformer block</strong> when that FFN is MoE (attention unchanged; router + experts replace dense FFN). Below: training losses and inference. The roadmap at the bottom follows the section order in the text.</figcaption>
+    </figure>
 
     <!-- ================================================================== -->
     <!-- SECTION 1: The Conditional-Computation Contract -->
@@ -188,7 +345,7 @@
         <figcaption>Figure 8B.2 &mdash; The activation ratio defines the MoE win. Dense models pay for every parameter on every token. Mixtral pays for 28%. DeepSeek V3 pays for 5.5%. The teal bar is the model's stored knowledge; the coral bar is the per-token compute. The wider that gap, the more knowledge you can serve per dollar of inference.</figcaption>
       </figure>
 
-      <p>The rest of this chapter is an honest implementation of that machinery. We will build each component &mdash; expert, router, dispatch, load-balance loss, full block, training loop, KV-cache inference, evaluation &mdash; in a few hundred lines of pure PyTorch. The point is not a production-grade kernel; it is a model you can step through with a debugger and modify in a single file.</p>
+      <p>What follows is an honest implementation of that machinery. We will build each component &mdash; expert, router, dispatch, load-balance loss, full block, training loop, KV-cache inference, evaluation &mdash; in a few hundred lines of pure PyTorch. The point is not a production-grade kernel; it is a model you can step through with a debugger and modify in a single file.</p>
     </section>
 
     <!-- ================================================================== -->
