@@ -812,6 +812,28 @@ class RMSNorm(nn.Module):
         rms = x.pow(2).mean(-1, keepdim=True).add(self.eps).rsqrt()
         return x * rms * self.weight                     # element-wise scale
 
+def build_rope(seq_len, d_head, base=10000.0):
+    """Precompute cos/sin tables for rotary position embeddings.
+    Returns two (seq_len, d_head) tensors that can be sliced to the current T."""
+    # one inverse frequency per pair of dims: theta_i = base^(-2i/d_head)
+    inv_freq = 1.0 / (base ** (torch.arange(0, d_head, 2).float() / d_head))  # (d_head/2,)
+    pos = torch.arange(seq_len).float()                                        # (seq_len,)
+    freqs = torch.outer(pos, inv_freq)                                         # (seq_len, d_head/2)
+    # duplicate halves so the table has the same last-dim as q/k
+    emb = torch.cat([freqs, freqs], dim=-1)                                    # (seq_len, d_head)
+    return emb.cos(), emb.sin()
+
+def apply_rope(q, k, cos, sin):
+    """Rotate q and k by the RoPE angles stored in cos/sin.
+    q, k: (B, n_heads, T, d_head);  cos, sin: (T, d_head)."""
+    def rotate_half(x):
+        # swap the two halves and negate the second — this is the RoPE rotation trick
+        x1, x2 = x[..., : x.shape[-1] // 2], x[..., x.shape[-1] // 2:]
+        return torch.cat([-x2, x1], dim=-1)                                    # (..., d_head)
+    cos = cos[None, None, :, :]                                                # broadcast over B, H
+    sin = sin[None, None, :, :]
+    return q * cos + rotate_half(q) * sin, k * cos + rotate_half(k) * sin      # element-wise
+
 class CausalSelfAttention(nn.Module):
     """Standard causal MHA with rotary embeddings; KV-cache aware.
     Kept brief — the focus of this chapter is the MoE FFN."""
@@ -861,7 +883,7 @@ class MoEBlock(nn.Module):
             return x, new_cache, None
 </code></pre>
 
-      <p>The block returns three things: the new activations, the updated KV cache, and (when this layer is an MoE layer) a tuple of routing artifacts that the training loop needs for the auxiliary losses. Dense layers return <code>None</code> for that third slot. The <code>apply_rope</code> helper is the standard rotary embedding application from Chapter 8 &mdash; we omit its body for space but it is a few lines of broadcasting against $\cos$ / $\sin$ tables.</p>
+      <p>The block returns three things: the new activations, the updated KV cache, and (when this layer is an MoE layer) a tuple of routing artifacts that the training loop needs for the auxiliary losses. Dense layers return <code>None</code> for that third slot. The <code>build_rope</code> helper precomputes the $\cos$ / $\sin$ tables once at model construction; <code>apply_rope</code> rotates each token's $q$ and $k$ by multiplying element-wise against the table and adding a rotated-half copy &mdash; the same standard rotary implementation used in LLaMA and Mistral.</p>
 
       <p>The full language model stitches a stack of these blocks between an embedding and an LM head. We follow the common practice of alternating dense and MoE layers &mdash; this is what Mixtral and DeepSeek both do, with MoE on the odd-indexed layers in our config. Alternation reduces total parameters slightly and gives the dense layers a chance to mix information across tokens before the next routing decision.</p>
 
